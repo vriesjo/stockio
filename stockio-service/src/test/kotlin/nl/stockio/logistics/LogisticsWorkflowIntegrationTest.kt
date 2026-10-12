@@ -1,5 +1,7 @@
 package nl.stockio.logistics
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import nl.stockio.logistics.domain.AllocationJobAccepted
 import nl.stockio.logistics.domain.AllocationRequest
 import nl.stockio.logistics.domain.AllocationRunType
 import nl.stockio.logistics.domain.AllocationStatus
@@ -11,8 +13,8 @@ import nl.stockio.logistics.persistence.AllocationRecordRepository
 import nl.stockio.logistics.persistence.AllocationRunRepository
 import nl.stockio.logistics.persistence.AllocationSourceRepository
 import nl.stockio.logistics.persistence.OpenBackorderRepository
-import nl.stockio.logistics.persistence.StockDailySnapshotRepository
 import nl.stockio.logistics.persistence.StockDailyLotSnapshotRepository
+import nl.stockio.logistics.persistence.StockDailySnapshotRepository
 import nl.stockio.logistics.persistence.StockEntity
 import nl.stockio.logistics.persistence.StockRepository
 import nl.stockio.logistics.persistence.StockReservationEntity
@@ -21,7 +23,9 @@ import nl.stockio.logistics.service.AllocationCsvLoader
 import nl.stockio.logistics.service.DailyStockLedgerService
 import nl.stockio.logistics.service.ExcelReportGeneratorService
 import nl.stockio.logistics.service.LogisticsAllocationService
+import nl.stockio.logistics.service.StockProjectionService
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
+import org.awaitility.Awaitility.await
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -33,6 +37,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.test.annotation.DirtiesContext
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
@@ -44,12 +49,14 @@ import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import java.time.LocalDate
 import java.util.UUID
 
 @Testcontainers
 @SpringBootTest
 @AutoConfigureMockMvc
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class LogisticsWorkflowIntegrationTest {
 
     @Autowired
@@ -57,6 +64,9 @@ class LogisticsWorkflowIntegrationTest {
 
     @Autowired
     private lateinit var jdbcTemplate: JdbcTemplate
+
+    @Autowired
+    private lateinit var objectMapper: ObjectMapper
 
     @Autowired
     private lateinit var reportGenerator: ExcelReportGeneratorService
@@ -87,6 +97,9 @@ class LogisticsWorkflowIntegrationTest {
 
     @Autowired
     private lateinit var dailyStockLedgerService: DailyStockLedgerService
+
+    @Autowired
+    private lateinit var stockProjectionService: StockProjectionService
 
     @Autowired
     private lateinit var allocationCsvLoader: AllocationCsvLoader
@@ -180,7 +193,7 @@ class LogisticsWorkflowIntegrationTest {
             )
         )
 
-        mockMvc.perform(
+        val acceptedResponse = mockMvc.perform(
             post("/api/logistics/allocate-and-sync")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
@@ -203,10 +216,24 @@ class LogisticsWorkflowIntegrationTest {
                     """.trimIndent()
                 )
         )
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.allocationRun.allocations[0].allocatedFromInventory").value(2))
-            .andExpect(jsonPath("$.stockSync.snapshotDate").value(today.toString()))
-            .andExpect(jsonPath("$.stockSync.lotCount").value(1))
+            .andExpect(status().isAccepted)
+            .andReturn()
+        val jobId = objectMapper.readValue(
+            acceptedResponse.response.contentAsString,
+            AllocationJobAccepted::class.java
+        ).jobId
+
+        await().atMost(Duration.ofSeconds(30)).untilAsserted {
+            mockMvc.perform(
+                org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .get("/api/logistics/allocate-and-sync/jobs/$jobId")
+            )
+                .andExpect(status().isOk)
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.result.allocationRun.allocations[0].allocatedFromInventory").value(2))
+                .andExpect(jsonPath("$.result.stockSync.snapshotDate").value(today.toString()))
+                .andExpect(jsonPath("$.result.stockSync.lotCount").value(1))
+        }
 
         val updatedStock = stockRepository.findAll().single()
         assertEquals(3, updatedStock.quantityOnHand)
@@ -454,6 +481,7 @@ class LogisticsWorkflowIntegrationTest {
                 )
             )
         )
+        stockProjectionService.rebuild(today)
 
         assertEquals(3, result.allocations.last().backorderedQuantity)
         assertEquals(
@@ -518,6 +546,7 @@ class LogisticsWorkflowIntegrationTest {
             )
         )
 
+        stockProjectionService.rebuild(today)
         val syncRequest = ProcessDailyStockRequest(today)
         dailyStockLedgerService.process(syncRequest)
         dailyStockLedgerService.process(syncRequest)
@@ -556,6 +585,7 @@ class LogisticsWorkflowIntegrationTest {
         )
         allocationService.calculateAllocation(orderRequest)
 
+        stockProjectionService.rebuild(today)
         dailyStockLedgerService.process(ProcessDailyStockRequest(today))
         dailyStockLedgerService.process(ProcessDailyStockRequest(today))
 
@@ -620,6 +650,7 @@ class LogisticsWorkflowIntegrationTest {
 
         assertEquals(4, allocation.allocatedFromInbound)
         assertEquals(0, allocation.backorderedQuantity)
+        stockProjectionService.rebuild(today)
         dailyStockLedgerService.process(ProcessDailyStockRequest(today))
         assertEquals(0, stockRepository.count())
     }

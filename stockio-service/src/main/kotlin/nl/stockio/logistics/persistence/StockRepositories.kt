@@ -35,6 +35,8 @@ interface StockDailySnapshotRepository : JpaRepository<StockDailySnapshotEntity,
     ): Int
 }
 
+interface AllocationJobResultRepository : JpaRepository<AllocationJobResultEntity, UUID>
+
 interface StockDailyLotSnapshotRepository :
     JpaRepository<StockDailyLotSnapshotEntity, StockDailyLotSnapshotId> {
     fun findAllBySnapshotDate(snapshotDate: java.time.LocalDate): List<StockDailyLotSnapshotEntity>

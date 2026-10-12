@@ -82,6 +82,16 @@ data class AllocationAndSyncResult(
     val stockSync: StockSyncResult
 )
 
+data class AllocationJobAccepted(
+    val jobId: UUID
+)
+
+data class AllocationJobStatus(
+    val jobId: UUID,
+    val status: String,
+    val result: AllocationAndSyncResult? = null
+)
+
 data class InboundShipment(
     @field:NotBlank
     val shipmentId: String,

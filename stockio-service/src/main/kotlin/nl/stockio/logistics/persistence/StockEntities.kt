@@ -84,6 +84,16 @@ class StockDailySnapshotEntity(
 )
 
 @Entity
+@Table(name = "allocation_job_result")
+class AllocationJobResultEntity(
+    @Id
+    @Column(name = "job_id", nullable = false)
+    var jobId: UUID = UUID.randomUUID(),
+    @Column(name = "result_json", nullable = false, columnDefinition = "TEXT")
+    var resultJson: String = ""
+)
+
+@Entity
 @IdClass(StockDailyLotSnapshotId::class)
 @Table(name = "stock_daily_lot_snapshots")
 class StockDailyLotSnapshotEntity(

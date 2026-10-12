@@ -46,8 +46,7 @@ class LogisticsAllocationService(
     private val stockRepository: StockRepository,
     private val stockReservationRepository: StockReservationRepository,
     private val inboundSupplyRepository: InboundSupplyRepository,
-    private val inboundReservationRepository: InboundReservationRepository,
-    private val stockProjectionService: StockProjectionService
+    private val inboundReservationRepository: InboundReservationRepository
 ) {
 
     // Allocation process for new demand orders
@@ -183,7 +182,6 @@ class LogisticsAllocationService(
             asOfDate = request.asOfDate,
             allocations = allocations
         )
-        stockProjectionService.rebuild(request.asOfDate)
         return result
     }
 
@@ -283,7 +281,6 @@ class LogisticsAllocationService(
             asOfDate = request.asOfDate,
             allocations = allocations
         )
-        stockProjectionService.rebuild(request.asOfDate)
         return result
     }
 
