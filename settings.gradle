@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+    plugins {
+        id 'org.springframework.boot' version '3.5.10'
+        id 'io.spring.dependency-management' version '1.1.7'
+    }
+}
+
+rootProject.name = 'stockio'
+
+// Keep logical project names independent of their physical module directories.
+include ':stockio-service', ':stockio-api'
+project(':stockio-service').projectDir = file('stockio-service')
+project(':stockio-api').projectDir = file('stockio-api')

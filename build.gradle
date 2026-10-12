@@ -1,0 +1,92 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' apply false
+    id 'io.spring.dependency-management' apply false
+    id 'org.jetbrains.kotlin.jvm' version '2.2.20' apply false
+    id 'org.jetbrains.kotlin.plugin.spring' version '2.2.20' apply false
+    id 'org.jetbrains.kotlin.plugin.jpa' version '2.2.20' apply false
+}
+
+ext {
+    set('springAiVersion', "1.1.2")
+}
+
+allprojects {
+    repositories {
+        mavenCentral()
+    }
+}
+
+subprojects {
+    apply plugin: 'org.springframework.boot'
+    apply plugin: 'java'
+    apply plugin: 'io.spring.dependency-management'
+    apply plugin: 'org.jetbrains.kotlin.jvm'
+    apply plugin: 'org.jetbrains.kotlin.plugin.spring'
+    apply plugin: 'org.jetbrains.kotlin.plugin.jpa'
+
+    kotlin {
+        jvmToolchain(21)
+    }
+
+    dependencies {
+        implementation 'org.jetbrains.kotlin:kotlin-reflect'
+        implementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
+    }
+
+    dependencyManagement {
+        imports {
+            mavenBom "org.springframework.ai:spring-ai-bom:${springAiVersion}"
+        }
+    }
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(21)
+        }
+    }
+
+    tasks.withType(Test) {
+        useJUnitPlatform()
+    }
+}
+
+project(":stockio-service") {
+    group = 'nl.stockio'
+    version = '0.0.1-SNAPSHOT'
+
+    springBoot {
+        mainClass = 'nl.stockio.McpServerRunnerKt'
+    }
+
+    dependencies {
+        implementation 'org.springframework.ai:spring-ai-starter-mcp-server'
+        implementation 'org.springframework.boot:spring-boot-starter-web'
+        implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+        implementation 'org.springframework.boot:spring-boot-starter-validation'
+        implementation 'org.flywaydb:flyway-core'
+        implementation 'org.flywaydb:flyway-database-postgresql'
+        implementation 'org.apache.poi:poi-ooxml:5.4.1'
+
+        runtimeOnly 'org.postgresql:postgresql'
+
+        testImplementation 'org.springframework.boot:spring-boot-starter-test'
+        testImplementation 'org.testcontainers:junit-jupiter'
+        testImplementation 'org.testcontainers:postgresql'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+
+}
+
+project(":stockio-api") {
+    group = 'nl.stockio.client'
+    version = '0.0.1-SNAPSHOT'
+
+    dependencies {
+        implementation 'org.springframework.ai:spring-ai-starter-mcp-client'
+        implementation 'org.springframework:spring-web'
+
+        testImplementation 'org.springframework.boot:spring-boot-starter-test'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+}

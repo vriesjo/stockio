@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: mcp
+  main:
+    web-application-type: none
+    banner-mode: off
+  ai:
+    openapi:
+      api-key: YOUR_API_KEY
+    mcp:
+      client:
+        stdio:
+          connections:
+            logistics-server:
+              command: java
+              args: [-jar, "../stockio-service/build/libs/stock-service-0.0.1-SNAPSHOT.jar"]
