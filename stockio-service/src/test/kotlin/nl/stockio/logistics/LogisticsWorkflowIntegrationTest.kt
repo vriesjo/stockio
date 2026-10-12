@@ -11,6 +11,8 @@ import nl.stockio.logistics.persistence.AllocationRecordRepository
 import nl.stockio.logistics.persistence.AllocationRunRepository
 import nl.stockio.logistics.persistence.AllocationSourceRepository
 import nl.stockio.logistics.persistence.OpenBackorderRepository
+import nl.stockio.logistics.persistence.StockDailySnapshotRepository
+import nl.stockio.logistics.persistence.StockDailyLotSnapshotRepository
 import nl.stockio.logistics.persistence.StockEntity
 import nl.stockio.logistics.persistence.StockRepository
 import nl.stockio.logistics.persistence.StockReservationEntity
@@ -72,6 +74,12 @@ class LogisticsWorkflowIntegrationTest {
     private lateinit var backorderRepository: OpenBackorderRepository
 
     @Autowired
+    private lateinit var stockDailyLotSnapshotRepository: StockDailyLotSnapshotRepository
+
+    @Autowired
+    private lateinit var stockDailySnapshotRepository: StockDailySnapshotRepository
+
+    @Autowired
     private lateinit var stockRepository: StockRepository
 
     @Autowired
@@ -91,8 +99,8 @@ class LogisticsWorkflowIntegrationTest {
 
     @BeforeEach
     fun clearDatabase() {
-        jdbcTemplate.update("DELETE FROM stock_daily_lot_snapshots")
-        jdbcTemplate.update("DELETE FROM stock_daily_snapshots")
+        stockDailyLotSnapshotRepository.deleteAll()
+        stockDailySnapshotRepository.deleteAll()
         jdbcTemplate.update("DELETE FROM inbound_reservation")
         jdbcTemplate.update("DELETE FROM inbound_supply")
         stockReservationRepository.deleteAll()
@@ -450,38 +458,23 @@ class LogisticsWorkflowIntegrationTest {
         assertEquals(3, result.allocations.last().backorderedQuantity)
         assertEquals(
             listOf(10, 6, 0),
-            jdbcTemplate.query(
-                """
-                    SELECT closing_stock
-                    FROM stock_daily_snapshots
-                    WHERE sku = ? AND warehouse_code = 'MAIN'
-                    ORDER BY snapshot_date
-                """.trimIndent(),
-                { rs, _ -> rs.getInt("closing_stock") },
-                "MAKI-ZALM"
-            )
+            stockDailySnapshotRepository
+                .findAllBySkuAndWarehouseCodeOrderBySnapshotDate("MAKI-ZALM", "MAIN")
+                .map { it.closingStock }
         )
         assertEquals(
             listOf(0, 4, 6),
-            jdbcTemplate.query(
-                """
-                    SELECT allocated_qty
-                    FROM stock_daily_snapshots
-                    WHERE sku = ? AND warehouse_code = 'MAIN'
-                    ORDER BY snapshot_date
-                """.trimIndent(),
-                { rs, _ -> rs.getInt("allocated_qty") },
-                "MAKI-ZALM"
-            )
+            stockDailySnapshotRepository
+                .findAllBySkuAndWarehouseCodeOrderBySnapshotDate("MAKI-ZALM", "MAIN")
+                .map { it.allocatedQuantity }
         )
         assertEquals(
             3,
-            jdbcTemplate.queryForObject(
-                "SELECT shortage_qty FROM stock_daily_snapshots WHERE sku = ? AND snapshot_date = ?",
-                Int::class.java,
+            stockDailySnapshotRepository.findBySnapshotDateAndSkuAndWarehouseCode(
+                today.plusDays(2),
                 "MAKI-ZALM",
-                today.plusDays(2)
-            ) ?: error("The backorder shortage snapshot is missing.")
+                "MAIN"
+            )?.shortageQuantity ?: error("The backorder shortage snapshot is missing.")
         )
         assertEquals(10, stockRepository.findAll().single().quantityOnHand)
     }

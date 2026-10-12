@@ -3,9 +3,12 @@ package nl.stockio.logistics.service
 import nl.stockio.logistics.persistence.InboundReservationRepository
 import nl.stockio.logistics.persistence.InboundSupplyRepository
 import nl.stockio.logistics.persistence.OpenBackorderRepository
+import nl.stockio.logistics.persistence.StockDailyLotSnapshotEntity
+import nl.stockio.logistics.persistence.StockDailyLotSnapshotRepository
+import nl.stockio.logistics.persistence.StockDailySnapshotEntity
+import nl.stockio.logistics.persistence.StockDailySnapshotRepository
 import nl.stockio.logistics.persistence.StockRepository
 import nl.stockio.logistics.persistence.StockReservationRepository
-import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.LocalDate
@@ -17,7 +20,8 @@ class StockProjectionService(
     private val inboundSupplyRepository: InboundSupplyRepository,
     private val inboundReservationRepository: InboundReservationRepository,
     private val backorderRepository: OpenBackorderRepository,
-    private val jdbcTemplate: JdbcTemplate
+    private val stockDailyLotSnapshotRepository: StockDailyLotSnapshotRepository,
+    private val stockDailySnapshotRepository: StockDailySnapshotRepository
 ) {
 
     @Transactional
@@ -100,8 +104,8 @@ class StockProjectionService(
             backordersByDate.keys.maxOfOrNull { it.date } ?: startDate
         )
 
-        jdbcTemplate.update("DELETE FROM stock_daily_lot_snapshots WHERE snapshot_date >= ?", startDate)
-        jdbcTemplate.update("DELETE FROM stock_daily_snapshots WHERE snapshot_date >= ?", startDate)
+        stockDailyLotSnapshotRepository.deleteAllBySnapshotDateGreaterThanEqual(startDate)
+        stockDailySnapshotRepository.deleteAllBySnapshotDateGreaterThanEqual(startDate)
         if (scopes.isEmpty()) return
 
         scopes.forEach { (sku, warehouseCode) ->
@@ -142,44 +146,36 @@ class StockProjectionService(
                 val shortage = backordersByDate[ScopeDate(sku, warehouseCode, date)] ?: 0
                 val demand = allocatedQuantity + shortage
                 val closing = skuLots.values.sumOf { it.onHand.toLong() }.toIntExact()
-                jdbcTemplate.update(
-                    """
-                        INSERT INTO stock_daily_snapshots
-                            (snapshot_date, sku, warehouse_code, opening_stock, inbound_qty, demand_qty,
-                             allocated_qty, closing_stock, shortage_qty)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """.trimIndent(),
-                    date,
-                    sku,
-                    warehouseCode,
-                    opening,
-                    inboundQuantity.toIntExact(),
-                    demand.toIntExact(),
-                    allocatedQuantity.toIntExact(),
-                    closing,
-                    shortage
+                stockDailySnapshotRepository.save(
+                    StockDailySnapshotEntity(
+                        snapshotDate = date,
+                        sku = sku,
+                        warehouseCode = warehouseCode,
+                        openingStock = opening,
+                        inboundQuantity = inboundQuantity.toIntExact(),
+                        demandQuantity = demand.toIntExact(),
+                        allocatedQuantity = allocatedQuantity.toIntExact(),
+                        closingStock = closing,
+                        shortageQuantity = shortage
+                    )
                 )
 
-                skuLots.forEach { (key, state) ->
-                    jdbcTemplate.update(
-                        """
-                            INSERT INTO stock_daily_lot_snapshots
-                                (snapshot_date, sku, warehouse_code, lot_id, received_date, opening_stock,
-                                 inbound_qty, allocated_qty, closing_stock, quantity_reserved)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """.trimIndent(),
-                        date,
-                        sku,
-                        warehouseCode,
-                        key.lotId,
-                        state.receivedDate,
-                        state.openingToday,
-                        state.inboundToday,
-                        state.allocatedToday,
-                        state.onHand,
-                        state.reserved
-                    )
-                }
+                stockDailyLotSnapshotRepository.saveAll(
+                    skuLots.map { (key, state) ->
+                        StockDailyLotSnapshotEntity(
+                            snapshotDate = date,
+                            sku = sku,
+                            warehouseCode = warehouseCode,
+                            lotId = key.lotId,
+                            receivedDate = state.receivedDate,
+                            openingStock = state.openingToday,
+                            inboundQuantity = state.inboundToday,
+                            allocatedQuantity = state.allocatedToday,
+                            closingStock = state.onHand,
+                            quantityReserved = state.reserved
+                        )
+                    }
+                )
                 skuLots.values.forEach { it.openingToday = it.onHand }
                 date = date.plusDays(1)
             }

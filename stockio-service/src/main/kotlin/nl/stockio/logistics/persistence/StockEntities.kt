@@ -3,11 +3,20 @@ package nl.stockio.logistics.persistence
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
 import jakarta.persistence.Id
+import jakarta.persistence.IdClass
 import jakarta.persistence.Table
 import jakarta.persistence.UniqueConstraint
+import java.io.Serializable
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
+
+data class StockDailyLotSnapshotId(
+    var snapshotDate: LocalDate = LocalDate.MIN,
+    var sku: String = "",
+    var warehouseCode: String = "",
+    var lotId: String = ""
+) : Serializable
 
 @Entity
 @Table(
@@ -40,6 +49,71 @@ class StockEntity(
     val quantityAvailable: Int
         get() = quantityOnHand - quantityReserved
 }
+
+@Entity
+@Table(
+    name = "stock_daily_snapshots",
+    uniqueConstraints = [UniqueConstraint(
+        name = "uq_daily_snapshot",
+        columnNames = ["snapshot_date", "sku", "warehouse_code"]
+    )]
+)
+class StockDailySnapshotEntity(
+    @Id
+    var id: UUID = UUID.randomUUID(),
+    @Column(name = "snapshot_date", nullable = false)
+    var snapshotDate: LocalDate = LocalDate.now(),
+    @Column(nullable = false, length = 64)
+    var sku: String = "",
+    @Column(name = "warehouse_code", nullable = false, length = 50)
+    var warehouseCode: String = "MAIN",
+    @Column(name = "opening_stock", nullable = false)
+    var openingStock: Int = 0,
+    @Column(name = "inbound_qty", nullable = false)
+    var inboundQuantity: Int = 0,
+    @Column(name = "demand_qty", nullable = false)
+    var demandQuantity: Int = 0,
+    @Column(name = "allocated_qty", nullable = false)
+    var allocatedQuantity: Int = 0,
+    @Column(name = "closing_stock", nullable = false)
+    var closingStock: Int = 0,
+    @Column(name = "shortage_qty", nullable = false)
+    var shortageQuantity: Int = 0,
+    @Column(name = "created_at", nullable = false)
+    var createdAt: Instant = Instant.now()
+)
+
+@Entity
+@IdClass(StockDailyLotSnapshotId::class)
+@Table(name = "stock_daily_lot_snapshots")
+class StockDailyLotSnapshotEntity(
+    @Id
+    @Column(name = "snapshot_date", nullable = false)
+    var snapshotDate: LocalDate = LocalDate.now(),
+    @Id
+    @Column(nullable = false, length = 64)
+    var sku: String = "",
+    @Id
+    @Column(name = "warehouse_code", nullable = false, length = 50)
+    var warehouseCode: String = "MAIN",
+    @Id
+    @Column(name = "lot_id", nullable = false, length = 64)
+    var lotId: String = "",
+    @Column(name = "received_date", nullable = false)
+    var receivedDate: LocalDate = LocalDate.now(),
+    @Column(name = "opening_stock", nullable = false)
+    var openingStock: Int = 0,
+    @Column(name = "inbound_qty", nullable = false)
+    var inboundQuantity: Int = 0,
+    @Column(name = "allocated_qty", nullable = false)
+    var allocatedQuantity: Int = 0,
+    @Column(name = "closing_stock", nullable = false)
+    var closingStock: Int = 0,
+    @Column(name = "quantity_reserved", nullable = false)
+    var quantityReserved: Int = 0,
+    @Column(name = "created_at", nullable = false)
+    var createdAt: Instant = Instant.now()
+)
 
 @Entity
 @Table(

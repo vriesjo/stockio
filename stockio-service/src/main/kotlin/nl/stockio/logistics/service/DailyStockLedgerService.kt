@@ -5,10 +5,11 @@ import nl.stockio.logistics.domain.StockSyncResult
 import nl.stockio.logistics.persistence.InboundReservationRepository
 import nl.stockio.logistics.persistence.InboundSupplyRepository
 import nl.stockio.logistics.persistence.StockEntity
+import nl.stockio.logistics.persistence.StockDailySnapshotRepository
+import nl.stockio.logistics.persistence.StockDailyLotSnapshotRepository
 import nl.stockio.logistics.persistence.StockRepository
 import nl.stockio.logistics.persistence.StockReservationEntity
 import nl.stockio.logistics.persistence.StockReservationRepository
-import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
@@ -17,10 +18,11 @@ import java.time.LocalDate
 @Service
 class DailyStockLedgerService(
     private val stockRepository: StockRepository,
+    private val stockDailyLotSnapshotRepository: StockDailyLotSnapshotRepository,
     private val stockReservationRepository: StockReservationRepository,
     private val inboundSupplyRepository: InboundSupplyRepository,
     private val inboundReservationRepository: InboundReservationRepository,
-    private val jdbcTemplate: JdbcTemplate
+    private val stockDailySnapshotRepository: StockDailySnapshotRepository
 ) {
 
     @Transactional
@@ -29,42 +31,28 @@ class DailyStockLedgerService(
             "Only today's stock snapshot can be synchronized to live stock."
         }
         // Validate that the snapshot exists and is consistent with lot-level snapshots
-        val snapshots = jdbcTemplate.query(
-            """
-                SELECT sku, warehouse_code, closing_stock
-                FROM stock_daily_snapshots
-                WHERE snapshot_date = ?
-            """.trimIndent(),
-            { rs, _ ->
+        val snapshots = stockDailySnapshotRepository.findAllBySnapshotDate(request.snapshotDate)
+            .map {
                 AggregateSnapshot(
-                    sku = rs.getString("sku"),
-                    warehouseCode = rs.getString("warehouse_code"),
-                    closingStock = rs.getInt("closing_stock")
+                    sku = it.sku,
+                    warehouseCode = it.warehouseCode,
+                    closingStock = it.closingStock
                 )
-            },
-            request.snapshotDate
-        )
+            }
         require(snapshots.isNotEmpty()) {
             "No stock snapshot exists for ${request.snapshotDate}."
         }
-        val lotSnapshots = jdbcTemplate.query(
-            """
-                SELECT sku, warehouse_code, lot_id, closing_stock, quantity_reserved, received_date
-                FROM stock_daily_lot_snapshots
-                WHERE snapshot_date = ?
-            """.trimIndent(),
-            { rs, _ ->
+        val lotSnapshots = stockDailyLotSnapshotRepository.findAllBySnapshotDate(request.snapshotDate)
+            .map {
                 LotSnapshot(
-                    sku = rs.getString("sku"),
-                    warehouseCode = rs.getString("warehouse_code"),
-                    lotId = rs.getString("lot_id"),
-                    receivedDate = rs.getDate("received_date").toLocalDate(),
-                    closingStock = rs.getInt("closing_stock"),
-                    quantityReserved = rs.getInt("quantity_reserved")
+                    sku = it.sku,
+                    warehouseCode = it.warehouseCode,
+                    lotId = it.lotId,
+                    receivedDate = it.receivedDate,
+                    closingStock = it.closingStock,
+                    quantityReserved = it.quantityReserved
                 )
-            },
-            request.snapshotDate
-        )
+            }
         val aggregateByScope = snapshots.associateBy { it.sku to it.warehouseCode }
         require(lotSnapshots.all { (it.sku to it.warehouseCode) in aggregateByScope }) {
             "Lot-level snapshots contain a SKU/warehouse scope with no aggregate daily snapshot."
