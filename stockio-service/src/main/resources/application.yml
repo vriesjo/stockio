@@ -30,7 +30,7 @@ server:
   address: ${SERVER_ADDRESS:127.0.0.1}
   port: ${SERVER_PORT:8080}
 
-logistics:
+stockio:
   allocation:
     csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
   report:
