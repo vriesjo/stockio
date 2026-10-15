@@ -7,11 +7,19 @@ import nl.stockio.logistics.domain.AllocationRequest
 import nl.stockio.logistics.domain.AllocationRunResult
 import nl.stockio.logistics.domain.AllocationRunType
 import nl.stockio.logistics.domain.AllocationSource
-import nl.stockio.logistics.domain.AllocationSourceType
 import nl.stockio.logistics.domain.AllocationStatus
 import nl.stockio.logistics.domain.BackorderFulfillmentRequest
 import nl.stockio.logistics.domain.DemandOrder
 import nl.stockio.logistics.domain.InboundShipment
+import nl.stockio.logistics.domain.allocation.AllocationCalculation
+import nl.stockio.logistics.domain.allocation.AllocationCalculationResult
+import nl.stockio.logistics.domain.allocation.AllocationOrder
+import nl.stockio.logistics.domain.allocation.InboundAllocationPolicy
+import nl.stockio.logistics.domain.allocation.InboundReservationChange
+import nl.stockio.logistics.domain.allocation.InboundSupplyState
+import nl.stockio.logistics.domain.allocation.InventoryAllocationPolicy
+import nl.stockio.logistics.domain.allocation.InventoryLotState
+import nl.stockio.logistics.domain.allocation.StockReservationChange
 import nl.stockio.logistics.persistence.AllocationRecordEntity
 import nl.stockio.logistics.persistence.AllocationRecordRepository
 import nl.stockio.logistics.persistence.AllocationRunEntity
@@ -33,7 +41,6 @@ import org.springframework.transaction.annotation.Transactional
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
-import kotlin.math.min
 
 @Service
 class LogisticsAllocationService(
@@ -49,11 +56,14 @@ class LogisticsAllocationService(
     private val inboundReservationRepository: InboundReservationRepository
 ) {
 
+    private val allocationCalculation = AllocationCalculation(
+        InventoryAllocationPolicy(),
+        InboundAllocationPolicy()
+    )
+
     // Allocation process for new demand orders
     // This method validates the request, checks for duplicate order IDs, and ensures that the orders have not been processed before.
-    // It then registers inbound supply, locks stock and inbound supply, and allocates inventory and inbound supply to fulfill the demand orders.
-    // The allocations are persisted, and the stock projection is rebuilt.
-    // Rebuilding the stock projection ensures that the system has an up-to-date view of available stock after the allocation process.
+    // It registers inbound supply, loads and locks resources, then calculates and persists the allocation.
     // If requested multiple times with the same requestId and identical request content,
     // the method will return the previous allocation run result instead of recalculating.
     @Transactional
@@ -82,93 +92,38 @@ class LogisticsAllocationService(
         registerInboundSupply(request.inboundShipments)
         val inboundSupplyById = inboundSupplyRepository.lockAllUnreceived().associateBy { it.shipmentId }
         val stockBySku = lockStock(request.demandOrders.map { it.sku }.distinct(), request.asOfDate)
-        // Load existing reservations for the orders being processed, both for stock and inbound supply.
-        val reservationsByOrderAndStock = loadReservations(orderIds)
-
-        // Load existing inbound reservations for the orders being processed, which helps in tracking allocations from inbound shipments.
-        // This is important for ensuring that the system does not over-allocate from inbound shipments
-        // that have already been reserved for other orders.
-        val inboundReservationsByOrderAndShipment = loadInboundReservations(orderIds)
-
-        // Filter out inbound supply that has already been received, as it is no longer available for allocation.
-        // This ensures that only inbound shipments that are still expected to arrive are considered for fulfilling demand orders.
-        val availableSupply = inboundSupplyById.values.filterNot { it.received }
-        val inboundRemaining = availableSupply.associate { it.shipmentId to it.quantityAvailable }.toMutableMap()
-        val inboundBySku = availableSupply.groupBy { it.sku }.mapValues { (_, shipments) ->
-            shipments.sortedWith(compareBy<InboundSupplyEntity> { it.expectedArrivalDate }.thenBy { it.shipmentId })
-        }
-
-        val sortedOrders = request.demandOrders.withIndex()
-            .sortedWith(
-                compareBy<IndexedValue<DemandOrder>> { it.value.priority }
-                    .thenBy { it.value.placedDate }
-                    .thenBy { it.index }
-            )
-            .map { it.value }
-
-        // Allocate inventory and inbound supply for each order in the sorted list,
-        val allocations = sortedOrders.map { order ->
-            val sources = mutableListOf<AllocationSource>()
-            var remaining = order.requestedQuantity
-            // Allocate from inventory first, then from inbound supply, updating the remaining quantity to be fulfilled.
-            val fromInventory = allocateInventory(
-                order.sku,
-                remaining,
-                stockBySku,
-                sources,
-                order.orderId,
-                reservationsByOrderAndStock,
-                order.requiredDeliveryDate.coerceAtLeast(request.asOfDate)
-            ).also { remaining -= it }
-            // Allocate from inbound supply, considering only shipments that are expected to arrive by the required delivery date.
-            val fromInbound = allocateInbound(
-                order.sku,
-                order.requiredDeliveryDate,
-                remaining,
-                inboundBySku,
-                inboundRemaining,
-                sources,
-                order.orderId,
-                order.requiredDeliveryDate.coerceAtLeast(request.asOfDate),
-                inboundReservationsByOrderAndShipment
-            ).also { remaining -= it }
-
-            AllocationRecord(
-                orderId = order.orderId,
-                customer = order.customer,
-                sku = order.sku,
-                priority = order.priority,
-                placedDate = order.placedDate,
-                requiredDeliveryDate = order.requiredDeliveryDate,
-                requestedQuantity = order.requestedQuantity,
-                allocatedFromInventory = fromInventory,
-                allocatedFromInbound = fromInbound,
-                backorderedQuantity = remaining,
-                status = when {
-                    remaining == 0 -> AllocationStatus.ALLOCATED
-                    fromInventory + fromInbound > 0 -> AllocationStatus.PARTIALLY_BACKORDERED
-                    else -> AllocationStatus.BACKORDERED
-                },
-                sources = sources
-            )
-        }
-
+        val calculation = allocationCalculation.calculate(
+            orders = request.demandOrders.map {
+                AllocationOrder(
+                    orderId = it.orderId,
+                    customer = it.customer,
+                    sku = it.sku,
+                    quantity = it.requestedQuantity,
+                    priority = it.priority,
+                    placedDate = it.placedDate,
+                    requiredDeliveryDate = it.requiredDeliveryDate
+                )
+            },
+            asOfDate = request.asOfDate,
+            inventory = stockBySku.values.flatten().map(::toInventoryLotState),
+            inboundSupply = inboundSupplyById.values.filterNot { it.received }.map(::toInboundSupplyState),
+            stockReservations = loadReservations(orderIds).values.map(::toStockReservationChange),
+            inboundReservations = loadInboundReservations(orderIds).values.map(::toInboundReservationChange),
+            registerBackorders = true
+        )
         val now = Instant.now()
-        // Persist reservations and create backorder records for any orders not fully fulfilled.
-        stockReservationRepository.saveAll(reservationsByOrderAndStock.values)
-        inboundSupplyRepository.saveAll(inboundSupplyById.values)
-        inboundReservationRepository.saveAll(inboundReservationsByOrderAndShipment.values)
+        persistCalculationChanges(calculation, stockBySku, inboundSupplyById, now)
         backorderRepository.saveAll(
-            allocations.filter { it.backorderedQuantity > 0 }.map { allocation ->
+            calculation.backordersToRegister.map { backorder ->
                 OpenBackorderEntity(
-                    orderId = allocation.orderId,
-                    customer = allocation.customer,
-                    sku = allocation.sku,
-                    priority = allocation.priority,
-                    placedDate = allocation.placedDate,
-                    requiredDeliveryDate = allocation.requiredDeliveryDate,
-                    originalQuantity = allocation.requestedQuantity,
-                    remainingQuantity = allocation.backorderedQuantity,
+                    orderId = backorder.orderId,
+                    customer = backorder.customer,
+                    sku = backorder.sku,
+                    priority = backorder.priority,
+                    placedDate = backorder.placedDate,
+                    requiredDeliveryDate = backorder.requiredDeliveryDate,
+                    originalQuantity = backorder.originalQuantity,
+                    remainingQuantity = backorder.quantity,
                     createdAt = now,
                     updatedAt = now
                 )
@@ -180,7 +135,7 @@ class LogisticsAllocationService(
             requestHash = requestHash,
             runType = AllocationRunType.NEW_DEMAND,
             asOfDate = request.asOfDate,
-            allocations = allocations
+            allocations = calculation.allocations
         )
         return result
     }
@@ -204,76 +159,50 @@ class LogisticsAllocationService(
         registerInboundSupply(request.inboundShipments)
         val inboundSupplyById = inboundSupplyRepository.lockAllUnreceived().associateBy { it.shipmentId }
         val stockBySku = lockStock(pendingBackorders.map { it.sku }.distinct(), request.asOfDate)
-        val reservationsByOrderAndStock = loadReservations(pendingBackorders.map { it.orderId })
-        val inboundReservationsByOrderAndShipment = loadInboundReservations(pendingBackorders.map { it.orderId })
         val eligibleSupply = inboundSupplyById.values.filter {
             !it.received && it.expectedArrivalDate <= request.asOfDate
         }
-        val inboundRemaining = eligibleSupply.associate { it.shipmentId to it.quantityAvailable }.toMutableMap()
-        val inboundBySku = eligibleSupply.groupBy { it.sku }.mapValues { (_, shipments) ->
-            shipments.sortedWith(compareBy<InboundSupplyEntity> { it.expectedArrivalDate }.thenBy { it.shipmentId })
-        }
-
-        val now = Instant.now()
-        val allocations = pendingBackorders
-            .mapIndexed { index, backorder ->
-                val sources = mutableListOf<AllocationSource>()
-                val quantityBeforeFulfillment = backorder.remainingQuantity
-                var remaining = quantityBeforeFulfillment
-                val fulfillmentDate = backorder.requiredDeliveryDate.coerceAtLeast(request.asOfDate)
-                val fromInventory = allocateInventory(
-                    backorder.sku,
-                    remaining,
-                    stockBySku,
-                    sources,
-                    backorder.orderId,
-                    reservationsByOrderAndStock,
-                    fulfillmentDate
-                ).also { remaining -= it }
-                val fromInbound = allocateInbound(
-                    backorder.sku,
-                    backorder.requiredDeliveryDate,
-                    remaining,
-                    inboundBySku,
-                    inboundRemaining,
-                    sources,
-                    backorder.orderId,
-                    fulfillmentDate,
-                    inboundReservationsByOrderAndShipment
-                ).also { remaining -= it }
-                val allocated = fromInventory + fromInbound
-
-                if (remaining == 0) {
-                    backorderRepository.delete(backorder)
-                } else {
-                    backorder.remainingQuantity = remaining
-                    backorder.updatedAt = now
-                    backorderRepository.save(backorder)
-                }
-
-                AllocationRecord(
-                    orderId = backorder.orderId,
-                    customer = backorder.customer,
-                    sku = backorder.sku,
-                    priority = backorder.priority,
-                    placedDate = backorder.placedDate,
-                    requiredDeliveryDate = backorder.requiredDeliveryDate,
-                    requestedQuantity = quantityBeforeFulfillment,
-                    allocatedFromInventory = fromInventory,
-                    allocatedFromInbound = fromInbound,
-                    backorderedQuantity = remaining,
-                    status = when {
-                        remaining == 0 -> AllocationStatus.FULFILLED
-                        allocated > 0 -> AllocationStatus.PARTIALLY_FULFILLED
-                        else -> AllocationStatus.BACKORDERED
-                    },
-                    sources = sources
+        val orderIds = pendingBackorders.map { it.orderId }
+        val calculation = allocationCalculation.calculate(
+            orders = pendingBackorders.map {
+                AllocationOrder(
+                    orderId = it.orderId,
+                    customer = it.customer,
+                    sku = it.sku,
+                    quantity = it.remainingQuantity,
+                    priority = it.priority,
+                    placedDate = it.placedDate,
+                    requiredDeliveryDate = it.requiredDeliveryDate
                 )
+            },
+            asOfDate = request.asOfDate,
+            inventory = stockBySku.values.flatten().map(::toInventoryLotState),
+            inboundSupply = eligibleSupply.map(::toInboundSupplyState),
+            stockReservations = loadReservations(orderIds).values.map(::toStockReservationChange),
+            inboundReservations = loadInboundReservations(orderIds).values.map(::toInboundReservationChange),
+            registerBackorders = false
+        )
+        val now = Instant.now()
+        val backordersByOrderId = pendingBackorders.associateBy { it.orderId }
+        val allocations = calculation.allocations.map { allocation ->
+            val backorder = backordersByOrderId.getValue(allocation.orderId)
+            val allocated = allocation.allocatedFromInventory + allocation.allocatedFromInbound
+            if (allocation.backorderedQuantity == 0) {
+                backorderRepository.delete(backorder)
+            } else {
+                backorder.remainingQuantity = allocation.backorderedQuantity
+                backorder.updatedAt = now
+                backorderRepository.save(backorder)
             }
-
-        stockReservationRepository.saveAll(reservationsByOrderAndStock.values)
-        inboundSupplyRepository.saveAll(inboundSupplyById.values)
-        inboundReservationRepository.saveAll(inboundReservationsByOrderAndShipment.values)
+            allocation.copy(
+                status = when {
+                    allocation.backorderedQuantity == 0 -> AllocationStatus.FULFILLED
+                    allocated > 0 -> AllocationStatus.PARTIALLY_FULFILLED
+                    else -> AllocationStatus.BACKORDERED
+                }
+            )
+        }
+        persistCalculationChanges(calculation, stockBySku, inboundSupplyById, now)
         val result = persistRun(
             requestId = request.requestId,
             requestHash = requestHash,
@@ -332,90 +261,83 @@ class LogisticsAllocationService(
         )
     }
 
-    private fun allocateInventory(
-        sku: String,
-        requested: Int,
-        lotsBySku: Map<String, List<StockEntity>>,
-        sources: MutableList<AllocationSource>,
-        orderId: String,
-        reservationsByOrderAndStock: MutableMap<Pair<String, UUID>, StockReservationEntity>,
-        deliveryDate: java.time.LocalDate
-    ): Int {
-        var remaining = requested
-        // Iterate over the lots for the given SKU,
-        // allocating from inventory until the requested quantity is fulfilled
-        // or there are no more available lots.
-        for (lot in lotsBySku[sku].orEmpty()) {
-            if (remaining == 0) break
-            val available = lot.quantityAvailable
-            val allocated = min(remaining, available)
-            if (allocated > 0) {
-                lot.quantityReserved += allocated
-                val key = orderId to lot.id
-                val reservation = reservationsByOrderAndStock.getOrPut(key) {
-                    StockReservationEntity(
-                        orderId = orderId,
-                        stockId = lot.id,
-                        requiredDeliveryDate = deliveryDate
-                    )
-                }
-                reservation.quantity += allocated
-                reservation.requiredDeliveryDate = deliveryDate
-                remaining -= allocated
-                sources += AllocationSource(
-                    sourceType = AllocationSourceType.INVENTORY,
-                    sourceId = lot.lotId,
-                    quantity = allocated,
-                    sourceDate = lot.receivedDate,
-                    warehouseLocation = lot.warehouseCode
-                )
-            }
-        }
-        return requested - remaining
-    }
+    private fun toInventoryLotState(stock: StockEntity) = InventoryLotState(
+        stockId = stock.id,
+        sku = stock.sku,
+        lotId = stock.lotId,
+        warehouseCode = stock.warehouseCode,
+        receivedDate = stock.receivedDate,
+        quantityOnHand = stock.quantityOnHand,
+        quantityReserved = stock.quantityReserved
+    )
 
-    private fun allocateInbound(
-        sku: String,
-        latestArrivalDate: java.time.LocalDate,
-        requested: Int,
-        shipmentsBySku: Map<String, List<InboundSupplyEntity>>,
-        remainingByShipment: MutableMap<String, Int>,
-        sources: MutableList<AllocationSource>,
-        orderId: String,
-        deliveryDate: java.time.LocalDate,
-        reservationsByOrderAndShipment: MutableMap<Pair<String, String>, InboundReservationEntity>
-    ): Int {
-        var remaining = requested
-        // Allocate from reserved inbound supply only when it arrives by the required delivery date.
-        for (shipment in shipmentsBySku[sku].orEmpty()) {
-            if (remaining == 0) break
-            if (shipment.expectedArrivalDate > latestArrivalDate) continue
-            val available = remainingByShipment.getValue(shipment.shipmentId)
-            val allocated = min(remaining, available)
-            if (allocated > 0) {
-                remainingByShipment[shipment.shipmentId] = available - allocated
-                shipment.quantityReserved += allocated
-                val key = orderId to shipment.shipmentId
-                val reservation = reservationsByOrderAndShipment.getOrPut(key) {
-                    InboundReservationEntity(
-                        orderId = orderId,
-                        shipmentId = shipment.shipmentId,
-                        requiredDeliveryDate = deliveryDate
-                    )
-                }
-                reservation.quantity += allocated
-                reservation.requiredDeliveryDate = deliveryDate
-                remaining -= allocated
-                sources += AllocationSource(
-                    sourceType = AllocationSourceType.INBOUND,
-                    sourceId = shipment.shipmentId,
-                    quantity = allocated,
-                    sourceDate = shipment.expectedArrivalDate,
-                    warehouseLocation = shipment.warehouseCode
+    private fun toInboundSupplyState(supply: InboundSupplyEntity) = InboundSupplyState(
+        shipmentId = supply.shipmentId,
+        sku = supply.sku,
+        warehouseCode = supply.warehouseCode,
+        expectedQuantity = supply.expectedQuantity,
+        expectedArrivalDate = supply.expectedArrivalDate,
+        quantityReserved = supply.quantityReserved
+    )
+
+    private fun toStockReservationChange(reservation: StockReservationEntity) = StockReservationChange(
+        id = reservation.id,
+        orderId = reservation.orderId,
+        stockId = reservation.stockId,
+        quantity = reservation.quantity,
+        requiredDeliveryDate = reservation.requiredDeliveryDate,
+        createdAt = reservation.createdAt
+    )
+
+    private fun toInboundReservationChange(reservation: InboundReservationEntity) = InboundReservationChange(
+        id = reservation.id,
+        orderId = reservation.orderId,
+        shipmentId = reservation.shipmentId,
+        quantity = reservation.quantity,
+        requiredDeliveryDate = reservation.requiredDeliveryDate,
+        createdAt = reservation.createdAt
+    )
+
+    private fun persistCalculationChanges(
+        calculation: AllocationCalculationResult,
+        stockBySku: Map<String, List<StockEntity>>,
+        inboundSupplyById: Map<String, InboundSupplyEntity>,
+        now: Instant
+    ) {
+        val stockById = stockBySku.values.flatten().associateBy { it.id }
+        calculation.inventoryLots.forEach { lot ->
+            stockById.getValue(lot.stockId).quantityReserved = lot.quantityReserved
+        }
+        calculation.inboundSupplies.forEach { supply ->
+            inboundSupplyById.getValue(supply.shipmentId).quantityReserved = supply.quantityReserved
+        }
+        stockReservationRepository.saveAll(
+            calculation.stockReservations.map { reservation ->
+                StockReservationEntity(
+                    id = reservation.id ?: UUID.randomUUID(),
+                    orderId = reservation.orderId,
+                    stockId = reservation.stockId,
+                    quantity = reservation.quantity,
+                    requiredDeliveryDate = reservation.requiredDeliveryDate,
+                    createdAt = reservation.createdAt ?: now
                 )
             }
-        }
-        return requested - remaining
+        )
+        inboundSupplyRepository.saveAll(
+            calculation.inboundSupplies.map { inboundSupplyById.getValue(it.shipmentId) }
+        )
+        inboundReservationRepository.saveAll(
+            calculation.inboundReservations.map { reservation ->
+                InboundReservationEntity(
+                    id = reservation.id ?: UUID.randomUUID(),
+                    orderId = reservation.orderId,
+                    shipmentId = reservation.shipmentId,
+                    quantity = reservation.quantity,
+                    requiredDeliveryDate = reservation.requiredDeliveryDate,
+                    createdAt = reservation.createdAt ?: now
+                )
+            }
+        )
     }
 
     private fun persistRun(
