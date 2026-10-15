@@ -1,6 +1,11 @@
-package nl.stockio.allocation
+package nl.stockio.allocation.domain.service
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import java.nio.file.Files
+import java.nio.file.Path
+import java.time.Duration
+import java.time.LocalDate
+import java.util.UUID
 import nl.stockio.allocation.domain.bean.AllocationJobAccepted
 import nl.stockio.allocation.domain.bean.AllocationRequest
 import nl.stockio.allocation.domain.bean.AllocationRunType
@@ -8,6 +13,9 @@ import nl.stockio.allocation.domain.bean.AllocationStatus
 import nl.stockio.allocation.domain.bean.DemandOrder
 import nl.stockio.allocation.domain.bean.InboundShipment
 import nl.stockio.allocation.domain.bean.ProcessDailyStockRequest
+import nl.stockio.allocation.domain.processor.ExcelReportProcessor
+import nl.stockio.allocation.domain.processor.StockLedgerProcessor
+import nl.stockio.allocation.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.infra.AllocationRecordRepository
 import nl.stockio.allocation.infra.AllocationRunRepository
 import nl.stockio.allocation.infra.AllocationSourceRepository
@@ -17,16 +25,9 @@ import nl.stockio.allocation.infra.StockDailySnapshotRepository
 import nl.stockio.allocation.infra.StockEntity
 import nl.stockio.allocation.infra.StockRepository
 import nl.stockio.allocation.infra.StockReservationRepository
-import nl.stockio.allocation.domain.service.AllocationExcelService
-import nl.stockio.allocation.domain.processor.StockLedgerProcessor
-import nl.stockio.allocation.domain.processor.ExcelReportProcessor
-import nl.stockio.allocation.domain.service.AllocationService
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
-import org.awaitility.Awaitility.await
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertThrows
-import org.junit.jupiter.api.Assertions.assertTrue
+import org.awaitility.Awaitility
+import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -39,18 +40,11 @@ import org.springframework.test.annotation.DirtiesContext
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
-import java.nio.file.Files
-import java.nio.file.Path
-import java.time.Duration
-import java.time.LocalDate
-import java.util.UUID
-import nl.stockio.allocation.domain.service.AllocationRunService
 
 @Testcontainers
 @SpringBootTest(
@@ -61,7 +55,7 @@ import nl.stockio.allocation.domain.service.AllocationRunService
 )
 @AutoConfigureMockMvc
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-class StockioAllocationIntegrationTest {
+class AllocationIntegrationTest {
 
     @Autowired
     private lateinit var allocationService: AllocationService
@@ -135,8 +129,8 @@ class StockioAllocationIntegrationTest {
     fun `flyway seeds active products with generated SKUs`() {
         val productCount = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM products", Int::class.java)
             ?: error("Flyway product count query returned no result.")
-        assertEquals(32, productCount)
-        assertEquals(
+        Assertions.assertEquals(32, productCount)
+        Assertions.assertEquals(
             295L,
             jdbcTemplate.queryForObject(
                 "SELECT price_cents FROM products WHERE sku = ?",
@@ -144,7 +138,7 @@ class StockioAllocationIntegrationTest {
                 "OZEKI-SAKE-DRY"
             ) ?: error("The seeded Ozeki product has no price.")
         )
-        assertEquals(
+        Assertions.assertEquals(
             "180:ml",
             jdbcTemplate.queryForObject(
                 "SELECT concat(attributes ->> 'content', ':', attributes ->> 'unit') FROM products WHERE sku = ?",
@@ -169,19 +163,25 @@ class StockioAllocationIntegrationTest {
 
         val request = allocationExcelService.loadCsvAndCreateAllocationRequest(csvPath        )
 
-        assertEquals(LocalDate.now(), request.asOfDate)
-        assertEquals("MAKI-ZALM", request.demandOrders.single().sku)
-        assertEquals(327, request.demandOrders.single().requestedQuantity)
-        assertEquals(LocalDate.parse("2024-01-01"), request.demandOrders.single().placedDate)
-        assertEquals(request.demandOrders.single().placedDate, request.demandOrders.single().requiredDeliveryDate)
-        assertEquals(1, request.demandOrders.single().priority)
-        assertTrue(request.demandOrders.single().customer.isNotBlank())
-        assertEquals(request.demandOrders.single().orderId, UUID.fromString(request.demandOrders.single().orderId).toString())
-        assertEquals("MAKI-ZALM", request.inboundShipments.single().sku)
-        assertEquals(376, request.inboundShipments.single().expectedQuantity)
-        assertEquals(LocalDate.parse("2024-01-01"), request.inboundShipments.single().expectedArrivalDate)
-        assertEquals("MAIN", request.inboundShipments.single().warehouseCode)
-        assertEquals(
+        Assertions.assertEquals(LocalDate.now(), request.asOfDate)
+        Assertions.assertEquals("MAKI-ZALM", request.demandOrders.single().sku)
+        Assertions.assertEquals(327, request.demandOrders.single().requestedQuantity)
+        Assertions.assertEquals(LocalDate.parse("2024-01-01"), request.demandOrders.single().placedDate)
+        Assertions.assertEquals(
+            request.demandOrders.single().placedDate,
+            request.demandOrders.single().requiredDeliveryDate
+        )
+        Assertions.assertEquals(1, request.demandOrders.single().priority)
+        Assertions.assertTrue(request.demandOrders.single().customer.isNotBlank())
+        Assertions.assertEquals(
+            request.demandOrders.single().orderId,
+            UUID.fromString(request.demandOrders.single().orderId).toString()
+        )
+        Assertions.assertEquals("MAKI-ZALM", request.inboundShipments.single().sku)
+        Assertions.assertEquals(376, request.inboundShipments.single().expectedQuantity)
+        Assertions.assertEquals(LocalDate.parse("2024-01-01"), request.inboundShipments.single().expectedArrivalDate)
+        Assertions.assertEquals("MAIN", request.inboundShipments.single().warehouseCode)
+        Assertions.assertEquals(
             request.inboundShipments.single().shipmentId,
             UUID.fromString(request.inboundShipments.single().shipmentId).toString()
         )
@@ -201,7 +201,7 @@ class StockioAllocationIntegrationTest {
         )
 
         val acceptedResponse = mockMvc.perform(
-            post("/api/logistics/allocate-project-and-sync")
+            MockMvcRequestBuilders.post("/api/logistics/allocate-project-and-sync")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
@@ -224,32 +224,33 @@ class StockioAllocationIntegrationTest {
                     """.trimIndent()
                 )
         )
-            .andExpect(status().isAccepted)
+            .andExpect(MockMvcResultMatchers.status().isAccepted)
             .andReturn()
         val jobId = objectMapper.readValue(
             acceptedResponse.response.contentAsString,
             AllocationJobAccepted::class.java
         ).jobId
-        assertEquals(
+        Assertions.assertEquals(
             "/api/logistics/allocate-project-and-sync/job-status/$jobId",
             acceptedResponse.response.getHeader("Location")
         )
 
-        await().atMost(Duration.ofSeconds(30)).untilAsserted {
+        Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted {
             mockMvc.perform(
-                org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                MockMvcRequestBuilders
                     .get("/api/logistics/allocate-project-and-sync/job-status/$jobId")
             )
-                .andExpect(status().isOk)
-                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
-                .andExpect(jsonPath("$.result.allocationRun.allocations[0].allocatedFromInventory").value(2))
-                .andExpect(jsonPath("$.result.stockSync.snapshotDate").value(today.toString()))
-                .andExpect(jsonPath("$.result.stockSync.lotCount").value(1))
+                .andExpect(MockMvcResultMatchers.status().isOk)
+                .andExpect(MockMvcResultMatchers.jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(
+                    MockMvcResultMatchers.jsonPath("$.result.allocationRun.allocations[0].allocatedFromInventory").value(2))
+                .andExpect(MockMvcResultMatchers.jsonPath("$.result.stockSync.snapshotDate").value(today.toString()))
+                .andExpect(MockMvcResultMatchers.jsonPath("$.result.stockSync.lotCount").value(1))
         }
 
         val updatedStock = stockRepository.findAll().single()
-        assertEquals(3, updatedStock.quantityOnHand)
-        assertEquals(0, updatedStock.quantityReserved)
+        Assertions.assertEquals(3, updatedStock.quantityOnHand)
+        Assertions.assertEquals(0, updatedStock.quantityReserved)
     }
 
     @Test
@@ -257,7 +258,7 @@ class StockioAllocationIntegrationTest {
         val today = LocalDate.now()
 
         mockMvc.perform(
-            post("/api/logistics/allocate-project-and-sync")
+            MockMvcRequestBuilders.post("/api/logistics/allocate-project-and-sync")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
@@ -280,10 +281,10 @@ class StockioAllocationIntegrationTest {
                     """.trimIndent()
                 )
         )
-            .andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.error").value("Allocation and stock synchronization require asOfDate to be today."))
+            .andExpect(MockMvcResultMatchers.status().isBadRequest)
+            .andExpect(MockMvcResultMatchers.jsonPath("$.error").value("Allocation and stock synchronization require asOfDate to be today."))
 
-        assertEquals(0, runRepository.count())
+        Assertions.assertEquals(0, runRepository.count())
     }
 
     @Test
@@ -357,9 +358,9 @@ class StockioAllocationIntegrationTest {
         val initialRun = allocationService.allocation(allocationRequest)
         val retryRun = allocationService.allocation(allocationRequest)
 
-        assertEquals(initialRun.runId, retryRun.runId)
-        assertEquals(2, retryRun.openBackorderCount)
-        assertThrows(IllegalArgumentException::class.java) {
+        Assertions.assertEquals(initialRun.runId, retryRun.runId)
+        Assertions.assertEquals(2, retryRun.openBackorderCount)
+        Assertions.assertThrows(IllegalArgumentException::class.java) {
             allocationService.allocation(
                 allocationRequest.copy(
                     demandOrders = allocationRequest.demandOrders.map {
@@ -368,7 +369,7 @@ class StockioAllocationIntegrationTest {
                 )
             )
         }
-        assertThrows(IllegalArgumentException::class.java) {
+        Assertions.assertThrows(IllegalArgumentException::class.java) {
             allocationService.allocation(
                 allocationRequest.copy(
                     requestId = UUID.fromString("33333333-3333-3333-3333-333333333333"),
@@ -376,22 +377,22 @@ class StockioAllocationIntegrationTest {
                 )
             )
         }
-        assertEquals(AllocationRunType.NEW_DEMAND, initialRun.runType)
-        assertEquals(
+        Assertions.assertEquals(AllocationRunType.NEW_DEMAND, initialRun.runType)
+        Assertions.assertEquals(
             listOf("ORDER-HIGH", "ORDER-FIFO-1", "ORDER-FIFO-2"),
             initialRun.allocations.map { it.orderId }
         )
-        assertEquals(3, initialRun.allocations[0].allocatedFromInventory)
-        assertEquals(2, initialRun.allocations[0].allocatedFromInbound)
-        assertEquals("LOT-OLD", initialRun.allocations[0].sources.first().sourceId)
-        assertEquals(AllocationStatus.PARTIALLY_BACKORDERED, initialRun.allocations[1].status)
-        assertEquals(3, initialRun.allocations[1].backorderedQuantity)
-        assertEquals(AllocationStatus.BACKORDERED, initialRun.allocations[2].status)
-        assertEquals(5, initialRun.allocations[2].backorderedQuantity)
-        assertEquals(2, initialRun.openBackorderCount)
-        assertEquals(2, backorderRepository.count())
-        assertEquals(3, stockRepository.findAll().sumOf { it.quantityReserved })
-        assertEquals(3, stockReservationRepository.findAll().sumOf { it.quantity })
+        Assertions.assertEquals(3, initialRun.allocations[0].allocatedFromInventory)
+        Assertions.assertEquals(2, initialRun.allocations[0].allocatedFromInbound)
+        Assertions.assertEquals("LOT-OLD", initialRun.allocations[0].sources.first().sourceId)
+        Assertions.assertEquals(AllocationStatus.PARTIALLY_BACKORDERED, initialRun.allocations[1].status)
+        Assertions.assertEquals(3, initialRun.allocations[1].backorderedQuantity)
+        Assertions.assertEquals(AllocationStatus.BACKORDERED, initialRun.allocations[2].status)
+        Assertions.assertEquals(5, initialRun.allocations[2].backorderedQuantity)
+        Assertions.assertEquals(2, initialRun.openBackorderCount)
+        Assertions.assertEquals(2, backorderRepository.count())
+        Assertions.assertEquals(3, stockRepository.findAll().sumOf { it.quantityReserved })
+        Assertions.assertEquals(3, stockReservationRepository.findAll().sumOf { it.quantity })
 
         stockRepository.save(
             StockEntity(
@@ -424,34 +425,34 @@ class StockioAllocationIntegrationTest {
         val fulfillmentRun = allocationService.allocateOpenBackorders(fulfillmentRequest)
         val fulfillmentRetry = allocationService.allocateOpenBackorders(fulfillmentRequest)
 
-        assertEquals(fulfillmentRun.runId, fulfillmentRetry.runId)
-        assertEquals(AllocationRunType.BACKORDER_FULFILLMENT, fulfillmentRun.runType)
-        assertEquals(1, fulfillmentRun.openBackorderCount)
-        assertEquals(2, allocationRunService.getRun(initialRun.runId).openBackorderCount)
-        assertEquals("ORDER-FIFO-1", fulfillmentRun.allocations[0].orderId)
-        assertEquals(AllocationStatus.FULFILLED, fulfillmentRun.allocations[0].status)
-        assertEquals("ORDER-FIFO-2", fulfillmentRun.allocations[1].orderId)
-        assertEquals(AllocationStatus.PARTIALLY_FULFILLED, fulfillmentRun.allocations[1].status)
-        assertEquals(1, fulfillmentRun.allocations[1].allocatedFromInbound)
-        assertEquals(1, fulfillmentRun.allocations[1].backorderedQuantity)
-        assertEquals(1, fulfillmentRun.openBackorderCount)
+        Assertions.assertEquals(fulfillmentRun.runId, fulfillmentRetry.runId)
+        Assertions.assertEquals(AllocationRunType.BACKORDER_FULFILLMENT, fulfillmentRun.runType)
+        Assertions.assertEquals(1, fulfillmentRun.openBackorderCount)
+        Assertions.assertEquals(2, allocationRunService.getRun(initialRun.runId).openBackorderCount)
+        Assertions.assertEquals("ORDER-FIFO-1", fulfillmentRun.allocations[0].orderId)
+        Assertions.assertEquals(AllocationStatus.FULFILLED, fulfillmentRun.allocations[0].status)
+        Assertions.assertEquals("ORDER-FIFO-2", fulfillmentRun.allocations[1].orderId)
+        Assertions.assertEquals(AllocationStatus.PARTIALLY_FULFILLED, fulfillmentRun.allocations[1].status)
+        Assertions.assertEquals(1, fulfillmentRun.allocations[1].allocatedFromInbound)
+        Assertions.assertEquals(1, fulfillmentRun.allocations[1].backorderedQuantity)
+        Assertions.assertEquals(1, fulfillmentRun.openBackorderCount)
 
         val report = reportGenerator.process(
             allocationRunService.getRun(initialRun.runId),
             temporaryDirectory.resolve("allocation.xlsx")
         )
-        assertTrue(Files.exists(report))
+        Assertions.assertTrue(Files.exists(report))
         XSSFWorkbook(Files.newInputStream(report)).use { workbook ->
-            assertEquals(4, workbook.getSheet("Allocation Details").physicalNumberOfRows)
-            assertEquals(5, workbook.getSheet("Source Allocations").physicalNumberOfRows)
-            assertEquals(2, workbook.getSheet("Pivot Summary").pivotTables.size)
+            Assertions.assertEquals(4, workbook.getSheet("Allocation Details").physicalNumberOfRows)
+            Assertions.assertEquals(5, workbook.getSheet("Source Allocations").physicalNumberOfRows)
+            Assertions.assertEquals(2, workbook.getSheet("Pivot Summary").pivotTables.size)
             val formulaSummary = workbook.getSheet("Formula Summary")
-            assertEquals(4, formulaSummary.physicalNumberOfRows)
-            assertEquals(
+            Assertions.assertEquals(4, formulaSummary.physicalNumberOfRows)
+            Assertions.assertEquals(
                 "SUMIFS('Allocation Details'!H:H,'Allocation Details'!D:D,A2,'Allocation Details'!L:L,B2)",
                 formulaSummary.getRow(1).getCell(2).cellFormula
             )
-            assertEquals(
+            Assertions.assertEquals(
                 "SUMIFS('Allocation Details'!K:K,'Allocation Details'!D:D,A2,'Allocation Details'!L:L,B2)",
                 formulaSummary.getRow(1).getCell(5).cellFormula
             )
@@ -499,20 +500,20 @@ class StockioAllocationIntegrationTest {
         )
         stockProjectionProcessor.process(today)
 
-        assertEquals(3, result.allocations.last().backorderedQuantity)
-        assertEquals(
+        Assertions.assertEquals(3, result.allocations.last().backorderedQuantity)
+        Assertions.assertEquals(
             listOf(10, 6, 0),
             stockDailySnapshotRepository
                 .findAllBySkuAndWarehouseCodeOrderBySnapshotDate("MAKI-ZALM", "MAIN")
                 .map { it.closingStock }
         )
-        assertEquals(
+        Assertions.assertEquals(
             listOf(0, 4, 6),
             stockDailySnapshotRepository
                 .findAllBySkuAndWarehouseCodeOrderBySnapshotDate("MAKI-ZALM", "MAIN")
                 .map { it.allocatedQuantity }
         )
-        assertEquals(
+        Assertions.assertEquals(
             3,
             stockDailySnapshotRepository.findBySnapshotDateAndSkuAndWarehouseCode(
                 today.plusDays(2),
@@ -520,7 +521,7 @@ class StockioAllocationIntegrationTest {
                 "MAIN"
             )?.shortageQuantity ?: error("The backorder shortage snapshot is missing.")
         )
-        assertEquals(10, stockRepository.findAll().single().quantityOnHand)
+        Assertions.assertEquals(10, stockRepository.findAll().single().quantityOnHand)
     }
 
     @Test
@@ -569,9 +570,9 @@ class StockioAllocationIntegrationTest {
         stockLedgerProcessor.process(syncRequest)
 
         val stock = stockRepository.findAll().single()
-        assertEquals(3, stock.quantityOnHand)
-        assertEquals(2, stock.quantityReserved)
-        assertEquals(listOf("FUTURE-ORDER"), stockReservationRepository.findAll().map { it.orderId })
+        Assertions.assertEquals(3, stock.quantityOnHand)
+        Assertions.assertEquals(2, stock.quantityReserved)
+        Assertions.assertEquals(listOf("FUTURE-ORDER"), stockReservationRepository.findAll().map { it.orderId })
     }
 
     @Test
@@ -608,12 +609,12 @@ class StockioAllocationIntegrationTest {
         stockLedgerProcessor.process(ProcessDailyStockRequest(today))
 
         val stock = stockRepository.findAll().single()
-        assertEquals("ARRIVED-SHIPMENT", stock.lotId)
-        assertEquals(today, stock.receivedDate)
-        assertEquals(5, stock.quantityOnHand)
-        assertEquals(3, stock.quantityReserved)
-        assertEquals("INBOUND-ORDER", stockReservationRepository.findAll().single().orderId)
-        assertEquals(
+        Assertions.assertEquals("ARRIVED-SHIPMENT", stock.lotId)
+        Assertions.assertEquals(today, stock.receivedDate)
+        Assertions.assertEquals(5, stock.quantityOnHand)
+        Assertions.assertEquals(3, stock.quantityReserved)
+        Assertions.assertEquals("INBOUND-ORDER", stockReservationRepository.findAll().single().orderId)
+        Assertions.assertEquals(
             0,
             jdbcTemplate.queryForObject("SELECT COUNT(*) FROM inbound_reservation", Int::class.java)
                 ?: error("The inbound reservation count query returned no result.")
@@ -668,11 +669,11 @@ class StockioAllocationIntegrationTest {
             )
         ).allocations.single()
 
-        assertEquals(4, allocation.allocatedFromInbound)
-        assertEquals(0, allocation.backorderedQuantity)
+        Assertions.assertEquals(4, allocation.allocatedFromInbound)
+        Assertions.assertEquals(0, allocation.backorderedQuantity)
         stockProjectionProcessor.process(today)
         stockLedgerProcessor.process(ProcessDailyStockRequest(today))
-        assertEquals(0, stockRepository.count())
+        Assertions.assertEquals(0, stockRepository.count())
     }
 
     @Test
@@ -720,12 +721,15 @@ class StockioAllocationIntegrationTest {
             runType = AllocationRunType.NEW_DEMAND
         )
 
-        assertEquals(4, allocationService.allocation(firstRequest).allocations.single().allocatedFromInventory)
+        Assertions.assertEquals(
+            4,
+            allocationService.allocation(firstRequest).allocations.single().allocatedFromInventory
+        )
         val secondAllocation = allocationService.allocation(secondRequest).allocations.single()
 
-        assertEquals(1, secondAllocation.allocatedFromInventory)
-        assertEquals(1, secondAllocation.backorderedQuantity)
-        assertEquals(5, stockRepository.findAll().single().quantityReserved)
+        Assertions.assertEquals(1, secondAllocation.allocatedFromInventory)
+        Assertions.assertEquals(1, secondAllocation.backorderedQuantity)
+        Assertions.assertEquals(5, stockRepository.findAll().single().quantityReserved)
     }
 
     companion object {
