@@ -25,12 +25,15 @@ spring:
 jobrunr:
   background-job-server:
     enabled: true
+  dashboard:
+    enabled: true
+    port: ${JOBRUNR_DASHBOARD_PORT:8181}
 
 server:
   address: ${SERVER_ADDRESS:127.0.0.1}
   port: ${SERVER_PORT:8080}
 
-logistics:
+stockio:
   allocation:
     csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
   report:
@@ -39,3 +42,8 @@ logistics:
 logging:
   level:
     root: INFO
+
+# Enables native JSON console logging (e.g., Logstash or ECS format)
+  structured:
+    format:
+      console: logstash

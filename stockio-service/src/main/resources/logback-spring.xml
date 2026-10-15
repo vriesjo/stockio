@@ -1,12 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Managed by decoratebot -->
 <configuration>
-    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
-        <target>System.err</target>
-        <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n</pattern>
-        </encoder>
-    </appender>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
 
-    <root level="INFO">
-        <appender-ref ref="STDERR"/>
-    </root>
+    <!-- Suppress noisy framework logs -->
+    <logger name="org.javamoney.moneta.DefaultMonetaryContextFactory" level="OFF" />
+    <logger name="ch.qos.logback.core.joran" level="WARN" />
+    <logger name="nl.stockio" level="DEBUG" />
+
+    <!-- Non-Local Profiles: Standard Console Appender (Spring handles JSON formatting automatically via application.yml/properties) -->
+    <springProfile name="!local">
+        <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+        <!-- Suppress internal logback status messages -->
+        <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+
+        <root level="WARN">
+            <appender-ref ref="CONSOLE" />
+        </root>
+    </springProfile>
+
+    <!-- Local Profile: Human-Readable Console Output -->
+    <springProfile name="local">
+        <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+        <!-- Suppress internal logback status messages -->
+        <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE" />
+        </root>
+    </springProfile>
+
 </configuration>
