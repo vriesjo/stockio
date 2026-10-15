@@ -108,7 +108,7 @@ class AllocationService(
         allocationRunService.getRun(request) { prevRun, req ->
             prevRun.runType == AllocationRunType.BACKORDER_FULFILLMENT &&
                 prevRun.requestHash == requestHash(req)
-        }
+        }?.let { return it }
 
         inboundSupplyService.registerInboundSupply(request.inboundShipments)
 
