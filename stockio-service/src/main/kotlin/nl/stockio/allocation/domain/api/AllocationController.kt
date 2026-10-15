@@ -33,7 +33,7 @@ class AllocationController(
     ): ResponseEntity<AllocationJobAccepted> {
         val accepted = allocationEventPublisher.publish(request)
         return ResponseEntity.accepted()
-            .location(URI.create("/api/logistics/allocate-project-and-sync/${accepted.jobId}"))
+            .location(URI.create("/api/logistics/allocate-project-and-sync/job-status/${accepted.jobId}"))
             .body(accepted)
     }
 
