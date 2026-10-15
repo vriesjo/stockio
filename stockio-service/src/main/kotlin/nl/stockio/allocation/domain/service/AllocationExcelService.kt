@@ -16,7 +16,10 @@ import nl.stockio.allocation.domain.bean.AllocationRunType
 import nl.stockio.allocation.domain.bean.DemandOrder
 import nl.stockio.allocation.domain.bean.InboundShipment
 import nl.stockio.product.infra.ProductRepository
+import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
+
+private val logger = KotlinLogging.logger {}
 
 @Service
 class AllocationExcelService(
@@ -24,6 +27,7 @@ class AllocationExcelService(
 ) {
 
     fun loadCsvAndCreateAllocationRequest(path: Path): AllocationRequest {
+        logger.info { "Loading allocation request from CSV '$path'." }
         val demandOrders = mutableListOf<DemandOrder>()
         val inboundShipments = mutableListOf<InboundShipment>()
         val skuByTitle = mutableMapOf<String, String>()
@@ -77,20 +81,31 @@ class AllocationExcelService(
                             warehouseCode = "MAIN"
                         )
                     }
+
+                    else -> logger.warn {
+                        "Skipping CSV row $lineNumber with unsupported transaction type '${columns[1]}'."
+                    }
                 }
             }
         }
 
-        require(demandOrders.isNotEmpty()) {
-            "CSV file '$path' contains no rows with transaction type 'Verkoop'."
+        if (demandOrders.isEmpty()) {
+            val message = "CSV file '$path' contains no rows with transaction type 'Verkoop'."
+            logger.warn { message }
+            throw IllegalArgumentException(message)
         }
-        return AllocationRequest(
+        val request = AllocationRequest(
             requestId = UUID.randomUUID(),
             asOfDate = LocalDate.now(),
             demandOrders = demandOrders,
             inboundShipments = inboundShipments,
             runType = AllocationRunType.NEW_DEMAND
         )
+        logger.info {
+            "Loaded allocation request from CSV '$path': ${demandOrders.size} demand orders and " +
+                "${inboundShipments.size} inbound shipments."
+        }
+        return request
     }
 
     private fun findSku(
