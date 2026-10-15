@@ -53,12 +53,12 @@ class AllocationService(
     // If stock and eligible inbound supply cannot cover an order, it creates an open backorder for the remaining quantity
     @Transactional
     fun allocation(request: AllocationRequest): AllocationRunResult {
-        allocationRequestValidator.validate(request)
-
         allocationRunService.getRun(request) { prevRun, alloReq ->
             prevRun.runType == AllocationRunType.NEW_DEMAND &&
                 prevRun.requestHash == requestHash(alloReq)
-        }
+        }?.let { return it }
+
+        allocationRequestValidator.validate(request)
 
         val orderIds = request.demandOrders.map { it.orderId }
 
