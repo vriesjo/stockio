@@ -27,18 +27,18 @@ class AllocationController(
     private val allocationJobService: AllocationJobService
 ) {
 
-    @PostMapping("/allocate-and-sync")
-    fun allocateAndSync(
+    @PostMapping("/allocate-project-and-sync")
+    fun allocateProjectAndSync(
         @Valid @RequestBody request: AllocationRequest
     ): ResponseEntity<AllocationJobAccepted> {
-        val accepted = allocationEventPublisher.calculateAllocationAndSync(request)
+        val accepted = allocationEventPublisher.publish(request)
         return ResponseEntity.accepted()
-            .location(URI.create("/api/logistics/allocate-and-sync/jobs/${accepted.jobId}"))
+            .location(URI.create("/api/logistics/allocate-project-and-sync/job-status/${accepted.jobId}"))
             .body(accepted)
     }
 
-    @GetMapping("/allocate-and-sync/jobs/{jobId}")
-    fun getAllocationJobStatus(@PathVariable jobId: UUID): AllocationJobStatus =
+    @GetMapping("/allocate-project-and-sync/job-status/{jobId}")
+    fun allocateProjectAndSyncJobStatus(@PathVariable jobId: UUID): AllocationJobStatus =
         allocationJobService.getStatus(jobId)
 
     @ExceptionHandler(IllegalArgumentException::class)

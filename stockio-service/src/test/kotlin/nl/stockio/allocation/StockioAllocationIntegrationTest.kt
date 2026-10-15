@@ -53,7 +53,12 @@ import java.util.UUID
 import nl.stockio.allocation.domain.service.AllocationRunService
 
 @Testcontainers
-@SpringBootTest
+@SpringBootTest(
+    properties = [
+        "spring.rabbitmq.listener.simple.auto-startup=false",
+        "stockio.allocation.rabbitmq.publisher.enabled=false"
+    ]
+)
 @AutoConfigureMockMvc
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class StockioAllocationIntegrationTest {
@@ -196,7 +201,7 @@ class StockioAllocationIntegrationTest {
         )
 
         val acceptedResponse = mockMvc.perform(
-            post("/api/logistics/allocate-and-sync")
+            post("/api/logistics/allocate-project-and-sync")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
@@ -225,11 +230,15 @@ class StockioAllocationIntegrationTest {
             acceptedResponse.response.contentAsString,
             AllocationJobAccepted::class.java
         ).jobId
+        assertEquals(
+            "/api/logistics/allocate-project-and-sync/job-status/$jobId",
+            acceptedResponse.response.getHeader("Location")
+        )
 
         await().atMost(Duration.ofSeconds(30)).untilAsserted {
             mockMvc.perform(
                 org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                    .get("/api/logistics/allocate-and-sync/jobs/$jobId")
+                    .get("/api/logistics/allocate-project-and-sync/job-status/$jobId")
             )
                 .andExpect(status().isOk)
                 .andExpect(jsonPath("$.status").value("SUCCEEDED"))
@@ -248,7 +257,7 @@ class StockioAllocationIntegrationTest {
         val today = LocalDate.now()
 
         mockMvc.perform(
-            post("/api/logistics/allocate-and-sync")
+            post("/api/logistics/allocate-project-and-sync")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
