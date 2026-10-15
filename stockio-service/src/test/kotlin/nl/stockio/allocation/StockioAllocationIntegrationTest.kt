@@ -203,6 +203,7 @@ class StockioAllocationIntegrationTest {
                         {
                           "requestId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                           "asOfDate": "$today",
+                          "runType": "NEW_DEMAND",
                           "demandOrders": [
                             {
                               "orderId": "API-ORDER",
@@ -254,6 +255,7 @@ class StockioAllocationIntegrationTest {
                         {
                           "requestId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                           "asOfDate": "${today.plusDays(1)}",
+                          "runType": "NEW_DEMAND",
                           "demandOrders": [
                             {
                               "orderId": "FUTURE-API-ORDER",
