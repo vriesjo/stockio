@@ -14,6 +14,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-stockio}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-stockio}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   logistics-postgres:

@@ -15,6 +15,14 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:5436/logistics}
     username: ${DB_USERNAME:logistics}
     password: ${DB_PASSWORD:logistics}
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:stockio}
+    password: ${RABBITMQ_PASSWORD:stockio}
+    listener:
+      simple:
+        default-requeue-rejected: false
   jpa:
     hibernate:
       ddl-auto: validate
@@ -36,6 +44,16 @@ server:
 stockio:
   allocation:
     csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
+    rabbitmq:
+      exchange: ${ALLOCATION_RABBITMQ_EXCHANGE:stockio.allocation.exchange}
+      routing-key: ${ALLOCATION_RABBITMQ_ROUTING_KEY:allocation.request}
+      request-queue: ${ALLOCATION_RABBITMQ_REQUEST_QUEUE:stockio.allocation.requests}
+      dead-letter-exchange: ${ALLOCATION_RABBITMQ_DEAD_LETTER_EXCHANGE:stockio.allocation.dlx}
+      dead-letter-routing-key: ${ALLOCATION_RABBITMQ_DEAD_LETTER_ROUTING_KEY:allocation.failed}
+      dead-letter-queue: ${ALLOCATION_RABBITMQ_DEAD_LETTER_QUEUE:stockio.allocation.dead}
+      publisher:
+        enabled: ${ALLOCATION_RABBITMQ_PUBLISHER_ENABLED:true}
+        interval: ${ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL:1000}
   report:
     directory: ${REPORT_DIR:${user.home}/itzitzo-mcp/reports}
 

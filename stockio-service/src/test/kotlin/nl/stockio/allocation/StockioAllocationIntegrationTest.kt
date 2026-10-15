@@ -53,7 +53,12 @@ import java.util.UUID
 import nl.stockio.allocation.domain.service.AllocationRunService
 
 @Testcontainers
-@SpringBootTest
+@SpringBootTest(
+    properties = [
+        "spring.rabbitmq.listener.simple.auto-startup=false",
+        "stockio.allocation.rabbitmq.publisher.enabled=false"
+    ]
+)
 @AutoConfigureMockMvc
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class StockioAllocationIntegrationTest {

@@ -14,7 +14,7 @@ class AllocationEventPublisher(
 ) {
 
     @Transactional
-    fun calculateAllocationAndSync(request: AllocationRequest): AllocationJobAccepted {
+    fun publish(request: AllocationRequest): AllocationJobAccepted {
         require(request.asOfDate == LocalDate.now()) {
             "Allocation and stock synchronization require asOfDate to be today."
         }
