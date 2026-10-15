@@ -1,6 +1,6 @@
 package nl.stockio.allocation.validator
 
-class AllocationRequestException(message: String) : RuntimeException(message) {
+class AllocationRequestException(message: String) : IllegalArgumentException(message) {
 
     private val violations: MutableMap<String, String> = mutableMapOf()
 
