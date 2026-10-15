@@ -20,7 +20,7 @@ class AllocationTools(
     private val stockLedgerProcessor: StockLedgerProcessor,
     private val stockProjectionProcessor: StockProjectionProcessor,
     private val excelReportProcessor: ExcelReportProcessor,
-    @param:Value("\${logistics.report.directory}")
+    @param:Value("\${stockio.report.directory}")
     private val reportDirectory: String
 ) {
 

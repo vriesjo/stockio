@@ -21,6 +21,9 @@ class AllocationRequestValidator(
     }
 
     private fun validateAllocationRequest(request: AllocationRequest) {
+        requireAndThrow(request.runType == AllocationRunType.NEW_DEMAND) {
+            AllocationRequestException("Run type must be of type: NEW_DEMAND")
+        }
         validateBean(request)
         requireAndThrow(request.demandOrders.all { it.placedDate <= it.requiredDeliveryDate }) {
             AllocationRequestException("An order's placed date must be on or before its required delivery date.")
@@ -46,6 +49,9 @@ class AllocationRequestValidator(
     }
 
     private fun validateBackorderAllocationRequest(request: AllocationRequest) {
+        requireAndThrow(request.runType == AllocationRunType.BACKORDER_FULFILLMENT) {
+            AllocationRequestException("Run type must be of type: BACKORDER_FULFILLMENT")
+        }
         validateBean(request)
 
         val inboundShipments = request.inboundShipments
