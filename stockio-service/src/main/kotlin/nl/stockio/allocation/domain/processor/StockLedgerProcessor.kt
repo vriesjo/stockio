@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 class StockLedgerProcessor(
+    private val stockProjectionLockService: StockProjectionLockService,
     private val stockRepository: StockRepository,
     private val stockDailyLotSnapshotRepository: StockDailyLotSnapshotRepository,
     private val stockReservationRepository: StockReservationRepository,
@@ -27,6 +28,7 @@ class StockLedgerProcessor(
 
     @Transactional
     fun process(request: ProcessDailyStockRequest): StockSyncResult {
+        stockProjectionLockService.acquire()
         require(request.snapshotDate == LocalDate.now()) {
             "Only today's stock snapshot can be synchronized to live stock."
         }

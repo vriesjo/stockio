@@ -16,7 +16,6 @@ class AllocationRequestValidator(
         when (request.runType) {
             AllocationRunType.NEW_DEMAND -> validateAllocationRequest(request)
             AllocationRunType.BACKORDER_FULFILLMENT -> validateBackorderAllocationRequest(request)
-            else -> throw AllocationRequestException("Unsupported request type: ${request::class.simpleName}")
         }
     }
 

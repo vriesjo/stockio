@@ -1,393 +1,256 @@
-# Logistics MCP and REST API Architecture
+# Stockio Architecture
 
-## 1. Overview
+## Overview
 
-The project is a Kotlin/Spring application that accepts demand and inbound-supply data, allocates persisted inventory, tracks backorders, projects daily stock balances, and generates Excel reports. It exposes the same logistics capabilities through Spring AI MCP tools and a local HTTP API.
+Stockio is a Kotlin/Spring application for allocating demand against live inventory and expected inbound supply. It persists allocation results and reservations in PostgreSQL, maintains daily aggregate and lot-level stock projections, synchronizes today's projection to live stock, and generates Excel reports. The same core services are exposed through Spring AI MCP tools and a local HTTP API.
 
-The Gradle build exposes two logical projects, mapped to the current module directories:
+PostgreSQL is the system of record. Flyway manages the schema; JPA repositories handle most operational data, while `JdbcTemplate` is used for projection locking and snapshot persistence. Daily snapshots are derived projections from live stock and persisted reservations, not an independent source of inventory truth.
 
-- `:stock-service` (`stockio-service/`) is the production application: MCP server, REST API, allocation workflows, persistence, CSV loading, and Excel generation.
-- `:stock-client` (`api/`) is a sample Spring AI MCP client configured to launch the server over STDIO.
+## Modules and technology
 
-PostgreSQL is the system of record. Flyway evolves the schema and seeds the product catalog. Daily snapshots are projections from the live stock baseline and persisted allocations; they are not a separate source of live inventory.
+The Gradle build includes two modules:
 
-## 2. Technology stack
+| Module | Purpose |
+| --- | --- |
+| `:stockio-service` (`stockio-service/`) | Spring Boot application, MCP tools, REST API, allocation workflows, persistence, CSV import, and Excel generation. |
+| `:stockio-api` (`stockio-api/`) | Sample Spring AI MCP client. It is not required by the service at runtime. |
 
-| Area | Technology | Role |
-| --- | --- | --- |
-| Runtime | Java 21 | JVM runtime and toolchain. |
-| Language | Kotlin 2.2.20 | Server, client, services, and domain DTOs. |
-| Build | Gradle Groovy multi-project build | Builds `:stock-service` and `:stock-client`. |
-| Application framework | Spring Boot 3.5.10 | Dependency injection, configuration, transactions, and application lifecycle. |
-| MCP | Spring AI 1.1.2 MCP server/client starters | Exposes tools over STDIO and supplies the sample client. |
-| HTTP API | Spring MVC (`spring-boot-starter-web`) | REST controllers, defaulting to `127.0.0.1:8080`. |
-| Persistence | PostgreSQL, Spring Data JPA/Hibernate | Durable products, allocations, reservations, backorders, and live stock. |
-| SQL access | Spring `JdbcTemplate` | Inserts and reads aggregate/per-lot daily snapshots. |
-| Schema management | Flyway | Ordered database migrations and product seed data. Hibernate runs with `ddl-auto: validate`. |
-| Input validation | Jakarta Bean Validation | Validates structured allocation and report requests. |
-| Excel | Apache POI OOXML 5.4.1 | Creates `.xlsx` reports, native pivot tables, and formula summaries. |
-| Testing | Spring Boot Test, JUnit 5, Testcontainers PostgreSQL | Exercises application behavior and migrations against PostgreSQL. |
+The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL, Flyway, RabbitMQ, JobRunr, Apache POI, HikariCP, and Spring Boot Actuator. Allocation work is parallelized across SKUs with Kotlin coroutines.
 
-Configuration is supplied through environment variables: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `SERVER_ADDRESS`, `SERVER_PORT`, `ALLOCATION_CSV_PATH`, and `REPORT_DIR`.
-
-## 3. System context
+## System context
 
 ```mermaid
-C4Context
-    title System Context - Logistics Allocation
-
-    Person(operator, "Logistics operator", "Submits allocation requests and uses admin endpoints.")
-    Person(agent, "AI agent / MCP client", "Calls logistics tools through MCP STDIO.")
-    System(logistics, "Logistics MCP and REST application", "Allocates demand, tracks supply and stock, projects snapshots, and generates reports.")
-    System_Ext(database, "PostgreSQL", "System of record; managed by Flyway.")
-    System_Ext(csv, "Allocation CSV", "Server-side input file; default docs/allocations.csv.")
-    System_Ext(reportFiles, "Report directory", "Stores generated Excel workbooks.")
-
-    Rel(operator, logistics, "Uses", "HTTP/JSON")
-    Rel(agent, logistics, "Invokes MCP tools", "STDIO")
-    Rel(logistics, database, "Reads and writes", "JPA/JDBC")
-    Rel(logistics, csv, "Reads configured CSV")
-    Rel(logistics, reportFiles, "Writes .xlsx reports")
+flowchart LR
+    Operator["Operator / REST client"] -->|"HTTP / JSON"| API["Stockio service"]
+    Agent["MCP client"] -->|"MCP tools"| API
+    API -->|"JPA / JDBC"| DB[("PostgreSQL")]
+    API -->|"Allocation requests"| Rabbit["RabbitMQ"]
+    API -->|"Background jobs"| JobRunr["JobRunr"]
+    API -->|"Read"| CSV["Configured allocation CSV"]
+    API -->|"Write .xlsx"| Reports["Report directory"]
 ```
 
-The application is the boundary containing allocation policy and persistence. Operators can call the HTTP endpoints directly; an AI agent can call MCP tools through the configured STDIO process. The sample `:stock-client` is one possible MCP caller, not a required production component. The CSV and report locations are local to the server process.
+The service runs as a servlet application and exposes MCP tools through Spring AI. The HTTP server binds to `127.0.0.1:8080` by default. No application-level authentication is configured; protect the API and Actuator endpoints if `SERVER_ADDRESS` is changed to expose them beyond the local host.
 
-The HTTP listener binds to loopback by default. There is no application-level authentication configured in the current project; overriding `SERVER_ADDRESS` to expose the API beyond the local host should be accompanied by an appropriate access-control layer.
-
-## 4. C4 component view
-
-```mermaid
-C4Component
-    title C4 Component Diagram - stock-service
-
-    Person(operator, "REST/API caller", "Uses allocation and admin endpoints.")
-    Person(agent, "AI agent / MCP client", "Invokes MCP tools over STDIO.")
-    System_Ext(database, "PostgreSQL", "Products, stock, allocations, and snapshots.")
-    System_Ext(csv, "Allocation CSV", "Configured server-side file.")
-    System_Ext(reportFiles, "Report directory", "Generated Excel workbooks.")
-
-    System_Boundary(app, "Logistics MCP and REST application") {
-        Container_Boundary(server, "stock-service - Spring Boot") {
-            Component(rest, "REST Controllers", "Spring MVC", "Expose allocate-and-sync and admin endpoints.")
-            Component(mcp, "LogisticsMcpTools", "Spring AI @Tool component", "Expose allocation, fulfillment, daily sync, and report tools.")
-            Component(orchestrator, "LogisticsOrchestrator", "Spring service", "Runs allocation followed by today's snapshot sync in one transaction.")
-            Component(allocation, "LogisticsAllocationService", "Transactional service", "Validates requests, allocates stock/supply, and persists runs and backorders.")
-            Component(projection, "StockProjectionService", "Transactional service", "Rebuilds aggregate and lot-level projections from today forward.")
-            Component(sync, "DailyStockLedgerService", "Transactional service", "Copies today's saved lot balances into live stock.")
-            Component(loader, "AllocationCsvLoader", "Spring service", "Parses CSV rows and maps product titles to SKUs.")
-            Component(products, "ProductRepository", "Spring Data JPA", "Looks up product SKUs by title.")
-            Component(repositories, "Logistics repositories", "Spring Data JPA", "Persist allocation, stock, reservation, and backorder entities.")
-            Component(report, "ExcelReportGeneratorService", "Spring service / Apache POI", "Creates workbook details, pivots, and formula summaries.")
-        }
-    }
-
-    Rel(operator, rest, "Calls", "HTTP/JSON")
-    Rel(agent, mcp, "Invokes tools", "MCP STDIO")
-    Rel(rest, orchestrator, "Calls allocate-and-sync")
-    Rel(rest, loader, "Calls CSV load endpoint")
-    Rel(rest, mcp, "Calls report generation method")
-    Rel(mcp, allocation, "Calls allocation and backorder fulfillment")
-    Rel(mcp, sync, "Calls daily stock sync")
-    Rel(mcp, report, "Generates report after loading a saved run")
-    Rel(orchestrator, allocation, "1. Calculates and persists allocation")
-    Rel(orchestrator, sync, "2. Synchronizes today's snapshot")
-    Rel(allocation, repositories, "Reads/writes orders, stock, supply, reservations, runs")
-    Rel(allocation, projection, "Rebuilds snapshots after allocation")
-    Rel(projection, database, "Writes daily snapshots", "JDBC")
-    Rel(sync, repositories, "Locks and updates live stock and reservations")
-    Rel(sync, database, "Reads aggregate and lot snapshots", "JDBC")
-    Rel(loader, csv, "Reads")
-    Rel(loader, products, "Resolves title to SKU")
-    Rel(products, database, "Queries products", "JPA")
-    Rel(repositories, database, "Reads/writes", "JPA")
-    Rel(report, reportFiles, "Writes .xlsx")
-```
+## Application components
 
 | Component | Responsibility |
 | --- | --- |
-| REST controllers | `LogisticsAllocationController` exposes `POST /api/logistics/allocate-and-sync`. `LogisticsAdminController` exposes CSV loading and Excel report endpoints. |
-| `LogisticsMcpTools` | MCP adapter for `calculate_allocation`, `fulfill_open_backorders`, `process_daily_stock`, and `generate_excel_report`. |
-| `LogisticsOrchestrator` | REST workflow facade; requires today's `asOfDate`, calls allocation first and daily sync second. Its outer transaction makes both steps atomic. |
-| `LogisticsAllocationService` | Core application service: validates demand, allocates FIFO inventory then eligible inbound supply, creates backorders, persists run/source records, and requests projection rebuilding. |
-| `StockProjectionService` | Recomputes aggregate and per-lot snapshots from live stock, reservations, inbound supply, and backorders. Existing snapshots before its start date are retained. |
-| `DailyStockLedgerService` | Validates today's aggregate/lot snapshot consistency, synchronizes live lot balances, removes due stock reservations, and converts arrived inbound reservations. |
-| `AllocationCsvLoader` | Reads the configured CSV, maps `Verkoop` to demand and `Levering` to inbound shipments, and ignores other transaction types. |
-| Repositories | Spring Data JPA access to products, allocations, stock, supply, reservations, and backorders; snapshot SQL is handled with `JdbcTemplate`. |
-| `ExcelReportGeneratorService` | Builds allocation detail/source sheets, native pivot tables, and a formula-based summary. |
+| `AllocationTools` | MCP adapter for new-demand allocation and projection, backorder fulfillment, stock-ledger synchronization, and Excel report generation. |
+| `AllocationController` | Accepts asynchronous allocate-and-project-and-sync requests and exposes JobRunr job status. |
+| `AllocationAdminController` | Creates allocation requests from CSV, generates reports, and removes jobs with excessive retries. |
+| `AllocationService` | Validates, groups work by SKU, coordinates SKU workers, and completes allocation runs. |
+| `AllocationSkuWorker` | Performs one SKU's transactional allocation or backorder fulfillment, reserves stock/supply, and persists resumable operation results. |
+| `AllocationPolicyCalculator` | Applies order priority, FIFO source selection, delivery-date eligibility, and backorder rules. |
+| `StockProjectionProcessor` | Rebuilds aggregate and lot-level daily projections from the live stock baseline and persisted reservations. |
+| `StockLedgerProcessor` | Validates and synchronizes today's saved lot-level projection to live stock. |
+| `AllocationJob` / completion service | Runs the asynchronous allocate-project-and-sync workflow and persists its final result. |
+| `AllocationExcelService` | Parses the configured CSV and creates a validated allocation request. |
+| `ExcelReportProcessor` | Writes allocation details, sources, pivot tables, and formula summaries to an `.xlsx` workbook. |
+| Repositories and `JdbcTemplate` | Persist operational state, enforce locks, and read/write snapshot data. |
 
-## 5. Data model
+## Interfaces
 
-### Entity relationships
+### MCP tools
 
-```mermaid
-erDiagram
-    PRODUCTS ||--o{ STOCK : contains
-    PRODUCTS ||--o{ INBOUND_SUPPLY : identifies
-    PRODUCTS ||--o{ STOCK_DAILY_SNAPSHOTS : summarizes
-    PRODUCTS ||--o{ STOCK_DAILY_LOT_SNAPSHOTS : projects
-    ALLOCATION_RUN ||--o{ ALLOCATION_RECORD : contains
-    ALLOCATION_RECORD ||--o{ ALLOCATION_SOURCE : uses
-    STOCK ||--o{ STOCK_RESERVATION : reserved_by
-    INBOUND_SUPPLY ||--o{ INBOUND_RESERVATION : reserved_by
+| Tool | Input | Behavior |
+| --- | --- | --- |
+| `allocation_and_stock_projection` | `AllocationRequest` with `runType: NEW_DEMAND` | Allocates demand, persists reservations/backorders, and rebuilds daily projections. It does not synchronize live stock. |
+| `allocate_open_backorders` | `AllocationRequest` with `runType: BACKORDER_FULFILLMENT` | Attempts to fulfill persisted backorders using eligible stock and inbound supply; returns an `AllocationRunResult`. The current tool path does not rebuild projections or synchronize live stock. |
+| `process_stock_ledger` | `ProcessDailyStockRequest` | Applies today's existing snapshot to live stock and returns a `StockSyncResult`. It does not recalculate allocations or stock movements. |
+| `generate_excel_report` | `ExcelReportRequest` (`runId`, simple `.xlsx` `fileName`) | Generates a report for a saved allocation run and returns the output path. |
 
-    PRODUCTS {
-        uuid id PK
-        string sku UK
-        string title
-        string status
-        string category
-        bigint price_cents
-        jsonb attributes
-    }
-    STOCK {
-        uuid id PK
-        string sku FK
-        string warehouse_code
-        string lot_id
-        date received_date
-        int quantity_on_hand
-        int quantity_reserved
-    }
-    STOCK_RESERVATION {
-        uuid id PK
-        string order_id
-        uuid stock_id FK
-        int quantity
-        date required_delivery_date
-    }
-    INBOUND_SUPPLY {
-        string shipment_id PK
-        string sku FK
-        string warehouse_code
-        int expected_quantity
-        int quantity_reserved
-        date expected_arrival_date
-        boolean received
-    }
-    INBOUND_RESERVATION {
-        uuid id PK
-        string order_id
-        string shipment_id FK
-        int quantity
-        date required_delivery_date
-    }
-    ALLOCATION_RUN {
-        uuid id PK
-        uuid request_id UK
-        string request_hash
-        string run_type
-        date as_of_date
-        int open_backorder_count
-    }
-    ALLOCATION_RECORD {
-        uuid id PK
-        uuid run_id FK
-        string order_id
-        string sku
-        int requested_quantity
-        int allocated_from_inventory
-        int allocated_from_inbound
-        int backordered_quantity
-        string status
-    }
-    ALLOCATION_SOURCE {
-        uuid id PK
-        uuid allocation_record_id FK
-        string source_type
-        string source_id
-        int quantity
-        date source_date
-        string warehouse_location
-    }
-    OPEN_BACKORDER {
-        string order_id PK
-        string sku
-        int original_quantity
-        int remaining_quantity
-        date required_delivery_date
-    }
-    STOCK_DAILY_SNAPSHOTS {
-        date snapshot_date PK
-        string sku PK
-        string warehouse_code PK
-        int opening_stock
-        int inbound_qty
-        int demand_qty
-        int allocated_qty
-        int closing_stock
-        int shortage_qty
-    }
-    STOCK_DAILY_LOT_SNAPSHOTS {
-        date snapshot_date PK
-        string sku PK
-        string warehouse_code PK
-        string lot_id PK
-        date received_date
-        int opening_stock
-        int inbound_qty
-        int allocated_qty
-        int closing_stock
-        int quantity_reserved
-    }
-```
+### REST endpoints
 
-`stock_daily_snapshots` and `stock_daily_lot_snapshots` both reference `products`; their composite keys are shown above. There is no database foreign key from backorders to allocation records, nor from a snapshot aggregate row to its lot rows.
-
-### Table responsibilities
-
-| Table | Purpose and important fields |
+| Method and path | Behavior |
 | --- | --- |
-| `products` | Product catalog keyed by SKU; title is used by the CSV loader to resolve SKU. Flyway seeds the current catalog. |
-| `stock` | Current on-hand and reserved quantity for each `(sku, warehouse_code, lot_id)`; available quantity is generated as on-hand minus reserved. |
-| `stock_reservation` | Quantity allocated from a live stock lot to an order, with the delivery date when it leaves the projection. |
-| `inbound_supply` | Expected shipment by shipment ID, including SKU, warehouse, expected quantity, reserved quantity, arrival date, and receipt state. |
-| `inbound_reservation` | Quantity allocated to an order from a shipment before it is received. On receipt, future reservations transfer to `stock_reservation`. |
-| `allocation_run` | One idempotent execution, keyed by a generated run ID and unique `request_id`; stores request hash, run type, as-of date, and open-backorder count. |
-| `allocation_record` | Per-order result within a run: requested, allocated, backordered quantities, status, priority, and dates. |
-| `allocation_source` | Per-record source detail identifying the stock lot or inbound shipment and allocated quantity. |
-| `open_backorder` | Current outstanding balance for an order. Fulfillment reduces or deletes this record. |
-| `stock_daily_snapshots` | Aggregate daily opening, inbound, demand, allocated, closing, and shortage quantities by SKU/warehouse/date. |
-| `stock_daily_lot_snapshots` | Daily lot-level balances, receipt dates, and future reservations used to synchronize live stock without losing lot identity. |
-| `flyway_schema_history` | Flyway-managed migration metadata, not logistics data. It is preserved by data-clear scripts. |
+| `POST /api/logistics/allocate-project-and-sync` | Validates today's `asOfDate`, accepts an allocation request, and returns `202 Accepted` with a JobRunr `jobId` and status URL. |
+| `GET /api/logistics/allocate-project-and-sync/job-status/{jobId}` | Returns the JobRunr state and, when succeeded, the persisted allocation and stock-sync result. |
+| `GET /api/admin/allocations/generate-request-by-csv` | Parses the configured CSV and returns a generated `AllocationRequest`; it does not execute it. |
+| `POST /api/admin/allocations/generate-excel` | Generates an Excel report from a saved run. |
+| `DELETE /api/admin/allocations/delete-jobs-with-excessive-retries` | Removes qualifying JobRunr jobs with excessive retry transitions. |
+| `GET /actuator/health` | Spring Boot health endpoint. |
+| `GET /actuator/metrics/{metricName}` | Reads an exposed Micrometer metric. |
 
-Migration history: V1-V3 create and extend allocation persistence/idempotency; V4-V5 create and seed products; V6-V8 add stock, reservations, and aggregate/lot projections; V9 removes the unused legacy `stock_ledger_run` and `stock_ledger_transaction` tables.
+The asynchronous REST workflow uses an event published inside a transaction and schedules its JobRunr job after commit. Job status is read through JobRunr's `StorageProvider`; the result payload is persisted separately in `allocation_job_result`.
 
-## 6. Runtime flows
+### Allocation request shape
 
-### 6.1 REST allocation followed by today's sync
+An `AllocationRequest` contains:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Client as REST client
-    participant Controller as LogisticsAllocationController
-    participant Orchestrator as LogisticsOrchestrator
-    participant Alloc as LogisticsAllocationService
-    participant Projection as StockProjectionService
-    participant Sync as DailyStockLedgerService
-    participant DB as PostgreSQL
+- `requestId`: UUID used for idempotency.
+- `asOfDate`: date used for the allocation and projection.
+- `runType`: `NEW_DEMAND` or `BACKORDER_FULFILLMENT`.
+- `demandOrders`: order ID, customer, SKU, requested quantity, priority, placed date, and required delivery date.
+- `inboundShipments`: shipment ID, SKU, expected quantity, expected arrival date, and warehouse code.
 
-    Client->>Controller: POST /api/logistics/allocate-and-sync
-    Controller->>Orchestrator: calculateAllocationAndSync(request)
-    Orchestrator->>Orchestrator: Require asOfDate = today
-    Orchestrator->>Alloc: calculateAllocation(request)
-    Alloc->>DB: Check requestId/hash and order uniqueness
-    Alloc->>DB: Lock live stock and unreceived inbound supply
-    Alloc->>Alloc: Allocate by priority, FIFO stock, then eligible inbound
-    Alloc->>DB: Save run, records, sources, reservations, backorders
-    Alloc->>Projection: rebuild(asOfDate)
-    Projection->>DB: Replace snapshots from projection start date forward
-    Alloc-->>Orchestrator: AllocationRunResult
-    Orchestrator->>Sync: process(today)
-    Sync->>DB: Read and validate aggregate/lot snapshots
-    Sync->>DB: Update live lots, remove due reservations, receive arrived supply
-    Sync-->>Orchestrator: StockSyncResult
-    Orchestrator-->>Controller: AllocationAndSyncResult
-    Controller-->>Client: Allocation run + stock sync result
+The server validates required fields, positive quantities and priorities, date order, and unique IDs within a request. A new-demand request cannot reuse order IDs already processed as new demand; unresolved quantities belong to the backorder-fulfillment workflow.
+
+## Allocation behavior
+
+1. Orders are processed by ascending numeric priority, then placed date, then original request order.
+2. For each SKU, persisted stock lots are considered FIFO by received date, lot ID, and warehouse code.
+3. Available live stock is `quantity_on_hand - quantity_reserved`.
+4. Remaining demand may use inbound supply ordered by expected arrival date and shipment ID, if its arrival is no later than the order's required delivery date.
+5. Available unreceived supply is `expected_quantity - quantity_reserved`. Backorder fulfillment additionally considers only supply that has arrived by `asOfDate`.
+6. Unfilled quantity is saved as an open backorder. Backordered quantity contributes to projected shortage but is not deducted from physical stock.
+7. Allocated quantities are reserved when the run is processed and leave projected physical stock on `max(asOfDate, requiredDeliveryDate)`.
+
+Allocations retain source-level detail identifying the stock lot or inbound shipment. A new shipment is classified as inbound supply in the run that allocates it; its unreserved surplus becomes live stock when received and can be allocated as inventory by a later request.
+
+### Idempotency and parallel work
+
+Allocation runs are keyed by `requestId` and store a request hash. A retry with the same ID and payload resumes or returns the existing run; reusing the ID with conflicting data is rejected. Per-SKU operation results and order claims support retries without allocating an order twice. A unique SKU lock serializes concurrent changes for the same SKU, while a shared projection lock coordinates allocation with projection and stock synchronization.
+
+SKU work is limited by `stockio.allocation.max-concurrent-skus` (default `4`) and runs in separate transactions. Set `ALLOCATION_MAX_CONCURRENT_SKUS` to tune that limit. The maximum applies to the shared allocation dispatcher, not independently to each SKU in each request.
+
+## Asynchronous processing
+
+The REST endpoint publishes an allocation event in a transaction. After commit, `AllocationEventListener` enqueues a JobRunr job using the event's UUID. `AllocationJob` performs the allocation, then its completion service rebuilds projections, synchronizes today's stock, and stores the combined result. JobRunr retries the job up to three times.
+
+RabbitMQ requests are first attempted synchronously by `AllocationRabbitListener`. Invalid requests that throw `IllegalArgumentException` are rejected rather than sent to JobRunr. Other synchronous failures use JobRunr as a fallback if a job with that ID does not already exist. The request queue is configured with a dead-letter exchange and queue; rejected messages are not requeued by default.
+
+The optional `AllocationRequestPublisher` emits sample requests at a fixed interval when enabled. In the current `application.yml`, it is enabled by default with a one-second interval; disable it in non-demo deployments with `ALLOCATION_RABBITMQ_PUBLISHER_ENABLED=false`.
+
+## Stock projections and synchronization
+
+### Snapshot meaning
+
+The `stock` table is the current physical baseline, by SKU, warehouse, and lot. The daily projection is stored in two tables:
+
+- `stock_daily_snapshots`: aggregate balances by date, SKU, and warehouse.
+- `stock_daily_lot_snapshots`: corresponding balances and reservations by date, SKU, warehouse, and lot.
+
+For each day:
+
+```text
+closing_stock = opening_stock + inbound_qty - allocated_qty
+demand_qty = allocated_qty + shortage_qty
 ```
 
-This REST workflow runs in one transaction. If synchronization fails, allocation writes and projection changes roll back with it. The `asOfDate` guard prevents an allocation from committing when the subsequent sync cannot process the same day.
+The day's closing balance becomes the next day's opening balance. A backorder contributes to `shortage_qty` on its required delivery date but does not reduce physical stock. Allocated stock and inbound supply reduce physical stock on their effective delivery date.
 
-### 6.2 Direct MCP allocation and stock sync
+After allocation changes, `StockProjectionProcessor` uses current live stock as its baseline and rebuilds from `max(asOfDate, today)` forward through the latest relevant arrival, reservation, or backorder date. Earlier snapshots are retained; the service does not reconstruct historical physical stock from today's quantities.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Agent as AI agent
-    participant Tools as LogisticsMcpTools
-    participant Alloc as LogisticsAllocationService
-    participant Projection as StockProjectionService
-    participant Sync as DailyStockLedgerService
-    participant DB as PostgreSQL
+### Live quantity interpretation
 
-    Agent->>Tools: calculate_allocation(request)
-    Tools->>Alloc: calculateAllocation(request)
-    Alloc->>DB: Persist allocation and reservations
-    Alloc->>Projection: Rebuild projections
-    Projection->>DB: Write aggregate and lot snapshots
-    Alloc-->>Tools: AllocationRunResult
-    Tools-->>Agent: Allocation result
-    Note over Agent,Sync: MCP allocation does not automatically synchronize live stock.
-    Agent->>Tools: process_daily_stock(today)
-    Tools->>Sync: process(request)
-    Sync->>DB: Apply today's saved snapshot to live stock
-    Sync-->>Tools: StockSyncResult
-    Tools-->>Agent: Stock sync result
+For a live stock lot:
+
+```text
+quantity_available = quantity_on_hand - quantity_reserved
 ```
 
-MCP exposes allocation, backorder fulfillment, daily stock sync, and Excel report generation as separate tools. Unlike the REST orchestration endpoint, an MCP caller decides when to invoke `process_daily_stock`.
+`quantity_on_hand` remains the physical quantity even while some units are reserved for future delivery. Before receipt, inbound supply is separate:
 
-### 6.3 CSV load and Excel report
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Admin as Admin/API client
-    participant Controller as LogisticsAdminController
-    participant Loader as AllocationCsvLoader
-    participant CSV as Configured CSV file
-    participant Products as ProductRepository
-    participant Tools as LogisticsMcpTools
-    participant Alloc as LogisticsAllocationService
-    participant Report as ExcelReportGeneratorService
-    participant DB as PostgreSQL
-    participant Files as Report directory
-
-    Admin->>Controller: POST /api/admin/allocations/load-csv
-    Controller->>Loader: load(configuredPath)
-    Loader->>CSV: Read rows
-    Loader->>Products: findSkuByTitle(title)
-    Products->>DB: Query products
-    Loader-->>Controller: Generated AllocationRequest
-    Controller-->>Admin: AllocationRequest JSON
-
-    Admin->>Controller: POST /api/admin/reports/excel(runId, fileName)
-    Controller->>Tools: generateExcelReport(request)
-    Tools->>Alloc: getRun(runId)
-    Alloc->>DB: Load run, records, and allocation sources
-    Tools->>Report: generate(run, destination)
-    Report->>Files: Write .xlsx workbook
-    Tools-->>Controller: Absolute report path
-    Controller-->>Admin: Report path
+```text
+inbound_quantity_available = expected_quantity - quantity_reserved
 ```
 
-The CSV loader returns a request; it does not itself allocate. It maps only `Verkoop` and `Levering` rows, resolves titles through the product repository, and generates random IDs/customer names per load. The report endpoint reuses the MCP tool method and only accepts a simple `.xlsx` filename to keep output inside the configured report directory.
+### Example
 
-## 7. Allocation and stock rules
+On day D, assume live lot `LOT-A` has 5 units and a new shipment `SHIP-B` brings 4 units arriving on D. Two orders are due on D+1: `ORDER-1` requests 3 and `ORDER-2` requests 4, with equal priority and placed date.
 
-- Orders are processed by lower numeric priority first, then `placedDate`; payload order breaks ties.
-- Existing inventory is allocated FIFO by `receivedDate` and lot ID, with persisted reservations excluded from availability.
-- New-demand requests can reserve unreceived supply only when its expected arrival is on or before the order's required delivery date. Backorder fulfillment additionally requires arrival by the request's `asOfDate`.
-- Live-stock availability is `quantity_on_hand - quantity_reserved`; unreceived-supply availability is `expected_quantity - quantity_reserved`. New shipments are allocated as inbound in that run, not first converted to inventory. On receipt, their unallocated surplus becomes live stock and can be allocated as inventory by later orders. See the [per-order quantity example](stock_interaction.md#per-order-quantity-flow).
-- Allocated quantities are reserved at allocation time and projected to leave physical stock on their effective delivery date. A past required date is clamped to at least the request's `asOfDate`.
-- Remaining unfilled demand becomes an open backorder. Backorders add projected shortage and do not reduce physical closing stock.
-- Daily physical balance follows `closing_stock = opening_stock + inbound_qty - allocated_qty`. Lot-level totals must agree with aggregate closing stock before today's snapshot is synchronized.
-- Projections use current live stock as their baseline and rebuild from `max(asOfDate, today)` onward; earlier snapshots are retained rather than reconstructed from current stock.
+| Order | Requested | From inventory | From inbound | Backordered |
+| --- | ---: | ---: | ---: | ---: |
+| `ORDER-1` | 3 | 3 | 0 | 0 |
+| `ORDER-2` | 4 | 2 | 2 | 0 |
 
-## 8. Design patterns and architectural decisions
+Before receipt, `LOT-A` has 5 on hand / 5 reserved / 0 available; `SHIP-B` has 4 expected / 2 reserved / 2 available. The D stock sync creates `SHIP-B` as a live lot, leaving total live stock at 9 on hand, 7 reserved, and 2 available. When the D+1 snapshot is synchronized, the 7 allocated units leave physical stock and the 2 unreserved units remain available. A later request can allocate those units as inventory.
 
-| Pattern / decision | How it appears in the project |
+### Daily ledger sync
+
+`process_stock_ledger` accepts only today's `snapshotDate`. Today's aggregate snapshots must exist, and each aggregate closing quantity must equal the sum of its lot-level closing quantities. Synchronization updates live lot quantities/reservations, sets omitted unreserved lots in the affected SKU/warehouse scopes to zero, removes due stock reservations, marks arrived shipments as received, and converts their future inbound reservations to stock reservations.
+
+The sync does not recompute the projection or accept movements. Repeating it is safe because it reapplies the saved closing balances and processes due reservations/receipts idempotently. Projection and ledger operations coordinate with allocation through the `stock_projection_lock` row.
+
+## Persistence model
+
+| Table | Responsibility |
 | --- | --- |
-| Layered architecture / adapters | MCP tools and REST controllers are inbound adapters. Services implement application workflows. Repositories and `JdbcTemplate` provide persistence access. |
-| Repository pattern | Spring Data repositories encapsulate products, allocation runs/records/sources, backorders, live stock, and supply reservations. |
-| Service layer | Allocation, projection, synchronization, CSV parsing, and report generation have distinct service responsibilities. |
-| Orchestrator / facade | `LogisticsOrchestrator` composes allocation and daily synchronization behind one REST operation. |
-| Transaction boundary | `@Transactional` protects allocation persistence and projection updates; the orchestrator's outer transaction spans both allocation and sync. |
-| Idempotent command handling | Allocation requests are hashed with SHA-256 and keyed by `requestId`. A retry with the same ID and payload returns the previous run; a conflicting reuse is rejected. |
-| Deterministic allocation policy | Priority ordering and FIFO lot/supply ordering encode the selected allocation policy explicitly. |
-| Projection/rebuild | `StockProjectionService` recalculates future daily snapshots from current persisted state instead of treating snapshots as independent mutable stock. |
-| DTO/entity separation | Request and result data classes are distinct from JPA entities; service code maps between them. |
+| `products` | Product catalog and SKU reference data. |
+| `stock` | Current physical quantity and future reservations by lot. |
+| `stock_reservation` | Order reservations against live stock lots. |
+| `inbound_supply` | Expected receipts, received state, and reserved shipment quantities. |
+| `inbound_reservation` | Order reservations against unreceived shipments. |
+| `allocation_run` | Idempotent run metadata, type, as-of date, completion state, and request hash. |
+| `allocation_record` | Per-order allocation and backorder results. |
+| `allocation_source` | Lot/shipment source detail for each allocation record. |
+| `open_backorder` | Current unfulfilled quantity by order. |
+| `allocation_sku_lock` | Per-SKU serialization for allocation workers. |
+| `allocation_sku_operation` | Per-run, per-SKU result used to resume work safely. |
+| `allocation_order_claim` | Prevents an order from being submitted as new demand more than once. |
+| `stock_daily_snapshots` | Aggregate daily stock trajectory. |
+| `stock_daily_lot_snapshots` | Lot-level daily balances and reservations used by the ledger sync. |
+| `stock_projection_lock` | Database row lock coordinating allocation, projection, and synchronization. |
+| `allocation_job_result` | Serialized result for completed asynchronous allocation jobs. |
+| `flyway_schema_history` | Flyway migration metadata. |
 
-The project does not use event sourcing: `allocation_source` is allocation provenance, while live stock and reservation tables remain the operational state. The `stock_ledger_run` and `stock_ledger_transaction` tables from the earlier transaction-based design were dropped in V9.
+Flyway migrations V1-V12 create and evolve these tables, seed products, add daily projections and concurrency support, and remove the retired stock-ledger tables. Hibernate validates the migrated schema at startup; it does not create or alter tables.
 
-## 9. Operational entry points
+## CSV import and Excel reports
 
-| Entry point | Behavior |
-| --- | --- |
-| MCP STDIO | Used by an MCP client to call the four logistics tools. |
-| `POST /api/logistics/allocate-and-sync` | Runs new-demand allocation and today's stock sync atomically; requires `asOfDate` to be today. |
-| `POST /api/admin/allocations/load-csv` | Loads the configured CSV and returns a generated request without allocating it. |
-| `POST /api/admin/reports/excel` | Generates a workbook for a previously persisted allocation run and returns its path. |
-| `fulfill_open_backorders` / `process_daily_stock` MCP tools | Independently fulfill pending orders and synchronize today's saved snapshot. |
+The CSV loader expects these columns, in this order:
 
-The REST listener defaults to loopback (`127.0.0.1:8080`). The application does not currently configure authentication or authorization. Flyway migrations apply at startup; Hibernate validates the resulting schema rather than creating or altering it.
+```text
+Artikel,Transactie_type,QTY,Datum
+```
+
+`Verkoop` rows become demand orders; `Levering` rows become inbound shipments. Other transaction types are skipped with a warning. Dates must be valid `yyyy-MM-dd` or day-first `d-M-yyyy` dates. Product titles are resolved through the product repository; an unknown title or malformed row fails the import. The loader generates new request, order, and shipment IDs and sample customer names, so loading the same file creates a new request rather than replaying an identical one.
+
+The configured default path is `docs/allocations.csv`. If the input file is not present there, set `ALLOCATION_CSV_PATH` to the location of the CSV to import.
+
+Reports are generated from a persisted allocation run and contain:
+
+- `Allocation Details`: one row per order with quantities, status, and inventory/inbound sources.
+- `Source Allocations`: one row per source allocation.
+- `Pivot Summary`: pivots by SKU/status and customer/SKU backorders.
+- `Formula Summary`: `SUMIFS` totals grouped by SKU and status.
+
+The output directory defaults to `${user.home}/itzitzo-mcp/reports` and is configurable with `REPORT_DIR`. The requested report name must be a simple `.xlsx` filename without a directory path.
+
+## Configuration and operations
+
+| Variable / property | Default | Purpose |
+| --- | --- | --- |
+| `DB_URL` | `jdbc:postgresql://localhost:5436/logistics` | PostgreSQL JDBC URL. |
+| `DB_USERNAME` / `DB_PASSWORD` | `logistics` / `logistics` | Database credentials. |
+| `DB_POOL_MAX_SIZE` | `10` | Hikari maximum pool size. |
+| `DB_POOL_MIN_IDLE` | `2` | Hikari minimum idle connections. |
+| `DB_POOL_CONNECTION_TIMEOUT_MS` | `30000` | Time to wait for a pool connection. |
+| `DB_POOL_IDLE_TIMEOUT_MS` | `600000` | Maximum idle connection time. |
+| `DB_POOL_MAX_LIFETIME_MS` | `1800000` | Maximum connection lifetime. |
+| `SERVER_ADDRESS` / `SERVER_PORT` | `127.0.0.1` / `8080` | HTTP bind address and port. |
+| `ALLOCATION_MAX_CONCURRENT_SKUS` | `4` | Maximum concurrent SKU workers. |
+| `ALLOCATION_CSV_PATH` | `docs/allocations.csv` | CSV input path. |
+| `REPORT_DIR` | `${user.home}/itzitzo-mcp/reports` | Excel output directory. |
+| `RABBITMQ_HOST` / `RABBITMQ_PORT` | `localhost` / `5672` | RabbitMQ server address. |
+| `RABBITMQ_USERNAME` / `RABBITMQ_PASSWORD` | `stockio` / `stockio` | RabbitMQ credentials. |
+| `ALLOCATION_RABBITMQ_EXCHANGE` | `stockio.allocation.exchange` | Allocation request exchange. |
+| `ALLOCATION_RABBITMQ_ROUTING_KEY` | `allocation.request` | Allocation request routing key. |
+| `ALLOCATION_RABBITMQ_REQUEST_QUEUE` | `stockio.allocation.requests` | Allocation request queue. |
+| `ALLOCATION_RABBITMQ_DEAD_LETTER_QUEUE` | `stockio.allocation.dead` | Queue for rejected requests. |
+| `ALLOCATION_RABBITMQ_PUBLISHER_ENABLED` | `true` | Enables the demo request publisher in the current application config. |
+| `ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL` | `1000` | Demo publisher interval in milliseconds. |
+| `JOBRUNR_DASHBOARD_PORT` | `8181` | JobRunr dashboard port. |
+
+Spring Boot Actuator exposes `health` and `metrics` on the application HTTP port. Useful Hikari metrics include:
+
+```text
+/actuator/metrics/hikaricp.connections
+/actuator/metrics/hikaricp.connections.active
+/actuator/metrics/hikaricp.connections.idle
+/actuator/metrics/hikaricp.connections.pending
+/actuator/metrics/hikaricp.connections.max
+```
+
+The metrics endpoint is operational information; keep it on a trusted interface or protect it with the deployment's access controls. Size the connection pool against PostgreSQL's connection limit across all application instances, not only one process.
+
+## Tests
+
+Run the service test suite with:
+
+```sh
+./gradlew :stockio-service:test
+```
+
+The integration tests use Testcontainers PostgreSQL to verify persistence, migrations, allocation, projections, and synchronization behavior.

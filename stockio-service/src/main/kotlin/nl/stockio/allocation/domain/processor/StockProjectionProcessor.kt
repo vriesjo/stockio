@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 class StockProjectionProcessor(
+    private val stockProjectionLockService: StockProjectionLockService,
     private val stockRepository: StockRepository,
     private val stockReservationRepository: StockReservationRepository,
     private val inboundSupplyRepository: InboundSupplyRepository,
@@ -26,6 +27,7 @@ class StockProjectionProcessor(
 
     @Transactional
     fun process(asOfDate: LocalDate) {
+        stockProjectionLockService.acquire()
         val startDate = maxOf(asOfDate, LocalDate.now())
         val stocks = stockRepository.findAll()
         val supplies = inboundSupplyRepository.findAll().filterNot { it.received }

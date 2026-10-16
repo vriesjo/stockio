@@ -67,6 +67,13 @@ interface InboundSupplyRepository : JpaRepository<InboundSupplyEntity, String> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select s from InboundSupplyEntity s where s.received = false order by s.expectedArrivalDate, s.shipmentId")
     fun lockAllUnreceived(): List<InboundSupplyEntity>
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query(
+        "select s from InboundSupplyEntity s where s.sku = :sku and s.received = false " +
+            "order by s.expectedArrivalDate, s.shipmentId"
+    )
+    fun lockAllUnreceivedBySku(@Param("sku") sku: String): List<InboundSupplyEntity>
 }
 
 interface InboundReservationRepository : JpaRepository<InboundReservationEntity, UUID> {

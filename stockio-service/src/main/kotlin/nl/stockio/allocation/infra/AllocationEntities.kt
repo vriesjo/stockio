@@ -6,6 +6,7 @@ import jakarta.persistence.EnumType
 import jakarta.persistence.Enumerated
 import jakarta.persistence.Id
 import jakarta.persistence.Table
+import jakarta.persistence.UniqueConstraint
 import nl.stockio.allocation.domain.bean.AllocationRunType
 import nl.stockio.allocation.domain.bean.AllocationSourceType
 import nl.stockio.allocation.domain.bean.AllocationStatus
@@ -29,8 +30,53 @@ class AllocationRunEntity(
     var asOfDate: LocalDate = LocalDate.now(),
     @Column(name = "open_backorder_count", nullable = false)
     var openBackorderCount: Int = 0,
+    @Column(nullable = false)
+    var completed: Boolean = true,
     @Column(name = "created_at", nullable = false)
     var createdAt: Instant = Instant.now()
+)
+
+@Entity
+@Table(
+    name = "allocation_sku_lock"
+)
+class AllocationSkuLockEntity(
+    @Id
+    @Column(length = 64)
+    var sku: String = ""
+)
+
+@Entity
+@Table(
+    name = "allocation_sku_operation",
+    uniqueConstraints = [UniqueConstraint(
+        name = "uq_allocation_sku_operation_run_sku",
+        columnNames = ["run_id", "sku"]
+    )]
+)
+class AllocationSkuOperationEntity(
+    @Id
+    var id: UUID = UUID.randomUUID(),
+    @Column(name = "run_id", nullable = false)
+    var runId: UUID = UUID.randomUUID(),
+    @Column(nullable = false, length = 64)
+    var sku: String = "",
+    @Column(name = "request_hash", nullable = false, length = 64)
+    var requestHash: String = "",
+    @Column(name = "result_json", nullable = false, columnDefinition = "TEXT")
+    var resultJson: String = ""
+)
+
+@Entity
+@Table(name = "allocation_order_claim")
+class AllocationOrderClaimEntity(
+    @Id
+    @Column(name = "order_id", length = 100)
+    var orderId: String = "",
+    @Column(name = "run_id", nullable = false)
+    var runId: UUID = UUID.randomUUID(),
+    @Column(nullable = false, length = 64)
+    var sku: String = ""
 )
 
 @Entity

@@ -7,6 +7,7 @@ import nl.stockio.allocation.domain.bean.AllocationJobStatus
 import nl.stockio.allocation.infra.AllocationJobResultRepository
 import org.jobrunr.jobs.states.StateName
 import org.jobrunr.storage.StorageProvider
+import org.jobrunr.storage.navigation.AmountRequest
 import org.springframework.stereotype.Service
 
 @Service
@@ -30,5 +31,18 @@ class AllocationJobService(
             status = job.state.name,
             result = result
         )
+    }
+
+    fun deleteJobsWithRetries() {
+        val failedJobs = storageProvider.getJobList(StateName.PROCESSING, AmountRequest("updatedAt:ASC", 100)) +
+            storageProvider.getJobList(StateName.SCHEDULED, AmountRequest("updatedAt:ASC", 100))
+        for (job in failedJobs) {
+            // JobRunr records a state history; multiple Failed/Processing transitions indicate retries.
+            val retryCount = job.jobStates.count { it.name == StateName.SCHEDULED || it.name == StateName.PROCESSING || it.name == StateName.FAILED }
+
+            if (retryCount > 2) {
+                storageProvider.deletePermanently(job.id)
+            }
+        }
     }
 }

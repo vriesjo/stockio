@@ -15,6 +15,13 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:5436/logistics}
     username: ${DB_USERNAME:logistics}
     password: ${DB_PASSWORD:logistics}
+    hikari:
+      pool-name: StockioHikariPool
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+      minimum-idle: ${DB_POOL_MIN_IDLE:2}
+      connection-timeout: ${DB_POOL_CONNECTION_TIMEOUT_MS:30000}
+      idle-timeout: ${DB_POOL_IDLE_TIMEOUT_MS:600000}
+      max-lifetime: ${DB_POOL_MAX_LIFETIME_MS:1800000}
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
@@ -41,9 +48,19 @@ server:
   address: ${SERVER_ADDRESS:127.0.0.1}
   port: ${SERVER_PORT:8080}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+  endpoint:
+    health:
+      show-details: never
+
 stockio:
   allocation:
     csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
+    max-concurrent-skus: ${ALLOCATION_MAX_CONCURRENT_SKUS:4}
     rabbitmq:
       exchange: ${ALLOCATION_RABBITMQ_EXCHANGE:stockio.allocation.exchange}
       routing-key: ${ALLOCATION_RABBITMQ_ROUTING_KEY:allocation.request}
