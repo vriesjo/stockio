@@ -12,6 +12,7 @@ import nl.stockio.allocation.infra.AllocationRecordEntity
 import nl.stockio.allocation.infra.AllocationRecordRepository
 import nl.stockio.allocation.infra.AllocationRunEntity
 import nl.stockio.allocation.infra.AllocationRunRepository
+import nl.stockio.allocation.infra.AllocationSkuOperationRepository
 import nl.stockio.allocation.infra.AllocationSourceEntity
 import nl.stockio.allocation.infra.AllocationSourceRepository
 import nl.stockio.allocation.infra.OpenBackorderRepository
@@ -21,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional
 @Component
 class AllocationRunService(
     private val runRepository: AllocationRunRepository,
+    private val skuOperationRepository: AllocationSkuOperationRepository,
     private val backorderRepository: OpenBackorderRepository,
     private val recordRepository: AllocationRecordRepository,
     private val sourceRepository: AllocationSourceRepository
@@ -36,6 +38,7 @@ class AllocationRunService(
                 require(validateConflict(previousRun, request)) {
                     "requestId '${request.requestId}' has already been used with a different request."
                 }
+                if (!previousRun.completed) return@let null
                 val runId = previousRun.id
                 val run = runRepository.findById(runId)
                     .orElseThrow { IllegalArgumentException("Allocation run '$runId' was not found.") }
@@ -85,10 +88,13 @@ class AllocationRunService(
     }
 
     @Transactional(readOnly = true)
-    fun getRun(runId: UUID): AllocationRunResult = requireNotNull(getRunById(runId)) { "Allocation run '$runId' was not found." }
+    fun getRun(runId: UUID): AllocationRunResult =
+        requireNotNull(getRunById(runId)) { "Completed allocation run '$runId' was not found." }
 
+    @Transactional(readOnly = true)
     fun getRunById(runId: UUID): AllocationRunResult? {
         return runRepository.findById(runId)
+            .filter { it.completed }
             .map { run ->
                 val entities = recordRepository.findAllByRunIdOrderBySequenceNumber(runId)
                 val sourcesByRecordId = if (entities.isEmpty()) {
@@ -136,25 +142,50 @@ class AllocationRunService(
             .orElse(null)
     }
 
+    @Transactional
+    fun beginOrResume(
+        request: AllocationRequest,
+        requestHash: String
+    ): AllocationRunEntity {
+        runRepository.insertIfMissing(
+            id = UUID.randomUUID(),
+            requestId = request.requestId,
+            requestHash = requestHash,
+            runType = request.runType.name,
+            asOfDate = request.asOfDate,
+            createdAt = Instant.now()
+        )
+        val run = runRepository.findByRequestId(request.requestId)
+            ?: throw IllegalStateException("Allocation request '${request.requestId}' could not be initialized.")
+        require(
+            run.requestHash == requestHash &&
+                run.runType == request.runType &&
+                run.asOfDate == request.asOfDate
+        ) {
+            "requestId '${request.requestId}' has already been used with a different request."
+        }
+        return run
+    }
 
-    fun persistRun(
-        requestId: UUID,
-        requestHash: String,
-        runType: AllocationRunType,
-        asOfDate: LocalDate,
+    @Transactional(readOnly = true)
+    fun getOperationSkus(runId: UUID): List<String> =
+        skuOperationRepository.findAllByRunId(runId).map { it.sku }
+
+    @Transactional
+    fun completeRun(
+        runId: UUID,
+        expectedSkus: Set<String>,
         allocations: List<AllocationRecord>
     ): AllocationRunResult {
-        val openBackorderCount = backorderRepository.count().toInt()
-        val run = runRepository.save(
-            AllocationRunEntity(
-                requestId = requestId,
-                requestHash = requestHash,
-                runType = runType,
-                asOfDate = asOfDate,
-                openBackorderCount = openBackorderCount,
-                createdAt = Instant.now()
-            )
-        )
+        val run = runRepository.lockById(runId)
+            ?: throw IllegalArgumentException("Allocation run '$runId' was not found.")
+        if (run.completed) return requireNotNull(getRunById(runId))
+
+        val completedSkus = skuOperationRepository.findAllByRunId(runId).map { it.sku }.toSet()
+        require(completedSkus == expectedSkus) {
+            "Allocation run '$runId' is missing completed SKU operations."
+        }
+
         val recordEntities = allocations.mapIndexed { index, allocation ->
             AllocationRecordEntity(
                 runId = run.id,
@@ -186,6 +217,9 @@ class AllocationRunService(
             }
         }
         sourceRepository.saveAll(sourceEntities)
+        run.openBackorderCount = backorderRepository.count().toInt()
+        run.completed = true
+        skuOperationRepository.deleteAllByRunId(runId)
 
         return AllocationRunResult(
             runId = run.id,

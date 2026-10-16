@@ -4,10 +4,12 @@ import jakarta.validation.Valid
 import java.nio.file.Path
 import nl.stockio.allocation.domain.bean.AllocationRequest
 import nl.stockio.allocation.domain.bean.ExcelReportRequest
+import nl.stockio.allocation.domain.job.AllocationJobService
 import nl.stockio.allocation.tools.AllocationTools
 import nl.stockio.allocation.domain.service.AllocationExcelService
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpStatus
+import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
@@ -21,6 +23,7 @@ import org.springframework.web.bind.annotation.RestController
 class AllocationAdminController(
     private val allocationExcelService: AllocationExcelService,
     private val allocationTools: AllocationTools,
+    private val allocationJobService: AllocationJobService,
     @Value("\${stockio.allocation.csv-path}")
     private val csvPath: String
 ) {
@@ -35,8 +38,15 @@ class AllocationAdminController(
     ): String =
         allocationTools.generateExcelReport(request)
 
+    @DeleteMapping("/allocations/delete-jobs-with-excessive-retries")
+    fun deleteJobsWithExcessiveRetries(): String {
+        allocationJobService.deleteJobsWithRetries()
+        return "Jobs with excessive retries deleted."
+    }
+
     @ExceptionHandler(IllegalArgumentException::class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     fun handleInvalidRequest(exception: IllegalArgumentException): Map<String, String> =
         mapOf("error" to (exception.message ?: "Invalid admin request."))
+
 }

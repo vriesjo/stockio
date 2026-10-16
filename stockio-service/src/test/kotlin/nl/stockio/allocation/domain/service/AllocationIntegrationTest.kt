@@ -25,6 +25,7 @@ import nl.stockio.allocation.infra.StockDailySnapshotRepository
 import nl.stockio.allocation.infra.StockEntity
 import nl.stockio.allocation.infra.StockRepository
 import nl.stockio.allocation.infra.StockReservationRepository
+import nl.stockio.util.requestHash
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.awaitility.Awaitility
 import org.junit.jupiter.api.Assertions
@@ -59,6 +60,9 @@ class AllocationIntegrationTest {
 
     @Autowired
     private lateinit var allocationService: AllocationService
+
+    @Autowired
+    private lateinit var allocationSkuWorker: AllocationSkuWorker
 
     @Autowired
     private lateinit var allocationRunService: AllocationRunService
@@ -121,6 +125,7 @@ class AllocationIntegrationTest {
         stockRepository.deleteAll()
         sourceRepository.deleteAll()
         recordRepository.deleteAll()
+        jdbcTemplate.update("DELETE FROM allocation_order_claim")
         runRepository.deleteAll()
         backorderRepository.deleteAll()
     }
@@ -285,6 +290,87 @@ class AllocationIntegrationTest {
             .andExpect(MockMvcResultMatchers.jsonPath("$.error").value("Allocation and stock synchronization require asOfDate to be today."))
 
         Assertions.assertEquals(0, runRepository.count())
+    }
+
+    @Test
+    fun `allocates distinct SKUs independently and aggregates the run idempotently`() {
+        val today = LocalDate.now()
+        stockRepository.save(
+            StockEntity(
+                sku = "MAKI-ZALM",
+                lotId = "LOT-A",
+                receivedDate = today.minusDays(1),
+                quantityOnHand = 2
+            )
+        )
+        val request = AllocationRequest(
+            requestId = UUID.fromString("aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa"),
+            asOfDate = today,
+            runType = AllocationRunType.NEW_DEMAND,
+            demandOrders = listOf(
+                DemandOrder(
+                    orderId = "ORDER-SKU-B",
+                    customer = "Inbound Customer",
+                    sku = "MAKI-TONIJN",
+                    requestedQuantity = 2,
+                    priority = 2,
+                    placedDate = today,
+                    requiredDeliveryDate = today.plusDays(1)
+                ),
+                DemandOrder(
+                    orderId = "ORDER-SKU-A",
+                    customer = "Inventory Customer",
+                    sku = "MAKI-ZALM",
+                    requestedQuantity = 2,
+                    priority = 1,
+                    placedDate = today,
+                    requiredDeliveryDate = today
+                )
+            ),
+            inboundShipments = listOf(
+                InboundShipment(
+                    shipmentId = "SHIP-SKU-B",
+                    sku = "MAKI-TONIJN",
+                    expectedQuantity = 2,
+                    expectedArrivalDate = today.plusDays(1)
+                )
+            )
+        )
+
+        val hash = requestHash(request)
+        val pendingRun = allocationRunService.beginOrResume(request, hash)
+        val inventorySkuOrders = request.demandOrders.filter { it.sku == "MAKI-ZALM" }
+        val firstSkuResult = allocationSkuWorker.allocateNewDemand(
+            runId = pendingRun.id,
+            requestHash = hash,
+            sku = "MAKI-ZALM",
+            asOfDate = today,
+            orders = inventorySkuOrders,
+            shipments = emptyList()
+        )
+        val retriedSkuResult = allocationSkuWorker.allocateNewDemand(
+            runId = pendingRun.id,
+            requestHash = hash,
+            sku = "MAKI-ZALM",
+            asOfDate = today,
+            orders = inventorySkuOrders,
+            shipments = emptyList()
+        )
+        Assertions.assertEquals(firstSkuResult, retriedSkuResult)
+
+        val firstRun = allocationService.allocation(request)
+        val retryRun = allocationService.allocation(request)
+
+        Assertions.assertEquals(firstRun.runId, retryRun.runId)
+        Assertions.assertEquals(listOf("ORDER-SKU-A", "ORDER-SKU-B"), firstRun.allocations.map { it.orderId })
+        Assertions.assertEquals(2, firstRun.allocations[0].allocatedFromInventory)
+        Assertions.assertEquals(2, firstRun.allocations[1].allocatedFromInbound)
+        Assertions.assertEquals(2, stockRepository.findAll().single().quantityReserved)
+        Assertions.assertEquals(2, jdbcTemplate.queryForObject(
+            "SELECT quantity_reserved FROM inbound_supply WHERE shipment_id = 'SHIP-SKU-B'",
+            Int::class.java
+        )!!)
+        Assertions.assertEquals(2, recordRepository.count())
     }
 
     @Test

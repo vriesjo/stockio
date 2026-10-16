@@ -4,36 +4,31 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import java.util.UUID
 import nl.stockio.allocation.domain.bean.AllocationAndSyncResult
 import nl.stockio.allocation.domain.bean.AllocationRequest
+import nl.stockio.allocation.domain.bean.AllocationRunResult
 import nl.stockio.allocation.domain.bean.ProcessDailyStockRequest
-import nl.stockio.allocation.infra.AllocationJobResultEntity
 import nl.stockio.allocation.infra.AllocationJobResultRepository
-import nl.stockio.allocation.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.service.AllocationService
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
+import org.jobrunr.jobs.annotations.Job
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Transactional
 
 @Service
 class AllocationJob(
     private val allocationService: AllocationService,
-    private val stockLedgerProcessor: StockLedgerProcessor,
-    private val stockProjectionProcessor: StockProjectionProcessor,
+    private val completionService: AllocationJobCompletionService,
     private val resultRepository: AllocationJobResultRepository,
     private val objectMapper: ObjectMapper
 ) {
 
-    @Transactional
+    @Job(name = "Execute Allocation Request", retries = 3)
     fun execute(jobId: UUID, request: AllocationRequest): AllocationAndSyncResult {
+        resultRepository.findById(jobId).orElse(null)?.let {
+            return objectMapper.readValue(it.resultJson, AllocationAndSyncResult::class.java)
+        }
         val allocationRun = allocationService.allocation(request)
-        stockProjectionProcessor.process(request.asOfDate)
-        val stockSync = stockLedgerProcessor.process(ProcessDailyStockRequest(request.asOfDate))
-        val result = AllocationAndSyncResult(allocationRun, stockSync)
-        resultRepository.save(
-            AllocationJobResultEntity(
-                jobId = jobId,
-                resultJson = objectMapper.writeValueAsString(result)
-            )
+        return completionService.complete(
+            jobId,
+            allocationRun,
+            ProcessDailyStockRequest(request.asOfDate)
         )
-        return result
     }
 }
