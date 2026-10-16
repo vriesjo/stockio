@@ -2,6 +2,7 @@ package nl.stockio.allocation.domain.job
 
 import java.time.LocalDate
 import nl.stockio.allocation.domain.bean.AllocationRequest
+import nl.stockio.product.infra.ProductRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentCaptor
@@ -15,7 +16,8 @@ class AllocationRequestPublisherTest {
     @Test
     fun `publishes a sample allocation request to the configured exchange`() {
         val rabbitTemplate = mock(RabbitTemplate::class.java)
-        val publisher = AllocationRequestPublisher(rabbitTemplate, "allocation.exchange", "allocation.request")
+        val productRepository = mock(ProductRepository::class.java)
+        val publisher = AllocationRequestPublisher(rabbitTemplate, productRepository, "allocation.exchange", "allocation.request")
 
         publisher.publishSampleRequest()
 

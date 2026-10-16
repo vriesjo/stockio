@@ -2,6 +2,7 @@ package nl.stockio.allocation.domain.job
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import nl.stockio.allocation.domain.bean.AllocationRequest
+import org.jobrunr.storage.JobNotFoundException
 import org.jobrunr.storage.StorageProvider
 import org.springframework.amqp.rabbit.annotation.RabbitListener
 import org.springframework.stereotype.Component
@@ -21,21 +22,25 @@ class AllocationRabbitListener(
         try {
             allocationJob.execute(jobId, request)
             logger.info { "Processed allocation request '${request.requestId}' synchronously." }
-//        } catch (exception: IllegalArgumentException) {
-//            logger.error(exception) {
-//                "Allocation request '${request.requestId}' is invalid; rejecting it to the dead-letter queue."
-//            }
-//            throw exception
+        } catch (exception: IllegalArgumentException) {
+            logger.error(exception) {
+                "Allocation request '${request.requestId}' is invalid; rejecting it to the dead-letter queue."
+            }
+            throw exception
         } catch (exception: Exception) {
             logger.error(exception) {
                 "Synchronous processing of allocation request '${request.requestId}' failed; enqueueing JobRunr fallback."
             }
+            val existingJob = try {
+                storageProvider.getJobById(jobId)
+            } catch (_: JobNotFoundException) {
+                null
+            }
+            if (existingJob != null) {
+                logger.info { "JobRunr job '${jobId}' already exists; skipping enqueue." }
+                return
+            }
             allocationEventListener.enqueue(AllocationRequestEvent(jobId, request))
-            runCatching { storageProvider.getJobById(jobId) }.getOrNull()
-                ?.let {
-                    logger.info { "JobRunr job '${jobId}' already exists; skipping enqueue." }
-                    return
-                } ?: allocationEventListener.enqueue(AllocationRequestEvent(jobId, request))
         }
     }
 }
