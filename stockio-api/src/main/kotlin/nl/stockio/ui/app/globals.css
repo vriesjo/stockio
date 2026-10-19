@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  font-family: Arial, Helvetica, sans-serif;
+  background: #f5f6f2;
+  color: #182d27;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+::selection {
+  background: #c8edda;
+}
+
+.field {
+  width: 100%;
+  border: 1px solid #d5ddd6;
+  border-radius: 0.65rem;
+  background: white;
+  padding: 0.7rem 0.85rem;
+  color: #182d27;
+}
+
+.field:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+a:focus-visible {
+  outline: 3px solid #72b698;
+  outline-offset: 3px;
+}
+
+.field:disabled {
+  background: #f5f6f2;
+}
+
+.field::placeholder {
+  color: #75847b;
+}
