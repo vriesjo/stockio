@@ -6,13 +6,13 @@ import java.nio.file.Path
 import java.time.Duration
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.bean.AllocationJobAccepted
-import nl.stockio.allocation.domain.bean.AllocationRequest
-import nl.stockio.allocation.domain.bean.AllocationRunType
-import nl.stockio.allocation.domain.bean.AllocationStatus
-import nl.stockio.allocation.domain.bean.DemandOrder
-import nl.stockio.allocation.domain.bean.InboundShipment
-import nl.stockio.allocation.domain.bean.ProcessDailyStockRequest
+import nl.stockio.allocation.domain.api.bean.AllocationJobAccepted
+import nl.stockio.allocation.domain.api.bean.AllocationRequest
+import nl.stockio.allocation.domain.api.bean.AllocationRunType
+import nl.stockio.allocation.domain.api.bean.AllocationStatus
+import nl.stockio.allocation.domain.api.bean.DemandOrder
+import nl.stockio.allocation.domain.api.bean.InboundShipment
+import nl.stockio.allocation.domain.api.bean.ProcessDailyStockRequest
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
 import nl.stockio.allocation.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.processor.StockProjectionProcessor
@@ -26,6 +26,8 @@ import nl.stockio.allocation.infra.StockEntity
 import nl.stockio.allocation.infra.StockRepository
 import nl.stockio.allocation.infra.StockReservationRepository
 import nl.stockio.util.requestHash
+import nl.stockio.product.infra.ProductKnowledgeChunk
+import nl.stockio.product.infra.ProductVectorRepository
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.awaitility.Awaitility
 import org.junit.jupiter.api.Assertions
@@ -101,6 +103,9 @@ class AllocationIntegrationTest {
     private lateinit var stockReservationRepository: StockReservationRepository
 
     @Autowired
+    private lateinit var productVectorRepository: ProductVectorRepository
+
+    @Autowired
     private lateinit var stockLedgerProcessor: StockLedgerProcessor
 
     @Autowired
@@ -126,6 +131,8 @@ class AllocationIntegrationTest {
         sourceRepository.deleteAll()
         recordRepository.deleteAll()
         jdbcTemplate.update("DELETE FROM allocation_order_claim")
+        jdbcTemplate.update("DELETE FROM product_knowledge_chunks")
+        jdbcTemplate.update("DELETE FROM product_embeddings")
         runRepository.deleteAll()
         backorderRepository.deleteAll()
     }
@@ -150,6 +157,72 @@ class AllocationIntegrationTest {
                 String::class.java,
                 "OZEKI-SAKE-DRY"
             ) ?: error("The seeded Ozeki product has no content attributes.")
+        )
+    }
+
+    @Test
+    fun `pgvector stores and searches catalog embeddings and Tavily knowledge`() {
+        val embedding = List(ProductVectorRepository.EMBEDDING_DIMENSIONS) { index ->
+            if (index == 0) 1.0 else 0.0
+        }
+        productVectorRepository.upsertProductEmbedding(
+            sku = "MAKI-KOMKOMMER",
+            model = "integration-test",
+            contentHash = "catalog-hash",
+            embedding = embedding
+        )
+        productVectorRepository.upsertKnowledgeChunks(
+            sku = "MAKI-KOMKOMMER",
+            model = "integration-test",
+            chunks = listOf(
+                ProductKnowledgeChunk(
+                    sourceUrl = "https://example.test/maki-komkommer",
+                    sourceTitle = "Maki Komkommer",
+                    content = "Cucumber maki sushi",
+                    contentHash = "source-hash",
+                    embedding = embedding
+                )
+            )
+        )
+        productVectorRepository.upsertProductEmbedding(
+            sku = "MAKI-KOMKOMMER",
+            model = "integration-test",
+            contentHash = "catalog-hash",
+            embedding = embedding
+        )
+        productVectorRepository.upsertKnowledgeChunks(
+            sku = "MAKI-KOMKOMMER",
+            model = "integration-test",
+            chunks = listOf(
+                ProductKnowledgeChunk(
+                    sourceUrl = "https://example.test/maki-komkommer",
+                    sourceTitle = "Maki Komkommer",
+                    content = "Cucumber maki sushi",
+                    contentHash = "source-hash",
+                    embedding = embedding
+                )
+            )
+        )
+
+        Assertions.assertEquals(
+            "MAKI-KOMKOMMER",
+            productVectorRepository.findSimilarProducts(embedding, "integration-test", 1).single().sku
+        )
+        Assertions.assertEquals(
+            "MAKI-KOMKOMMER",
+            productVectorRepository.findSimilarKnowledge(embedding, "integration-test", 1).single().sku
+        )
+        Assertions.assertEquals(
+            mapOf("MAKI-KOMKOMMER" to "catalog-hash"),
+            productVectorRepository.findProductEmbeddingHashes("integration-test")
+        )
+        Assertions.assertEquals(
+            1,
+            jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM product_knowledge_chunks WHERE sku = ?",
+                Int::class.java,
+                "MAKI-KOMKOMMER"
+            ) ?: error("The product knowledge chunk count query returned no result.")
         )
     }
 
@@ -821,7 +894,7 @@ class AllocationIntegrationTest {
     companion object {
         @Container
         @JvmField
-        val postgres = PostgreSQLContainer<Nothing>("postgres:16-alpine")
+        val postgres = PostgreSQLContainer<Nothing>("pgvector/pgvector:pg16")
 
         @DynamicPropertySource
         @JvmStatic

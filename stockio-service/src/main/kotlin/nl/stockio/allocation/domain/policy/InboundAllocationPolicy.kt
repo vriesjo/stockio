@@ -1,7 +1,7 @@
 package nl.stockio.allocation.domain.policy
 
-import nl.stockio.allocation.domain.bean.AllocationSource
-import nl.stockio.allocation.domain.bean.AllocationSourceType
+import nl.stockio.allocation.domain.api.bean.AllocationSource
+import nl.stockio.allocation.domain.api.bean.AllocationSourceType
 import java.time.LocalDate
 import kotlin.math.min
 import nl.stockio.allocation.domain.model.InboundReservationChange

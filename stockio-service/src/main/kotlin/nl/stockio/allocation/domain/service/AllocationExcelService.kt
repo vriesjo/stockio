@@ -11,10 +11,10 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.collections.plusAssign
 import kotlin.random.Random
-import nl.stockio.allocation.domain.bean.AllocationRequest
-import nl.stockio.allocation.domain.bean.AllocationRunType
-import nl.stockio.allocation.domain.bean.DemandOrder
-import nl.stockio.allocation.domain.bean.InboundShipment
+import nl.stockio.allocation.domain.api.bean.AllocationRequest
+import nl.stockio.allocation.domain.api.bean.AllocationRunType
+import nl.stockio.allocation.domain.api.bean.DemandOrder
+import nl.stockio.allocation.domain.api.bean.InboundShipment
 import nl.stockio.product.infra.ProductRepository
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service

@@ -7,7 +7,7 @@ The Kotlin Spring Boot MCP server processes a lot-level stock ledger, allocates 
 Requirements: JDK 21 and PostgreSQL (or Docker Compose for a local database). Start the included PostgreSQL service and configure the server connection with:
 
 ```shell
-export DB_URL=jdbc:postgresql://localhost:5436/logistics
+export DB_URL=jdbc:postgresql://localhost:5437/logistics
 export DB_USERNAME=logistics
 export DB_PASSWORD=your-password
 export REPORT_DIR="$HOME/itzitzo-mcp/reports"

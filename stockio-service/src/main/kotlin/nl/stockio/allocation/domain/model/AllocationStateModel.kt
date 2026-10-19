@@ -3,7 +3,7 @@ package nl.stockio.allocation.domain.model
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.bean.AllocationRecord
+import nl.stockio.allocation.domain.api.bean.AllocationRecord
 
 data class AllocationOrder(
     val orderId: String,

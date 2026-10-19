@@ -9,4 +9,6 @@ import org.springframework.data.repository.query.Param
 interface ProductRepository : JpaRepository<ProductEntity, UUID> {
     @Query("select product.sku from ProductEntity product where lower(product.title) = lower(:title)")
     fun findSkuByTitle(@Param("title") title: String): String?
+
+    fun findAllByStatus(status: String): List<ProductEntity>
 }

@@ -14,5 +14,11 @@ class ProductEntity(
     @Column(nullable = false, length = 64)
     var sku: String = "",
     @Column(nullable = false, length = 255)
-    var title: String = ""
+    var title: String = "",
+    @Column
+    var description: String? = null,
+    @Column(nullable = false, length = 20)
+    var status: String = "ACTIVE",
+    @Column(nullable = false, length = 20)
+    var category: String = "H"
 )

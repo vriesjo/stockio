@@ -4,7 +4,6 @@ import jakarta.persistence.LockModeType
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.bean.AllocationRunType
 import org.springframework.data.jpa.repository.Lock
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Modifying

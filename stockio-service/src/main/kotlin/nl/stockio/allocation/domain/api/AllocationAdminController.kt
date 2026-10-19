@@ -2,8 +2,8 @@ package nl.stockio.allocation.domain.api
 
 import jakarta.validation.Valid
 import java.nio.file.Path
-import nl.stockio.allocation.domain.bean.AllocationRequest
-import nl.stockio.allocation.domain.bean.ExcelReportRequest
+import nl.stockio.allocation.domain.api.bean.AllocationRequest
+import nl.stockio.allocation.domain.api.bean.ExcelReportRequest
 import nl.stockio.allocation.domain.job.AllocationJobService
 import nl.stockio.allocation.tools.AllocationTools
 import nl.stockio.allocation.domain.service.AllocationExcelService

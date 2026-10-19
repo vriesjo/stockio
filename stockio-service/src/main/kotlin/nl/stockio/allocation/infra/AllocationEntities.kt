@@ -7,9 +7,9 @@ import jakarta.persistence.Enumerated
 import jakarta.persistence.Id
 import jakarta.persistence.Table
 import jakarta.persistence.UniqueConstraint
-import nl.stockio.allocation.domain.bean.AllocationRunType
-import nl.stockio.allocation.domain.bean.AllocationSourceType
-import nl.stockio.allocation.domain.bean.AllocationStatus
+import nl.stockio.allocation.domain.api.bean.AllocationRunType
+import nl.stockio.allocation.domain.api.bean.AllocationSourceType
+import nl.stockio.allocation.domain.api.bean.AllocationStatus
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID

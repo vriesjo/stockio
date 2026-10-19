@@ -2,9 +2,9 @@ package nl.stockio.allocation.domain.processor
 
 import java.nio.file.Files
 import java.nio.file.Path
-import nl.stockio.allocation.domain.bean.AllocationRunResult
-import nl.stockio.allocation.domain.bean.AllocationSourceType
-import nl.stockio.allocation.domain.bean.AllocationStatus
+import nl.stockio.allocation.domain.api.bean.AllocationRunResult
+import nl.stockio.allocation.domain.api.bean.AllocationSourceType
+import nl.stockio.allocation.domain.api.bean.AllocationStatus
 import org.apache.poi.ss.SpreadsheetVersion
 import org.apache.poi.ss.usermodel.DataConsolidateFunction
 import org.apache.poi.ss.usermodel.Row

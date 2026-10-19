@@ -12,7 +12,7 @@ spring:
         version: 0.0.1
 
   datasource:
-    url: ${DB_URL:jdbc:postgresql://localhost:5436/logistics}
+    url: ${DB_URL:jdbc:postgresql://localhost:5437/logistics}
     username: ${DB_USERNAME:logistics}
     password: ${DB_PASSWORD:logistics}
     hikari:
@@ -58,6 +58,17 @@ management:
       show-details: never
 
 stockio:
+  product-resolution:
+    tavily-api-key: ${TAVILY_API_KEY:}
+    tavily-base-url: ${TAVILY_BASE_URL:https://api.tavily.com}
+    ollama-base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+    embedding-model: ${OLLAMA_EMBEDDING_MODEL:nomic-embed-text}
+    request-timeout: ${PRODUCT_RESOLUTION_TIMEOUT:15s}
+    max-results: ${PRODUCT_RESOLUTION_MAX_RESULTS:5}
+    max-candidates: ${PRODUCT_RESOLUTION_MAX_CANDIDATES:5}
+    minimum-similarity: ${PRODUCT_RESOLUTION_MINIMUM_SIMILARITY:0.72}
+    minimum-similarity-gap: ${PRODUCT_RESOLUTION_MINIMUM_SIMILARITY_GAP:0.04}
+    minimum-tavily-evidence-similarity: ${PRODUCT_RESOLUTION_MINIMUM_TAVILY_EVIDENCE_SIMILARITY:0.25}
   allocation:
     csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
     max-concurrent-skus: ${ALLOCATION_MAX_CONCURRENT_SKUS:4}
@@ -69,7 +80,7 @@ stockio:
       dead-letter-routing-key: ${ALLOCATION_RABBITMQ_DEAD_LETTER_ROUTING_KEY:allocation.failed}
       dead-letter-queue: ${ALLOCATION_RABBITMQ_DEAD_LETTER_QUEUE:stockio.allocation.dead}
       publisher:
-        enabled: ${ALLOCATION_RABBITMQ_PUBLISHER_ENABLED:true}
+        enabled: ${ALLOCATION_RABBITMQ_PUBLISHER_ENABLED:false}
         interval: ${ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL:1000}
   report:
     directory: ${REPORT_DIR:${user.home}/itzitzo-mcp/reports}

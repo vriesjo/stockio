@@ -1,7 +1,7 @@
 package nl.stockio.allocation.domain.job
 
 import java.time.LocalDate
-import nl.stockio.allocation.domain.bean.AllocationRequest
+import nl.stockio.allocation.domain.api.bean.AllocationRequest
 import nl.stockio.product.infra.ProductRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test

@@ -6,13 +6,13 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
-import nl.stockio.allocation.domain.bean.AllocationRecord
-import nl.stockio.allocation.domain.bean.AllocationRequest
-import nl.stockio.allocation.domain.bean.AllocationRunResult
-import nl.stockio.allocation.domain.bean.AllocationRunType
+import nl.stockio.allocation.domain.api.bean.AllocationRecord
+import nl.stockio.allocation.domain.api.bean.AllocationRequest
+import nl.stockio.allocation.domain.api.bean.AllocationRunResult
+import nl.stockio.allocation.domain.api.bean.AllocationRunType
 import nl.stockio.allocation.infra.OpenBackorderRepository
 import nl.stockio.util.requestHash
-import nl.stockio.allocation.validator.AllocationRequestValidator
+import nl.stockio.allocation.domain.api.validator.AllocationRequestValidator
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
