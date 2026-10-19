@@ -2,8 +2,8 @@ package nl.stockio.allocation.domain.job
 
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.bean.AllocationJobAccepted
-import nl.stockio.allocation.domain.api.bean.AllocationRequest
+import nl.stockio.allocation.domain.api.data.AllocationJobAccepted
+import nl.stockio.allocation.domain.api.data.AllocationRequest
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional

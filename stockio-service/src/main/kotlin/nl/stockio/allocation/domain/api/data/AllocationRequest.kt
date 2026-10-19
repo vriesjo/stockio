@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.api.bean
+package nl.stockio.allocation.domain.api.data
 
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank

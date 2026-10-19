@@ -68,6 +68,8 @@ stockio:
     max-candidates: ${PRODUCT_RESOLUTION_MAX_CANDIDATES:5}
     minimum-similarity: ${PRODUCT_RESOLUTION_MINIMUM_SIMILARITY:0.72}
     minimum-similarity-gap: ${PRODUCT_RESOLUTION_MINIMUM_SIMILARITY_GAP:0.04}
+    minimum-local-similarity: ${PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY:0.90}
+    minimum-local-similarity-gap: ${PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY_GAP:0.08}
     minimum-tavily-evidence-similarity: ${PRODUCT_RESOLUTION_MINIMUM_TAVILY_EVIDENCE_SIMILARITY:0.25}
   allocation:
     csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}

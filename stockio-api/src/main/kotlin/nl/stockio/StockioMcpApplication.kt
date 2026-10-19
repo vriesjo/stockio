@@ -4,8 +4,8 @@ import org.springframework.boot.SpringApplication
 import org.springframework.boot.autoconfigure.SpringBootApplication
 
 @SpringBootApplication
-class McpApplication
+class StockioMcpApplication
 
 fun main(args: Array<String>) {
-    SpringApplication.run(McpApplication::class.java, *args)
+    SpringApplication.run(StockioMcpApplication::class.java, *args)
 }

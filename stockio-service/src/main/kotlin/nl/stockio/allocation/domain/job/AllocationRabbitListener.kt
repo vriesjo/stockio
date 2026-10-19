@@ -1,7 +1,7 @@
 package nl.stockio.allocation.domain.job
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import nl.stockio.allocation.domain.api.bean.AllocationRequest
+import nl.stockio.allocation.domain.api.data.AllocationRequest
 import org.jobrunr.storage.JobNotFoundException
 import org.jobrunr.storage.StorageProvider
 import org.springframework.amqp.rabbit.annotation.RabbitListener

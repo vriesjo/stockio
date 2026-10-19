@@ -5,10 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.bean.AllocationRecord
-import nl.stockio.allocation.domain.api.bean.AllocationStatus
-import nl.stockio.allocation.domain.api.bean.DemandOrder
-import nl.stockio.allocation.domain.api.bean.InboundShipment
+import nl.stockio.allocation.domain.api.data.AllocationRecord
+import nl.stockio.allocation.domain.api.data.AllocationStatus
+import nl.stockio.allocation.domain.api.data.DemandOrder
+import nl.stockio.allocation.domain.api.data.InboundShipment
 import nl.stockio.allocation.domain.converter.toInboundReservationChange
 import nl.stockio.allocation.domain.converter.toInboundSupplyState
 import nl.stockio.allocation.domain.converter.toInventoryLotState

@@ -1,7 +1,7 @@
 package nl.stockio.allocation.domain.policy
 
-import nl.stockio.allocation.domain.api.bean.AllocationSource
-import nl.stockio.allocation.domain.api.bean.AllocationSourceType
+import nl.stockio.allocation.domain.api.data.AllocationSource
+import nl.stockio.allocation.domain.api.data.AllocationSourceType
 import java.time.LocalDate
 import java.util.UUID
 import kotlin.math.min

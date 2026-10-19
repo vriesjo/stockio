@@ -1,4 +1,4 @@
-package nl.stockio
+package nl.stockio.api
 
 import io.modelcontextprotocol.client.McpClient
 import io.modelcontextprotocol.client.McpSyncClient

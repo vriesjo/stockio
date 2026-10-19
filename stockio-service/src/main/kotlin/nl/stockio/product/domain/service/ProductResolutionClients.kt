@@ -43,6 +43,8 @@ data class ProductResolutionProperties(
     var maxCandidates: Int = 5,
     var minimumSimilarity: Double = 0.72,
     var minimumSimilarityGap: Double = 0.04,
+    var minimumLocalSimilarity: Double = 0.90,
+    var minimumLocalSimilarityGap: Double = 0.08,
     var minimumTavilyEvidenceSimilarity: Double = 0.25
 )
 

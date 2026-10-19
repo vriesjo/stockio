@@ -3,10 +3,10 @@ package nl.stockio.allocation.domain.job
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.bean.AllocationRequest
-import nl.stockio.allocation.domain.api.bean.AllocationRunType
-import nl.stockio.allocation.domain.api.bean.DemandOrder
-import nl.stockio.allocation.domain.api.bean.InboundShipment
+import nl.stockio.allocation.domain.api.data.AllocationRequest
+import nl.stockio.allocation.domain.api.data.AllocationRunType
+import nl.stockio.allocation.domain.api.data.DemandOrder
+import nl.stockio.allocation.domain.api.data.InboundShipment
 import nl.stockio.product.infra.ProductRepository
 import org.springframework.amqp.rabbit.core.RabbitTemplate
 import org.springframework.beans.factory.annotation.Value

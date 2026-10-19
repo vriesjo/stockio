@@ -2,8 +2,8 @@ package nl.stockio.allocation.domain.processor
 
 import java.time.Instant
 import java.time.LocalDate
-import nl.stockio.allocation.domain.api.bean.ProcessDailyStockRequest
-import nl.stockio.allocation.domain.api.bean.StockSyncResult
+import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
+import nl.stockio.allocation.domain.api.data.StockSyncResult
 import nl.stockio.allocation.infra.InboundReservationRepository
 import nl.stockio.allocation.infra.InboundSupplyRepository
 import nl.stockio.allocation.infra.StockDailyLotSnapshotRepository

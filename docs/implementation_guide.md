@@ -6,7 +6,7 @@ Support requests such as:
 
 > Hold 50 units of Maki Komkommer, or the nearest equivalent.
 
-The service must identify what product the user means before it can allocate inventory. A Tavily product lookup is a required prerequisite for every allocation request; local cached knowledge may help interpret and compare results, but it must not bypass that lookup. Once a request is resolved to a product in Stockio's catalog, Stockio's existing allocation workflow remains the authority for reserving stock and inbound supply.
+The service must identify what product the user means before it can allocate inventory. It checks exact active-catalog titles first, then searches local catalog and knowledge vectors. Tavily is a fallback when local matching is insufficient or ambiguous. Once a request is resolved to a product in Stockio's catalog, Stockio's existing allocation workflow remains the authority for reserving stock and inbound supply.
 
 This document is an implementation plan for the existing Stockio service, not a standalone reservation implementation. In particular, the proposed `reserve_stock` MCP tool and `StockReservationMcpClient` are not part of the documented service architecture and should not be added as a parallel inventory path.
 
@@ -27,7 +27,12 @@ Natural-language request
 Parse intent and requested product phrase
         |
         v
-Required Tavily search for the product and possible equivalents
+Exact active-catalog title match, otherwise local vector search
+        |
+        +---- Confident local match --> Resolve SKU and allocate
+        |
+        v
+Fallback Tavily search for the product and possible equivalents
         |
         v
 Compare search evidence with Stockio's product catalog
@@ -53,17 +58,17 @@ The MCP caller parses the user's natural-language request into the structured `P
 
 The caller must also provide `requestId`, `orderId`, `customer`, `priority`, `placedDate`, `requiredDeliveryDate`, and `asOfDate`. These are required by Stockio's allocation model and must not be invented by the service. `allowEquivalent` defaults to `true`.
 
-### 2. Perform the required Tavily lookup
+### 2. Resolve locally before calling Tavily
 
-Run a Tavily search for the requested product and reasonable equivalent names or descriptions before each allocation. Tavily result titles and content participate in matching against Stockio's catalog. A local vector-search hit may add candidate context, but it is not a substitute for completing Tavily lookup.
+An exact normalized active-catalog title match skips both Ollama and Tavily. Without an exact match, `allowEquivalent: false` returns no match without external calls. Otherwise, embed the query with Ollama, refresh missing or stale catalog vectors, and search both catalog embeddings and cached knowledge. A local candidate must score at least `0.90` and lead the next candidate by at least `0.08` to skip Tavily. These separately configurable defaults are conservative starting points, not calibrated confidence probabilities; tune them against representative queries.
 
-If Tavily is unavailable, returns no useful evidence, or the result cannot be mapped to a Stockio catalog product, fail closed: report that no allocation was made. Do not allocate using an unverified SKU or silently fall back to a stale result.
+If local matching is weak or ambiguous, run a Tavily search for the requested product and reasonable equivalent names or descriptions. Tavily result titles and content participate in matching against Stockio's catalog. If the fallback is unavailable, returns no useful evidence, or cannot resolve a credible catalog match, report that no allocation was made.
 
 ### 3. Resolve a result to a catalog SKU
 
-Use Tavily results as evidence for product identity, not as inventory records. Compare the evidence to Stockio's active product catalog and resolve to a SKU that Stockio already knows. The implementation embeds the query and search evidence with Ollama, compares them with catalog and cached-knowledge vectors in pgvector, and boosts candidates whose catalog title appears in Tavily evidence. Exact normalized title matches are preferred.
+On the fallback path, use Tavily results as evidence for product identity, not as inventory records. Compare the evidence to Stockio's active product catalog and resolve to a SKU that Stockio already knows. The implementation reuses the query embedding, embeds search evidence with Ollama, compares both with catalog and cached-knowledge vectors in pgvector, and boosts candidates whose catalog title appears in Tavily evidence.
 
-For non-exact matches, the default minimum similarity is `0.72`; if the top two candidate scores differ by less than `0.04`, the match is ambiguous. Both values are configurable. When the requested product is absent but one equivalent catalog product is a sufficiently strong match, return the selected catalog product and Tavily sources. If no candidate qualifies or the match is ambiguous, stop and return candidates rather than allocating against a guess.
+For fallback matches, the default minimum similarity is `0.72`; if the top two candidate scores differ by less than `0.04`, the match is ambiguous. Both values are configurable. When one equivalent catalog product is a sufficiently strong match, return the selected catalog product and Tavily sources. If no candidate qualifies or the match is ambiguous, stop and return candidates rather than allocating against a guess. Local-only results return an empty sources list; no new external lookup was performed.
 
 ### 4. Allocate through Stockio
 
@@ -93,14 +98,14 @@ Treat Tavily content as external, potentially stale or incorrect input. Validate
 ## Implementation phases
 
 1. **Provide request metadata.** The MCP caller supplies the order/customer identity and dates required by Stockio, along with a stable `requestId` for retries.
-2. **Run required external lookup.** Tavily is called for every request, even when local product embeddings or knowledge are cached. External calls use a bounded timeout.
+2. **Resolve locally, then fall back to external lookup.** Exact title matches skip external calls; strong, separated local vector matches skip Tavily. External calls use a bounded timeout.
 3. **Resolve and cache product evidence.** Ollama embeds the query, active catalog descriptions, and Tavily results. pgvector ranks catalog products and prior Tavily knowledge; successful source chunks are upserted for the resolved SKU.
 4. **Delegate allocation.** The `allocate_product_by_name` MCP tool builds a normal `NEW_DEMAND` `AllocationRequest`, invokes `AllocationService`, and rebuilds the projection. Existing behavior is preserved: available inventory/inbound quantity is allocated, and any remainder is saved as an open backorder.
 5. **Return an auditable result.** Return the selected product/SKU, Tavily sources, allocation run, and actual allocated/backordered quantities. If resolution fails, return candidate products and do not allocate.
 
 ## Failure and safety behavior
 
-- No allocation begins until the required Tavily lookup has completed and the requested product has been resolved to a catalog SKU.
+- No allocation begins until an exact active-catalog match, a confident local vector match, or a verified Tavily fallback resolves the requested product to a catalog SKU.
 - Tavily, embedding, or database errors are surfaced as failures; they must not be converted into success-shaped results.
 - No credible match or unresolved ambiguity means no allocation. Return useful candidate information when available.
 - The selected SKU and product name are included in the result so an equivalent substitution is visible to the caller.
@@ -109,10 +114,10 @@ Treat Tavily content as external, potentially stale or incorrect input. Validate
 
 ## Acceptance criteria
 
-- A request such as “Hold 50 units of Maki Komkommer, or the nearest equivalent” performs Tavily lookup before allocation and resolves to a real catalog SKU.
-- A locally cached product match does not bypass the required Tavily lookup.
+- A request such as “Hold 50 units of Maki Komkommer, or the nearest equivalent” resolves to a real catalog SKU, using local matches before Tavily.
+- Exact catalog matches bypass Ollama and Tavily; strong, unambiguous local vector matches bypass Tavily.
 - The caller supplies all required order metadata, and shortages follow Stockio's partial-allocation/backorder behavior.
-- Tavily failure, no credible catalog match, and unresolved ambiguity each result in no allocation and a clear failure or candidate response.
+- Tavily fallback failure, no credible catalog match, and unresolved ambiguity each result in no allocation and a clear failure or candidate response.
 - A resolved request delegates allocation to Stockio's existing workflow and reports its actual stock, inbound, and backorder results.
 - Replaying the same allocation request follows existing idempotency behavior; repeating knowledge ingestion does not create duplicate chunks.
 - Automated tests cover successful resolution and allocation, equivalent-product resolution, the failure cases above, and the selected shortage behavior.
@@ -121,7 +126,7 @@ Treat Tavily content as external, potentially stale or incorrect input. Validate
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TAVILY_API_KEY` | empty (required at request time) | Tavily API credential. |
+| `TAVILY_API_KEY` | empty (required for fallback) | Tavily API credential. |
 | `TAVILY_BASE_URL` | `https://api.tavily.com` | Tavily API base URL. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama service URL. |
 | `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model; it must return 768 dimensions. |
@@ -130,6 +135,8 @@ Treat Tavily content as external, potentially stale or incorrect input. Validate
 | `PRODUCT_RESOLUTION_MAX_CANDIDATES` | `5` | Maximum catalog candidates evaluated/returned. |
 | `PRODUCT_RESOLUTION_MINIMUM_SIMILARITY` | `0.72` | Minimum score for a non-exact product match. |
 | `PRODUCT_RESOLUTION_MINIMUM_SIMILARITY_GAP` | `0.04` | Minimum lead over the second candidate to accept an equivalent. |
+| `PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY` | `0.90` | Minimum local vector score to bypass Tavily; tune against representative queries. |
+| `PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY_GAP` | `0.08` | Minimum local lead over the second candidate to bypass Tavily. |
 | `PRODUCT_RESOLUTION_MINIMUM_TAVILY_EVIDENCE_SIMILARITY` | `0.25` | Minimum cosine similarity between the requested phrase and Tavily evidence. |
 
-Set `TAVILY_API_KEY` before using the MCP tool, start Ollama at the configured URL, and pull the configured model (for the default model, run `ollama pull nomic-embed-text`). PostgreSQL must support the `vector` extension; the Compose and integration-test configurations use pgvector-enabled images.
+Set `TAVILY_API_KEY` to enable fallback searches, start Ollama at the configured URL for semantic matching, and pull the configured model (for the default model, run `ollama pull nomic-embed-text`). PostgreSQL must support the `vector` extension; the Compose and integration-test configurations use pgvector-enabled images.

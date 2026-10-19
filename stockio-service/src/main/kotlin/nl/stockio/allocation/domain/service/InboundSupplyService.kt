@@ -1,6 +1,6 @@
 package nl.stockio.allocation.domain.service
 
-import nl.stockio.allocation.domain.api.bean.InboundShipment
+import nl.stockio.allocation.domain.api.data.InboundShipment
 import nl.stockio.allocation.infra.InboundSupplyEntity
 import nl.stockio.allocation.infra.InboundSupplyRepository
 import org.springframework.stereotype.Service

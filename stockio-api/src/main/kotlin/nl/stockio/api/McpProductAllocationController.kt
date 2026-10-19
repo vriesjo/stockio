@@ -1,8 +1,9 @@
-package nl.stockio.product.domain.api
+package nl.stockio.api
 
 import io.modelcontextprotocol.client.McpSyncClient
 import io.modelcontextprotocol.spec.McpSchema
 import jakarta.validation.Valid
+import nl.stockio.api.data.McpProductAllocationRequest
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -11,13 +12,13 @@ import org.springframework.web.bind.annotation.RestController
 
 @RestController
 @RequestMapping("/api")
-class AllocationController(
+class McpProductAllocationController(
     private val mcpSyncClient: McpSyncClient
 ) {
 
     @PostMapping("/allocate")
     fun allocate(
-        @Valid @RequestBody request: ProductAllocationRequest
+        @Valid @RequestBody request: McpProductAllocationRequest
     ): ResponseEntity<McpSchema.CallToolResult> {
         val arguments = mapOf(
             "requestId" to request.requestId.toString(),

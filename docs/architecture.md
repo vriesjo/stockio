@@ -39,7 +39,7 @@ The service runs as a servlet application and exposes MCP tools through Spring A
 | Component | Responsibility |
 | --- | --- |
 | `AllocationTools` | MCP adapter for new-demand allocation and projection, backorder fulfillment, stock-ledger synchronization, and Excel report generation. |
-| `ProductAllocationTools` / `ProductAllocationService` | Resolves a product phrase through required Tavily search and catalog/vector matching, then delegates allocation to the existing allocation and projection services. |
+| `ProductAllocationTools` / `ProductAllocationService` | Resolves a product phrase through local catalog/vector matching with Tavily fallback, then delegates allocation to the existing allocation and projection services. |
 | Tavily / Ollama clients | Perform external product search and local embedding requests with configured timeouts. |
 | `ProductVectorRepository` | Persists catalog embeddings and Tavily knowledge chunks and performs pgvector similarity searches. |
 | `AllocationController` | Accepts asynchronous allocate-and-project-and-sync requests and exposes JobRunr job status. |
@@ -82,39 +82,41 @@ sequenceDiagram
 
     Caller->>Tool: ProductAllocationRequest
     Tool->>Tool: Validate required order fields
-    Tool->>Tavily: Search product / nearest equivalent (every call)
-    alt Search fails or returns no usable results
-        Tavily-->>Tool: Error / empty results
-        Tool-->>Caller: TAVILY_LOOKUP_FAILED - no allocation
-    else Search results returned
-        Tavily-->>Tool: Titles, snippets, source URLs
-        Tool->>Ollama: Embed product phrase and Tavily evidence
+    Tool->>DB: Load active catalog products
+    alt Exact normalized title match
+        Tool->>Tool: Resolve SKU without external calls
+    else No exact match and equivalents allowed
+        Tool->>Ollama: Embed query and stale or missing catalog descriptions
         Ollama-->>Tool: 768-dimensional embeddings
-        alt Evidence is below relevance threshold
-            Tool-->>Caller: NO_PRODUCT_MATCH - no allocation
-        else Evidence is relevant
-            Tool->>DB: Load active catalog products
-            Tool->>Ollama: Embed stale or missing catalog descriptions
-            Ollama-->>Tool: Catalog embeddings
-            Tool->>DB: Upsert catalog embeddings and search catalog and cached knowledge vectors
-            Tool->>Tool: Prefer exact title and score equivalent candidates
-            alt No qualifying candidate or ambiguous candidates
-                Tool-->>Caller: Candidates and sources, no allocation
-            else One product SKU is resolved
-                Tool->>Ollama: Embed Tavily content chunks
-                Ollama-->>Tool: Knowledge embeddings
-                Tool->>DB: Idempotently upsert chunks with SKU and provenance
-                Tool->>Alloc: NEW_DEMAND AllocationRequest with resolved SKU
-                Alloc->>DB: Persist allocation, reservations, and any backorder
-                Alloc-->>Tool: AllocationRunResult
-                Tool->>Projection: Rebuild daily projections
-                Tool-->>Caller: Selected product, sources, and actual allocation result
+        Tool->>DB: Refresh catalog vectors and search catalog and cached knowledge
+        alt Strong, separated local match
+            Tool->>Tool: Resolve SKU without Tavily
+        else Weak or ambiguous local match
+            Tool->>Tavily: Search product / nearest equivalent
+            Tavily-->>Tool: Titles, snippets, source URLs or failure
+            Tool->>Ollama: Embed evidence, reusing query embedding
+            Tool->>DB: Search catalog and cached knowledge vectors
+            Tool->>Tool: Check evidence relevance and candidate score / gap
+            opt One product SKU is resolved
+                Tool->>Ollama: Embed source content chunks
+                Tool->>DB: Upsert chunks with SKU and provenance
             end
         end
     end
+    alt Resolution or ingestion failed, or no exact match with equivalents disabled
+        Tool-->>Caller: Failure status and candidates, no allocation
+    else One product SKU is resolved
+        Tool->>Alloc: NEW_DEMAND AllocationRequest with resolved SKU
+        Alloc->>DB: Persist allocation, reservations, and any backorder
+        Alloc-->>Tool: AllocationRunResult
+        Tool->>Projection: Rebuild daily projections
+        Tool-->>Caller: Selected product, sources, and actual allocation result
+    end
 ```
 
-Tavily is a required gate on every invocation, even when local embeddings and knowledge chunks are cached. Tavily evidence must meet the configured cosine-similarity threshold (`0.25` by default). An exact normalized catalog-title match is preferred; otherwise, a candidate must meet the minimum similarity (`0.72` by default) and lead the next candidate by the configured gap (`0.04` by default). The tool returns candidates without allocating if evidence is irrelevant, no candidate qualifies, or the result is ambiguous. Tavily or Ollama failures are returned as explicit non-allocation statuses.
+Resolution is local-first. An exact normalized active-catalog title match skips Ollama and Tavily. If no exact match exists and `allowEquivalent` is false, resolution stops without external calls. Otherwise, query embeddings search catalog and cached-knowledge vectors after stale catalog embeddings are refreshed. A candidate scoring at least `0.90` with a lead of at least `0.08` skips Tavily. These local-only thresholds are independently configurable starting points and should be evaluated against representative queries.
+
+Weak or ambiguous local matches fall back to Tavily. Fallback evidence must meet the configured cosine-similarity threshold (`0.25` by default); a candidate must meet the fallback minimum similarity (`0.72` by default) and lead the next candidate by the configured gap (`0.04` by default). The tool returns candidates without allocating if evidence is irrelevant, no candidate qualifies, or the result remains ambiguous. Tavily or Ollama failures are returned as explicit non-allocation statuses. Local-only resolutions return an empty sources list.
 
 After resolution, the tool uses Stockio's normal `NEW_DEMAND` behavior. Partial allocations are allowed, and any unfilled quantity becomes an open backorder. The response reports the selected product, Tavily source URLs, and the actual `AllocationRunResult`; it does not claim the full requested quantity was held unless the allocation result confirms it. The tool rebuilds projections but does not synchronize live stock.
 
@@ -286,7 +288,7 @@ The output directory defaults to `${user.home}/itzitzo-mcp/reports` and is confi
 | `ALLOCATION_MAX_CONCURRENT_SKUS` | `4` | Maximum concurrent SKU workers. |
 | `ALLOCATION_CSV_PATH` | `docs/allocations.csv` | CSV input path. |
 | `REPORT_DIR` | `${user.home}/itzitzo-mcp/reports` | Excel output directory. |
-| `TAVILY_API_KEY` | empty (required for `allocate_product_by_name`) | Tavily API credential. |
+| `TAVILY_API_KEY` | empty (required for fallback searches) | Tavily API credential. |
 | `TAVILY_BASE_URL` | `https://api.tavily.com` | Tavily API base URL. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama service URL. |
 | `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model; it must return 768 dimensions. |
@@ -295,6 +297,8 @@ The output directory defaults to `${user.home}/itzitzo-mcp/reports` and is confi
 | `PRODUCT_RESOLUTION_MAX_CANDIDATES` | `5` | Maximum product candidates used/returned. |
 | `PRODUCT_RESOLUTION_MINIMUM_SIMILARITY` | `0.72` | Minimum score for non-exact product matches. |
 | `PRODUCT_RESOLUTION_MINIMUM_SIMILARITY_GAP` | `0.04` | Required lead over the second candidate to accept an equivalent. |
+| `PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY` | `0.90` | Minimum local vector score to bypass Tavily. |
+| `PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY_GAP` | `0.08` | Required local lead over the second candidate to bypass Tavily. |
 | `PRODUCT_RESOLUTION_MINIMUM_TAVILY_EVIDENCE_SIMILARITY` | `0.25` | Minimum cosine similarity between the requested phrase and Tavily evidence. |
 | `RABBITMQ_HOST` / `RABBITMQ_PORT` | `localhost` / `5672` | RabbitMQ server address. |
 | `RABBITMQ_USERNAME` / `RABBITMQ_PASSWORD` | `stockio` / `stockio` | RabbitMQ credentials. |

@@ -1,11 +1,11 @@
-package nl.stockio.product.domain.api
+package nl.stockio.api.data
 
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive
 import java.time.LocalDate
 import java.util.UUID
 
-data class ProductAllocationRequest(
+data class McpProductAllocationRequest(
     val requestId: UUID,
     @field:NotBlank
     val orderId: String,

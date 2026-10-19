@@ -4,7 +4,7 @@ import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.bean.AllocationRunResult
+import nl.stockio.allocation.domain.api.data.AllocationRunResult
 
 data class ProductAllocationRequest(
     val requestId: UUID,

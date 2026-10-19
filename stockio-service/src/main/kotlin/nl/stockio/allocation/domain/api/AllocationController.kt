@@ -3,9 +3,9 @@ package nl.stockio.allocation.domain.api
 import jakarta.validation.Valid
 import java.net.URI
 import java.util.UUID
-import nl.stockio.allocation.domain.api.bean.AllocationJobAccepted
-import nl.stockio.allocation.domain.api.bean.AllocationJobStatus
-import nl.stockio.allocation.domain.api.bean.AllocationRequest
+import nl.stockio.allocation.domain.api.data.AllocationJobAccepted
+import nl.stockio.allocation.domain.api.data.AllocationJobStatus
+import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.job.AllocationJobService
 import nl.stockio.allocation.domain.job.AllocationEventPublisher
 import org.jobrunr.storage.JobNotFoundException
