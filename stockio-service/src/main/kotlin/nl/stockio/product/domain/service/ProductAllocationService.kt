@@ -66,6 +66,9 @@ class ProductAllocationService(
         try {
             val searchEvidence = tavilyResults.joinToString("\n") { "${it.title}\n${it.content}" }
                 .take(MAX_SEARCH_EVIDENCE_CHARACTERS)
+            // The embedding client is expected to return embeddings in the same order as the input texts.
+            // One vector representing the semantic meaning of the user's initial query.
+            // One vector representing the semantic meaning of the Tavily search evidence.
             val embeddings = embeddingClient.embed(listOf(request.productQuery, searchEvidence))
             if (embeddings.size != 2) {
                 throw EmbeddingClientException("Ollama returned an unexpected number of product-search embeddings.")

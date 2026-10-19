@@ -59,7 +59,7 @@ management:
 
 stockio:
   product-resolution:
-    tavily-api-key: ${TAVILY_API_KEY:}
+    tavily-api-key: ${TAVILY_API_KEY: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}
     tavily-base-url: ${TAVILY_BASE_URL:https://api.tavily.com}
     ollama-base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
     embedding-model: ${OLLAMA_EMBEDDING_MODEL:nomic-embed-text}

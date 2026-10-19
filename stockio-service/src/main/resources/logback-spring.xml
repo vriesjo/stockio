@@ -9,7 +9,7 @@
     <logger name="nl.stockio" level="DEBUG" />
 
     <!-- Non-Local Profiles: Standard Console Appender (Spring handles JSON formatting automatically via application.yml/properties) -->
-    <springProfile name="!local">
+    <springProfile name="!local &amp; !stdio">
         <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
 
         <!-- Suppress internal logback status messages -->
@@ -21,7 +21,7 @@
     </springProfile>
 
     <!-- Local Profile: Human-Readable Console Output -->
-    <springProfile name="local">
+    <springProfile name="local &amp; !stdio">
         <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
 
         <!-- Suppress internal logback status messages -->
@@ -29,6 +29,22 @@
 
         <root level="INFO">
             <appender-ref ref="CONSOLE" />
+        </root>
+    </springProfile>
+
+    <!-- Keep stdout reserved for MCP protocol messages when launched over stdio. -->
+    <springProfile name="stdio">
+        <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+            <target>System.err</target>
+            <encoder>
+                <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+            </encoder>
+        </appender>
+
+        <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+
+        <root level="INFO">
+            <appender-ref ref="STDERR" />
         </root>
     </springProfile>
 
