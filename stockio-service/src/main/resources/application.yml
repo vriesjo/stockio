@@ -58,6 +58,9 @@ management:
       show-details: never
 
 stockio:
+  product:
+    repository:
+      type: jpa
   product-resolution:
     tavily-api-key: ${TAVILY_API_KEY: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}
     tavily-base-url: ${TAVILY_BASE_URL:https://api.tavily.com}
@@ -71,18 +74,25 @@ stockio:
     minimum-local-similarity: ${PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY:0.90}
     minimum-local-similarity-gap: ${PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY_GAP:0.08}
     minimum-tavily-evidence-similarity: ${PRODUCT_RESOLUTION_MINIMUM_TAVILY_EVIDENCE_SIMILARITY:0.25}
-  allocation:
-    csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
-    max-concurrent-skus: ${ALLOCATION_MAX_CONCURRENT_SKUS:4}
+  stock:
+    repository:
+      type: jpa
     ledger-sync:
       enabled: ${ALLOCATION_LEDGER_SYNC_ENABLED:true}
       cron: ${ALLOCATION_LEDGER_SYNC_CRON:0 0,12 * * *}
       zone: ${ALLOCATION_LEDGER_SYNC_ZONE:UTC}
       freshness-tolerance: ${ALLOCATION_LEDGER_SYNC_FRESHNESS_TOLERANCE:1h}
-    reservation:
-      ttl: ${ALLOCATION_RESERVATION_TTL:30m}
-      expiry-interval: ${ALLOCATION_RESERVATION_EXPIRY_INTERVAL:1m}
-      expiry-batch-size: ${ALLOCATION_RESERVATION_EXPIRY_BATCH_SIZE:100}
+  reservation:
+    repository:
+      type: jpa
+    ttl: ${ALLOCATION_RESERVATION_TTL:30m}
+    expiry-interval: ${ALLOCATION_RESERVATION_EXPIRY_INTERVAL:1m}
+    expiry-batch-size: ${ALLOCATION_RESERVATION_EXPIRY_BATCH_SIZE:100}
+  allocation:
+    repository:
+      type: jpa
+    csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
+    max-concurrent-skus: ${ALLOCATION_MAX_CONCURRENT_SKUS:4}
     rabbitmq:
       exchange: ${ALLOCATION_RABBITMQ_EXCHANGE:stockio.allocation.exchange}
       routing-key: ${ALLOCATION_RABBITMQ_ROUTING_KEY:allocation.request}
@@ -93,6 +103,7 @@ stockio:
       publisher:
         enabled: ${ALLOCATION_RABBITMQ_PUBLISHER_ENABLED:true}
         interval: ${ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL:1000}
+
   report:
     directory: ${REPORT_DIR:${user.home}/itzitzo-mcp/reports}
 

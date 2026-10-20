@@ -17,8 +17,8 @@ import nl.stockio.product.domain.model.ProductSource
 import nl.stockio.product.domain.model.ResolvedProduct
 import nl.stockio.product.infra.ProductEntity
 import nl.stockio.product.infra.ProductKnowledgeChunk
-import nl.stockio.product.infra.ProductRepository
-import nl.stockio.product.infra.ProductVectorRepository
+import nl.stockio.product.infra.ProductJpaRepository
+import nl.stockio.product.infra.ProductVectorJdbcTemplateRepository
 import org.springframework.stereotype.Service
 
 /**
@@ -32,8 +32,8 @@ import org.springframework.stereotype.Service
 class ProductAllocationService(
     private val tavilySearchClient: TavilySearchClient,
     private val embeddingClient: OllamaEmbeddingClient,
-    private val productRepository: ProductRepository,
-    private val productVectorRepository: ProductVectorRepository,
+    private val productRepository: ProductJpaRepository,
+    private val productVectorRepository: ProductVectorJdbcTemplateRepository,
     private val processingService: AllocationProcessingService,
     private val properties: ProductResolutionProperties
 ) {
@@ -340,9 +340,9 @@ class ProductAllocationService(
     }
 
     private fun validateEmbedding(embedding: List<Double>) {
-        if (embedding.size != ProductVectorRepository.Companion.EMBEDDING_DIMENSIONS || embedding.any { !it.isFinite() }) {
+        if (embedding.size != ProductVectorJdbcTemplateRepository.Companion.EMBEDDING_DIMENSIONS || embedding.any { !it.isFinite() }) {
             throw EmbeddingClientException(
-                "The configured Ollama embedding model must return ${ProductVectorRepository.Companion.EMBEDDING_DIMENSIONS} finite values."
+                "The configured Ollama embedding model must return ${ProductVectorJdbcTemplateRepository.Companion.EMBEDDING_DIMENSIONS} finite values."
             )
         }
     }

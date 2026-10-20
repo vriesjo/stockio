@@ -10,7 +10,7 @@ import nl.stockio.allocation.domain.api.data.DemandOrder
 import nl.stockio.allocation.domain.api.data.DemandOrderLine
 import nl.stockio.allocation.domain.api.data.InboundShipment
 import nl.stockio.allocation.domain.api.data.InboundShipmentLine
-import nl.stockio.product.infra.ProductRepository
+import nl.stockio.product.infra.ProductJpaRepository
 import org.springframework.amqp.rabbit.core.RabbitTemplate
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -27,7 +27,7 @@ private val logger = KotlinLogging.logger {}
 )
 class AllocationRequestPublisher(
     private val rabbitTemplate: RabbitTemplate,
-    private val productRepository: ProductRepository,
+    private val productRepository: ProductJpaRepository,
     private val clock: Clock,
     @Value("\${stockio.allocation.rabbitmq.exchange}") private val exchange: String,
     @Value("\${stockio.allocation.rabbitmq.routing-key}") private val routingKey: String

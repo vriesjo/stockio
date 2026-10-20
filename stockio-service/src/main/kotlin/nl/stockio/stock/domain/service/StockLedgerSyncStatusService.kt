@@ -1,9 +1,9 @@
-package nl.stockio.allocation.domain.service
+package nl.stockio.stock.domain.service
 
 import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
-import nl.stockio.allocation.infra.LedgerSyncStatusRepository
+import nl.stockio.stock.infra.StockLedgerSyncStatusJdbcTemplateRepository
 import org.springframework.boot.actuate.health.Health
 import org.springframework.boot.actuate.health.HealthIndicator
 import org.springframework.stereotype.Component
@@ -22,8 +22,8 @@ data class LedgerSyncStatus(
 
 @Service
 class LedgerSyncStatusService(
-    private val repository: LedgerSyncStatusRepository,
-    private val properties: LedgerSyncProperties,
+    private val repository: StockLedgerSyncStatusJdbcTemplateRepository,
+    private val properties: StockLedgerSyncProperties,
     private val clock: Clock
 ) {
     fun getStatus(): LedgerSyncStatus {

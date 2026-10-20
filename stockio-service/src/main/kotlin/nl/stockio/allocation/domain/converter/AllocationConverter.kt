@@ -4,10 +4,10 @@ import nl.stockio.allocation.domain.model.InboundReservationChange
 import nl.stockio.allocation.domain.model.InboundSupplyState
 import nl.stockio.allocation.domain.model.InventoryLotState
 import nl.stockio.allocation.domain.model.StockReservationChange
-import nl.stockio.allocation.infra.InboundReservationEntity
-import nl.stockio.allocation.infra.InboundSupplyEntity
-import nl.stockio.allocation.infra.StockEntity
-import nl.stockio.allocation.infra.StockReservationEntity
+import nl.stockio.reservation.infra.InboundReservationEntity
+import nl.stockio.reservation.infra.InboundSupplyEntity
+import nl.stockio.stock.infra.StockEntity
+import nl.stockio.stock.infra.StockReservationEntity
 
 
 fun toInventoryLotState(stock: StockEntity) = InventoryLotState(

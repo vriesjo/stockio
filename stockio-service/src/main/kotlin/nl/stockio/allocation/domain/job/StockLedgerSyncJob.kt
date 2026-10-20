@@ -1,7 +1,7 @@
 package nl.stockio.allocation.domain.job
 
-import nl.stockio.allocation.domain.processor.StockLedgerProcessor
-import nl.stockio.allocation.domain.service.LedgerSyncProperties
+import nl.stockio.stock.domain.processor.StockLedgerProcessor
+import nl.stockio.stock.domain.service.StockLedgerSyncProperties
 import org.jobrunr.jobs.annotations.Job
 import org.jobrunr.scheduling.JobScheduler
 import org.springframework.boot.context.event.ApplicationReadyEvent
@@ -15,7 +15,7 @@ import org.springframework.stereotype.Component
 @Component
 class StockLedgerSyncJob(
     private val processor: StockLedgerProcessor,
-    private val properties: LedgerSyncProperties,
+    private val properties: StockLedgerSyncProperties,
     private val scheduler: JobScheduler
 ) {
     @EventListener(ApplicationReadyEvent::class)

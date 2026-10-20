@@ -1,18 +1,18 @@
 package nl.stockio.allocation.domain.service
 
 import nl.stockio.allocation.domain.api.data.InboundShipment
-import nl.stockio.allocation.infra.InboundShipmentEntity
-import nl.stockio.allocation.infra.InboundShipmentRepository
-import nl.stockio.allocation.infra.InboundSupplyEntity
-import nl.stockio.allocation.infra.InboundSupplyRepository
+import nl.stockio.reservation.infra.InboundShipmentEntity
+import nl.stockio.reservation.infra.InboundShipmentJpaRepository
+import nl.stockio.reservation.infra.InboundSupplyEntity
+import nl.stockio.reservation.infra.InboundSupplyJpaRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
 @Service
 class InboundSupplyService(
-    private val shipmentRepository: InboundShipmentRepository,
-    private val supplyRepository: InboundSupplyRepository
+    private val shipmentRepository: InboundShipmentJpaRepository,
+    private val supplyRepository: InboundSupplyJpaRepository
 ) {
     @Transactional(propagation = Propagation.MANDATORY)
     fun registerInboundSupply(shipments: List<InboundShipment>) {

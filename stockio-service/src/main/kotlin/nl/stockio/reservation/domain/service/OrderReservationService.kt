@@ -1,11 +1,11 @@
 package nl.stockio.reservation.domain.service
 
 import java.time.Clock
-import nl.stockio.allocation.domain.api.data.OrderReservationStatus
+import nl.stockio.allocation.domain.api.data.OrderReservationStatusResponse
 import nl.stockio.allocation.domain.api.data.OrderReservationLine
 import nl.stockio.allocation.domain.api.data.ReservationStatus
-import nl.stockio.allocation.infra.AllocationOrderClaimRepository
-import nl.stockio.allocation.infra.DemandOrderLineRepository
+import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
+import nl.stockio.allocation.infra.DemandOrderLineJpaRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -17,16 +17,16 @@ import org.springframework.transaction.annotation.Transactional
  */
 @Service
 class OrderReservationService(
-    private val claimRepository: AllocationOrderClaimRepository,
-    private val lineRepository: DemandOrderLineRepository,
+    private val claimRepository: AllocationOrderClaimJpaRepository,
+    private val lineRepository: DemandOrderLineJpaRepository,
     private val clock: Clock
 ) {
     @Transactional(readOnly = true)
-    fun getStatus(orderId: String): OrderReservationStatus? {
+    fun getStatus(orderId: String): OrderReservationStatusResponse? {
         val claim = claimRepository.findById(orderId).orElse(null) ?: return null
         val cleanupPending = claim.reservationStatus == ReservationStatus.PENDING_CONFIRMATION &&
             !claim.canAllocate(clock.instant())
-        return OrderReservationStatus(
+        return OrderReservationStatusResponse(
             orderId = claim.orderId,
             lines = lineRepository.findAllByOrderIdInOrderByOrderIdAscSequenceNumberAsc(listOf(orderId)).map {
                 OrderReservationLine(it.orderLineId, it.sku, it.requestedQuantity, it.requiredDeliveryDate)

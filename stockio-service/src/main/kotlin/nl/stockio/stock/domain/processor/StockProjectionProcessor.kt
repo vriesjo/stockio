@@ -1,19 +1,19 @@
-package nl.stockio.allocation.domain.processor
+package nl.stockio.stock.domain.processor
 
 import java.time.Clock
 import java.time.LocalDate
 import nl.stockio.allocation.domain.api.data.ReservationStatus
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
-import nl.stockio.allocation.infra.AllocationOrderClaimRepository
-import nl.stockio.allocation.infra.InboundReservationRepository
-import nl.stockio.allocation.infra.InboundSupplyRepository
-import nl.stockio.allocation.infra.OpenBackorderRepository
-import nl.stockio.allocation.infra.StockDailyLotSnapshot
-import nl.stockio.allocation.infra.StockDailySnapshot
-import nl.stockio.allocation.infra.StockSnapshotRepository
-import nl.stockio.allocation.infra.StockProjectionLockRepository
-import nl.stockio.allocation.infra.StockRepository
-import nl.stockio.allocation.infra.StockReservationRepository
+import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
+import nl.stockio.reservation.infra.InboundReservationJpaRepository
+import nl.stockio.reservation.infra.InboundSupplyJpaRepository
+import nl.stockio.allocation.infra.OpenBackorderJpaRepository
+import nl.stockio.stock.infra.StockDailyLotSnapshot
+import nl.stockio.stock.infra.StockDailySnapshot
+import nl.stockio.stock.infra.StockProjectionLockJpaRepository
+import nl.stockio.stock.infra.StockJpaRepository
+import nl.stockio.stock.infra.StockReservationJpaRepository
+import nl.stockio.stock.infra.StockSnapshotRepositoryJdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -40,14 +40,14 @@ import org.springframework.transaction.annotation.Transactional
  */
 @Service
 class StockProjectionProcessor(
-    private val stockProjectionLockRepository: StockProjectionLockRepository,
-    private val stockRepository: StockRepository,
-    private val stockReservationRepository: StockReservationRepository,
-    private val inboundSupplyRepository: InboundSupplyRepository,
-    private val inboundReservationRepository: InboundReservationRepository,
-    private val backorderRepository: OpenBackorderRepository,
-    private val snapshotRepository: StockSnapshotRepository,
-    private val claimRepository: AllocationOrderClaimRepository,
+    private val stockProjectionLockRepository: StockProjectionLockJpaRepository,
+    private val stockRepository: StockJpaRepository,
+    private val stockReservationRepository: StockReservationJpaRepository,
+    private val inboundSupplyRepository: InboundSupplyJpaRepository,
+    private val inboundReservationRepository: InboundReservationJpaRepository,
+    private val backorderRepository: OpenBackorderJpaRepository,
+    private val snapshotRepository: StockSnapshotRepositoryJdbcTemplate,
+    private val claimRepository: AllocationOrderClaimJpaRepository,
     private val clock: Clock
 ) {
 

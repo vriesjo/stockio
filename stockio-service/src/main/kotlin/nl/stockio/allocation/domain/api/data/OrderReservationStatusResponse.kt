@@ -9,7 +9,7 @@ enum class ReservationStatus {
     EXPIRED
 }
 
-data class OrderReservationStatus(
+data class OrderReservationStatusResponse(
     val orderId: String,
     val lines: List<OrderReservationLine>,
     val status: ReservationStatus,

@@ -2,7 +2,7 @@ package nl.stockio.reservation.domain.service
 
 import java.time.Clock
 import java.time.LocalDate
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
+import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 

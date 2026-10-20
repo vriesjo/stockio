@@ -4,7 +4,7 @@ import java.util.UUID
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunResult
 import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
+import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import org.springframework.stereotype.Service
 
 /**

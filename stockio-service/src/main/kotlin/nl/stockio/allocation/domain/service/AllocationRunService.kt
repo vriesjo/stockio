@@ -7,23 +7,23 @@ import nl.stockio.allocation.domain.api.data.AllocationRunResult
 import nl.stockio.allocation.domain.api.data.AllocationSource
 import nl.stockio.allocation.domain.api.data.AllocationRecord
 import nl.stockio.allocation.infra.AllocationRecordEntity
-import nl.stockio.allocation.infra.AllocationRecordRepository
+import nl.stockio.allocation.infra.AllocationRecordJpaRepository
 import nl.stockio.allocation.infra.AllocationRunEntity
-import nl.stockio.allocation.infra.AllocationRunRepository
-import nl.stockio.allocation.infra.AllocationSkuOperationRepository
+import nl.stockio.allocation.infra.AllocationRunJpaRepository
+import nl.stockio.allocation.infra.AllocationSkuOperationJpaRepository
 import nl.stockio.allocation.infra.AllocationSourceEntity
-import nl.stockio.allocation.infra.AllocationSourceRepository
-import nl.stockio.allocation.infra.OpenBackorderRepository
+import nl.stockio.allocation.infra.AllocationSourceJpaRepository
+import nl.stockio.allocation.infra.OpenBackorderJpaRepository
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 
 @Component
 class AllocationRunService(
-    private val runRepository: AllocationRunRepository,
-    private val skuOperationRepository: AllocationSkuOperationRepository,
-    private val backorderRepository: OpenBackorderRepository,
-    private val recordRepository: AllocationRecordRepository,
-    private val sourceRepository: AllocationSourceRepository
+    private val runRepository: AllocationRunJpaRepository,
+    private val skuOperationRepository: AllocationSkuOperationJpaRepository,
+    private val backorderRepository: OpenBackorderJpaRepository,
+    private val recordRepository: AllocationRecordJpaRepository,
+    private val sourceRepository: AllocationSourceJpaRepository
 ) {
 
     @Transactional(readOnly = true)

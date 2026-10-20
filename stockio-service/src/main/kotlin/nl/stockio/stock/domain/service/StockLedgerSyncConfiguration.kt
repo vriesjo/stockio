@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.service
+package nl.stockio.stock.domain.service
 
 import java.time.Clock
 import java.time.Duration
@@ -9,8 +9,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
-@ConfigurationProperties("stockio.allocation.ledger-sync")
-data class LedgerSyncProperties(
+@ConfigurationProperties("stockio.stock.ledger-sync")
+data class StockLedgerSyncProperties(
     val enabled: Boolean = true,
     val cron: String = "0 0,12 * * *",
     val zone: String = "UTC",
@@ -28,8 +28,8 @@ data class LedgerSyncProperties(
 }
 
 @Configuration
-@EnableConfigurationProperties(LedgerSyncProperties::class)
-class LedgerSyncConfiguration {
+@EnableConfigurationProperties(StockLedgerSyncProperties::class)
+class StockLedgerSyncConfiguration {
     @Bean
-    fun businessClock(properties: LedgerSyncProperties): Clock = Clock.system(properties.zoneId)
+    fun businessClock(properties: StockLedgerSyncProperties): Clock = Clock.system(properties.zoneId)
 }

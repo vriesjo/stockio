@@ -6,7 +6,7 @@ import nl.stockio.allocation.domain.api.data.AllocationRunResult
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.ExcelReportRequest
 import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
-import nl.stockio.allocation.domain.processor.StockLedgerProcessor
+import nl.stockio.stock.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
 import nl.stockio.allocation.domain.service.AllocationRunService
 import nl.stockio.allocation.domain.service.AllocationProcessingService

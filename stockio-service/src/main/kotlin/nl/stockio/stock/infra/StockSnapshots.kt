@@ -1,4 +1,4 @@
-package nl.stockio.allocation.infra
+package nl.stockio.stock.infra
 
 import java.time.Instant
 import java.time.LocalDate

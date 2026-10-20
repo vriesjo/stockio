@@ -6,12 +6,12 @@ import java.util.UUID
 import nl.stockio.allocation.domain.api.data.AllocationJobAccepted
 import nl.stockio.allocation.domain.api.data.AllocationJobStatus
 import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.OrderReservationStatus
+import nl.stockio.allocation.domain.api.data.OrderReservationStatusResponse
 import nl.stockio.reservation.domain.service.OrderReservationService
 import nl.stockio.allocation.domain.job.AllocationJobService
 import nl.stockio.allocation.domain.job.AllocationEventPublisher
-import nl.stockio.allocation.domain.service.LedgerSyncStatus
-import nl.stockio.allocation.domain.service.LedgerSyncStatusService
+import nl.stockio.stock.domain.service.LedgerSyncStatus
+import nl.stockio.stock.domain.service.LedgerSyncStatusService
 import org.jobrunr.storage.JobNotFoundException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -51,7 +51,7 @@ class AllocationController(
     fun stockLedgerStatus(): LedgerSyncStatus = ledgerSyncStatusService.getStatus()
 
     @GetMapping("/orders/{orderId}/reservation")
-    fun orderReservationStatus(@PathVariable orderId: String): ResponseEntity<OrderReservationStatus> =
+    fun orderReservationStatus(@PathVariable orderId: String): ResponseEntity<OrderReservationStatusResponse> =
         orderReservationService.getStatus(orderId)?.let { ResponseEntity.ok(it) }
             ?: ResponseEntity.notFound().build()
 

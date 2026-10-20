@@ -28,29 +28,30 @@ import nl.stockio.allocation.domain.api.data.ReservationStatus
 import nl.stockio.allocation.domain.api.data.AllocationCompletionResult
 import nl.stockio.allocation.domain.job.AllocationJob
 import nl.stockio.allocation.domain.job.StockLedgerSyncJob
-import nl.stockio.allocation.infra.AllocationJobResultEntity
-import nl.stockio.allocation.infra.AllocationJobResultRepository
-import nl.stockio.allocation.infra.LedgerSyncStatusRepository
+import nl.stockio.stock.infra.AllocationJobResultEntity
+import nl.stockio.stock.infra.AllocationJobResultJpaRepository
+import nl.stockio.stock.infra.StockLedgerSyncStatusJdbcTemplateRepository
 import nl.stockio.reservation.domain.job.ReservationExpiryJob
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
-import nl.stockio.allocation.domain.processor.StockLedgerProcessor
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
-import nl.stockio.allocation.infra.AllocationRecordRepository
-import nl.stockio.allocation.infra.AllocationRunRepository
-import nl.stockio.allocation.infra.AllocationSourceRepository
-import nl.stockio.allocation.infra.AllocationOrderClaimRepository
-import nl.stockio.allocation.infra.InboundSupplyEntity
-import nl.stockio.allocation.infra.InboundSupplyRepository
-import nl.stockio.allocation.infra.OpenBackorderRepository
-import nl.stockio.allocation.infra.StockSnapshotRepository
-import nl.stockio.allocation.infra.StockEntity
-import nl.stockio.allocation.infra.StockProjectionLockRepository
-import nl.stockio.allocation.infra.StockRepository
-import nl.stockio.allocation.infra.StockReservationRepository
+import nl.stockio.stock.domain.processor.StockLedgerProcessor
+import nl.stockio.stock.domain.processor.StockProjectionProcessor
+import nl.stockio.allocation.infra.AllocationRecordJpaRepository
+import nl.stockio.allocation.infra.AllocationRunJpaRepository
+import nl.stockio.allocation.infra.AllocationSourceJpaRepository
+import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
+import nl.stockio.reservation.infra.InboundSupplyJpaRepository
+import nl.stockio.allocation.infra.OpenBackorderJpaRepository
+import nl.stockio.stock.infra.StockSnapshotRepositoryJdbcTemplate
+import nl.stockio.stock.infra.StockEntity
+import nl.stockio.stock.infra.StockProjectionLockJpaRepository
+import nl.stockio.stock.infra.StockJpaRepository
+import nl.stockio.stock.infra.StockReservationJpaRepository
 import nl.stockio.util.requestHash
 import nl.stockio.product.infra.ProductKnowledgeChunk
-import nl.stockio.product.infra.ProductVectorRepository
+import nl.stockio.product.infra.ProductVectorJdbcTemplateRepository
 import nl.stockio.reservation.domain.service.ReservationExpiryService
+import nl.stockio.reservation.infra.InboundSupplyEntity
+import nl.stockio.stock.domain.service.StockLedgerSyncProperties
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.awaitility.Awaitility
 import org.flywaydb.core.Flyway
@@ -105,10 +106,10 @@ class AllocationIntegrationTest {
     private lateinit var clock: Clock
 
     @Autowired
-    private lateinit var claimRepository: AllocationOrderClaimRepository
+    private lateinit var claimRepository: AllocationOrderClaimJpaRepository
 
     @Autowired
-    private lateinit var inboundSupplyRepository: InboundSupplyRepository
+    private lateinit var inboundSupplyRepository: InboundSupplyJpaRepository
 
     @Autowired
     private lateinit var expiryService: ReservationExpiryService
@@ -135,10 +136,10 @@ class AllocationIntegrationTest {
     private lateinit var ledgerSyncJob: StockLedgerSyncJob
 
     @Autowired
-    private lateinit var ledgerSyncStatusRepository: LedgerSyncStatusRepository
+    private lateinit var stockLedgerSyncStatusRepository: StockLedgerSyncStatusJdbcTemplateRepository
 
     @Autowired
-    private lateinit var jobResultRepository: AllocationJobResultRepository
+    private lateinit var jobResultRepository: AllocationJobResultJpaRepository
 
     @Autowired
     private lateinit var allocationSkuWorker: AllocationSkuWorker
@@ -159,31 +160,31 @@ class AllocationIntegrationTest {
     private lateinit var reportGenerator: ExcelReportProcessor
 
     @Autowired
-    private lateinit var sourceRepository: AllocationSourceRepository
+    private lateinit var sourceRepository: AllocationSourceJpaRepository
 
     @Autowired
-    private lateinit var recordRepository: AllocationRecordRepository
+    private lateinit var recordRepository: AllocationRecordJpaRepository
 
     @Autowired
-    private lateinit var runRepository: AllocationRunRepository
+    private lateinit var runRepository: AllocationRunJpaRepository
 
     @Autowired
-    private lateinit var backorderRepository: OpenBackorderRepository
+    private lateinit var backorderRepository: OpenBackorderJpaRepository
 
     @Autowired
-    private lateinit var snapshotRepository: StockSnapshotRepository
+    private lateinit var snapshotRepository: StockSnapshotRepositoryJdbcTemplate
 
     @Autowired
     private lateinit var entityManager: EntityManager
 
     @Autowired
-    private lateinit var stockRepository: StockRepository
+    private lateinit var stockRepository: StockJpaRepository
 
     @Autowired
-    private lateinit var stockReservationRepository: StockReservationRepository
+    private lateinit var stockReservationRepository: StockReservationJpaRepository
 
     @Autowired
-    private lateinit var productVectorRepository: ProductVectorRepository
+    private lateinit var productVectorRepository: ProductVectorJdbcTemplateRepository
 
     @Autowired
     private lateinit var stockLedgerProcessor: StockLedgerProcessor
@@ -192,7 +193,7 @@ class AllocationIntegrationTest {
     private lateinit var stockProjectionProcessor: StockProjectionProcessor
 
     @Autowired
-    private lateinit var stockProjectionLockRepository: StockProjectionLockRepository
+    private lateinit var stockProjectionLockRepository: StockProjectionLockJpaRepository
 
     @Autowired
     private lateinit var transactionManager: PlatformTransactionManager
@@ -306,7 +307,7 @@ class AllocationIntegrationTest {
 
     @Test
     fun `pgvector stores and searches catalog embeddings and Tavily knowledge`() {
-        val embedding = List(ProductVectorRepository.EMBEDDING_DIMENSIONS) { index ->
+        val embedding = List(ProductVectorJdbcTemplateRepository.EMBEDDING_DIMENSIONS) { index ->
             if (index == 0) 1.0 else 0.0
         }
         productVectorRepository.upsertProductEmbedding(
@@ -476,7 +477,7 @@ class AllocationIntegrationTest {
         val updatedStock = stockRepository.findAll().single()
         Assertions.assertEquals(5, updatedStock.quantityOnHand)
         Assertions.assertEquals(2, updatedStock.quantityReserved)
-        Assertions.assertNull(ledgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
         Assertions.assertEquals(2, snapshotRepository.findLotsByDate(today).single().quantityReserved)
         mockMvc.perform(MockMvcRequestBuilders.get("/api/logistics/orders/API-ORDER/reservation"))
             .andExpect(MockMvcResultMatchers.status().isOk)
@@ -532,7 +533,7 @@ class AllocationIntegrationTest {
         Assertions.assertTrue(stockRepository.findAll().isEmpty())
         Assertions.assertFalse(inboundSupplyRepository.findAll().single().received)
         Assertions.assertEquals(5, snapshotRepository.findDailyByDate(today).single().closingStock)
-        Assertions.assertNull(ledgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
         Assertions.assertEquals(result, allocationJob.execute(request.requestId, request))
         Assertions.assertEquals(3, inboundSupplyRepository.findAll().single().quantityReserved)
 
@@ -576,7 +577,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(3, snapshotRepository.findLotsByDate(today).single().quantityReserved)
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
-        Assertions.assertNull(ledgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
     }
 
     @Test
@@ -588,7 +589,7 @@ class AllocationIntegrationTest {
         jobResultRepository.save(AllocationJobResultEntity(jobId = request.requestId, resultJson = resultJson))
         Assertions.assertEquals(completion, allocationJob.execute(request.requestId, request))
         Assertions.assertEquals(resultJson, jobResultRepository.findById(request.requestId).orElseThrow().resultJson)
-        Assertions.assertNull(ledgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
     }
 
     @Test
@@ -606,13 +607,13 @@ class AllocationIntegrationTest {
             )
         )
         ledgerSyncJob.execute()
-        Assertions.assertEquals(firstDate, ledgerSyncStatusRepository.get().snapshotDate)
+        Assertions.assertEquals(firstDate, stockLedgerSyncStatusRepository.get().snapshotDate)
         Assertions.assertEquals(2, stockRepository.findAll().sumOf { it.quantityOnHand })
 
         setNow(Instant.parse("2026-10-21T00:01:00Z"))
         ledgerSyncJob.execute()
         ledgerSyncJob.execute()
-        Assertions.assertEquals(firstDate.plusDays(1), ledgerSyncStatusRepository.get().snapshotDate)
+        Assertions.assertEquals(firstDate.plusDays(1), stockLedgerSyncStatusRepository.get().snapshotDate)
         Assertions.assertEquals(5, stockRepository.findAll().sumOf { it.quantityOnHand })
         Assertions.assertTrue(inboundSupplyRepository.findAll().all { it.received })
     }
@@ -620,7 +621,7 @@ class AllocationIntegrationTest {
     @Test
     fun `shared recurring schedule can be updated removed and executed through JobRunr`() {
         val registration = StockLedgerSyncJob(
-            stockLedgerProcessor, LedgerSyncProperties(cron = "0 0 31 12 *"), jobScheduler
+            stockLedgerProcessor, StockLedgerSyncProperties(cron = "0 0 31 12 *"), jobScheduler
         )
         try {
             registration.register()
@@ -633,8 +634,8 @@ class AllocationIntegrationTest {
             Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted {
                 Assertions.assertEquals(StateName.SUCCEEDED, jobStorage.getJobById(jobId).state)
             }
-            Assertions.assertEquals(LocalDate.now(clock), ledgerSyncStatusRepository.get().snapshotDate)
-            Assertions.assertNotNull(ledgerSyncStatusRepository.get().lastSuccessAt)
+            Assertions.assertEquals(LocalDate.now(clock), stockLedgerSyncStatusRepository.get().snapshotDate)
+            Assertions.assertNotNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
         } finally {
             jobScheduler.deleteRecurringJob(StockLedgerSyncJob.RECURRING_ID)
         }
@@ -653,7 +654,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(3, run.allocations.single().allocatedFromInventory)
         Assertions.assertEquals(3, snapshotRepository.findLotsByDate(today).single().quantityReserved)
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityOnHand)
-        Assertions.assertNull(ledgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
     }
 
     @Test
@@ -662,7 +663,7 @@ class AllocationIntegrationTest {
         setNow(Instant.parse("2026-10-20T12:30:00Z"))
         val result = stockLedgerProcessor.process(ProcessDailyStockRequest())
         Assertions.assertEquals(LocalDate.of(2026, 10, 21), result.snapshotDate)
-        Assertions.assertEquals(result.snapshotDate, ledgerSyncStatusRepository.get().snapshotDate)
+        Assertions.assertEquals(result.snapshotDate, stockLedgerSyncStatusRepository.get().snapshotDate)
     }
 
     @Test
@@ -683,7 +684,7 @@ class AllocationIntegrationTest {
         }
         Assertions.assertEquals(5, stockRepository.findAll().single().quantityOnHand)
         Assertions.assertTrue(inboundSupplyRepository.findAll().single().received)
-        Assertions.assertNotNull(ledgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNotNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
     }
 
     @Test
@@ -703,7 +704,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(snapshots, snapshotRepository.findDailyByDate(today))
         Assertions.assertFalse(inboundSupplyRepository.findAll().single().received)
         Assertions.assertTrue(stockRepository.findAll().isEmpty())
-        Assertions.assertNull(ledgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
     }
 
     @Test

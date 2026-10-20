@@ -1,5 +1,7 @@
 package nl.stockio.product.infra
 
+import nl.stockio.product.domain.port.ProductVectorRepository
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
@@ -23,12 +25,13 @@ data class ProductKnowledgeChunk(
     val embedding: List<Double>
 )
 
+@ConditionalOnProperty(prefix = "stockio.produc.vector.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 @Repository
-class ProductVectorRepository(
+class ProductVectorJdbcTemplateRepository(
     private val jdbcTemplate: JdbcTemplate
-) {
+) : ProductVectorRepository {
 
-    fun findProductEmbeddingHashes(model: String): Map<String, String> =
+    override fun findProductEmbeddingHashes(model: String): Map<String, String> =
         jdbcTemplate.query(
             "SELECT sku, content_hash FROM product_embeddings WHERE model = ?",
             { resultSet, _ -> resultSet.getString("sku") to resultSet.getString("content_hash") },
@@ -36,7 +39,7 @@ class ProductVectorRepository(
         ).toMap()
 
     @Transactional
-    fun upsertProductEmbedding(sku: String, model: String, contentHash: String, embedding: List<Double>) {
+    override fun upsertProductEmbedding(sku: String, model: String, contentHash: String, embedding: List<Double>) {
         jdbcTemplate.update(
             """
                 INSERT INTO product_embeddings (sku, model, content_hash, embedding)
@@ -54,7 +57,7 @@ class ProductVectorRepository(
         )
     }
 
-    fun findSimilarProducts(
+    override fun findSimilarProducts(
         embedding: List<Double>,
         model: String,
         limit: Int
@@ -81,7 +84,7 @@ class ProductVectorRepository(
             limit
         )
 
-    fun findSimilarKnowledge(
+    override fun findSimilarKnowledge(
         embedding: List<Double>,
         model: String,
         limit: Int
@@ -108,7 +111,7 @@ class ProductVectorRepository(
         )
 
     @Transactional
-    fun upsertKnowledgeChunks(sku: String, model: String, chunks: List<ProductKnowledgeChunk>) {
+    override fun upsertKnowledgeChunks(sku: String, model: String, chunks: List<ProductKnowledgeChunk>) {
         chunks.forEach { chunk ->
             jdbcTemplate.update(
                 """

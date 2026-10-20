@@ -1,24 +1,24 @@
-package nl.stockio.allocation.domain.processor
+package nl.stockio.stock.domain.processor
 
 import java.time.Clock
 import java.time.LocalDate
 import java.util.UUID
 import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
-import nl.stockio.allocation.domain.api.data.StockSyncResult
 import nl.stockio.allocation.domain.api.data.ReservationStatus
+import nl.stockio.allocation.domain.api.data.StockSyncResult
+import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
+import nl.stockio.reservation.infra.InboundReservationJpaRepository
+import nl.stockio.reservation.infra.InboundSupplyJpaRepository
+import nl.stockio.stock.infra.StockLedgerSyncStatusJdbcTemplateRepository
+import nl.stockio.stock.infra.StockEntity
+import nl.stockio.stock.infra.StockJpaRepository
+import nl.stockio.stock.infra.StockReservationEntity
+import nl.stockio.stock.infra.StockReservationJpaRepository
+import nl.stockio.stock.domain.port.StockSnapshotRepository
 import nl.stockio.reservation.domain.service.ReservationCleanupService
-import nl.stockio.allocation.infra.AllocationOrderClaimRepository
-import nl.stockio.allocation.infra.InboundReservationRepository
-import nl.stockio.allocation.infra.InboundSupplyRepository
-import nl.stockio.allocation.infra.LedgerSyncStatusRepository
-import nl.stockio.allocation.infra.StockSnapshotRepository
-import nl.stockio.allocation.infra.StockEntity
-import nl.stockio.allocation.infra.StockProjectionLockRepository
-import nl.stockio.allocation.infra.StockRepository
-import nl.stockio.allocation.infra.StockReservationEntity
-import nl.stockio.allocation.infra.StockReservationRepository
-import org.springframework.stereotype.Service
+import nl.stockio.stock.infra.StockProjectionLockJpaRepository
 import org.slf4j.LoggerFactory
+import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -45,16 +45,16 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  */
 @Service
 class StockLedgerProcessor(
-    private val stockProjectionLockRepository: StockProjectionLockRepository,
-    private val stockRepository: StockRepository,
+    private val stockProjectionLockRepository: StockProjectionLockJpaRepository,
+    private val stockRepository: StockJpaRepository,
     private val snapshotRepository: StockSnapshotRepository,
-    private val stockReservationRepository: StockReservationRepository,
-    private val inboundSupplyRepository: InboundSupplyRepository,
-    private val inboundReservationRepository: InboundReservationRepository,
+    private val stockReservationRepository: StockReservationJpaRepository,
+    private val inboundSupplyRepository: InboundSupplyJpaRepository,
+    private val inboundReservationRepository: InboundReservationJpaRepository,
     private val cleanupService: ReservationCleanupService,
     private val stockProjectionProcessor: StockProjectionProcessor,
-    private val claimRepository: AllocationOrderClaimRepository,
-    private val syncStatusRepository: LedgerSyncStatusRepository,
+    private val claimRepository: AllocationOrderClaimJpaRepository,
+    private val syncStatusRepository: StockLedgerSyncStatusJdbcTemplateRepository,
     private val clock: Clock
 ) {
 

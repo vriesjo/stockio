@@ -7,13 +7,13 @@ import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.DemandOrder
 import nl.stockio.allocation.domain.model.AllocationOrder
-import nl.stockio.allocation.infra.StockProjectionLockRepository
+import nl.stockio.stock.infra.StockProjectionLockJpaRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
-import nl.stockio.allocation.infra.AllocationOrderClaimRepository
+import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
 import nl.stockio.allocation.infra.AllocationRunEntity
-import nl.stockio.allocation.infra.AllocationRunRepository
+import nl.stockio.allocation.infra.AllocationRunJpaRepository
 import nl.stockio.allocation.infra.DemandOrderLineEntity
-import nl.stockio.allocation.infra.DemandOrderLineRepository
+import nl.stockio.allocation.infra.DemandOrderLineJpaRepository
 import nl.stockio.reservation.domain.service.ReservationProperties
 import nl.stockio.util.requestHash
 import org.springframework.stereotype.Service
@@ -42,10 +42,10 @@ import org.springframework.transaction.annotation.Transactional
  */
 @Service
 class AllocationDocumentService(
-    private val stockProjectionLockRepository: StockProjectionLockRepository,
-    private val allocationRunRepository: AllocationRunRepository,
-    private val orderClaimRepository: AllocationOrderClaimRepository,
-    private val demandOrderLineRepository: DemandOrderLineRepository,
+    private val stockProjectionLockRepository: StockProjectionLockJpaRepository,
+    private val allocationRunRepository: AllocationRunJpaRepository,
+    private val orderClaimRepository: AllocationOrderClaimJpaRepository,
+    private val demandOrderLineRepository: DemandOrderLineJpaRepository,
     private val inboundSupplyService: InboundSupplyService,
     private val properties: ReservationProperties,
     private val clock: Clock

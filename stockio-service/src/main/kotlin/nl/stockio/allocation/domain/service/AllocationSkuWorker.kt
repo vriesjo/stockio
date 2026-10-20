@@ -18,38 +18,38 @@ import nl.stockio.allocation.domain.model.AllocationOrder
 import nl.stockio.allocation.domain.policy.AllocationPolicyCalculator
 import nl.stockio.allocation.domain.policy.InboundAllocationPolicy
 import nl.stockio.allocation.domain.policy.InventoryAllocationPolicy
-import nl.stockio.allocation.infra.StockProjectionLockRepository
-import nl.stockio.allocation.infra.AllocationOrderClaimRepository
-import nl.stockio.allocation.infra.AllocationSkuLockRepository
+import nl.stockio.stock.infra.StockProjectionLockJpaRepository
+import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
+import nl.stockio.allocation.infra.AllocationSkuLockJpaRepository
 import nl.stockio.allocation.infra.AllocationSkuOperationEntity
-import nl.stockio.allocation.infra.AllocationSkuOperationRepository
-import nl.stockio.allocation.infra.DemandOrderLineRepository
-import nl.stockio.allocation.infra.InboundReservationEntity
-import nl.stockio.allocation.infra.InboundReservationRepository
-import nl.stockio.allocation.infra.InboundSupplyEntity
-import nl.stockio.allocation.infra.InboundSupplyRepository
+import nl.stockio.allocation.infra.AllocationSkuOperationJpaRepository
+import nl.stockio.allocation.infra.DemandOrderLineJpaRepository
 import nl.stockio.allocation.infra.OpenBackorderEntity
-import nl.stockio.allocation.infra.OpenBackorderRepository
-import nl.stockio.allocation.infra.StockEntity
-import nl.stockio.allocation.infra.StockRepository
-import nl.stockio.allocation.infra.StockReservationEntity
-import nl.stockio.allocation.infra.StockReservationRepository
+import nl.stockio.allocation.infra.OpenBackorderJpaRepository
+import nl.stockio.reservation.infra.InboundReservationEntity
+import nl.stockio.stock.infra.StockEntity
+import nl.stockio.stock.infra.StockJpaRepository
+import nl.stockio.stock.infra.StockReservationEntity
+import nl.stockio.stock.infra.StockReservationJpaRepository
+import nl.stockio.reservation.infra.InboundReservationJpaRepository
+import nl.stockio.reservation.infra.InboundSupplyEntity
+import nl.stockio.reservation.infra.InboundSupplyJpaRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
 @Service
 class AllocationSkuWorker(
-    private val stockProjectionLockRepository: StockProjectionLockRepository,
+    private val stockProjectionLockRepository: StockProjectionLockJpaRepository,
     private val allocationRunService: AllocationRunService,
-    private val skuLockRepository: AllocationSkuLockRepository,
-    private val skuOperationRepository: AllocationSkuOperationRepository,
-    private val orderClaimRepository: AllocationOrderClaimRepository,
-    private val lineRepository: DemandOrderLineRepository,
-    private val inboundSupplyRepository: InboundSupplyRepository,
-    private val stockRepository: StockRepository,
-    private val stockReservationRepository: StockReservationRepository,
-    private val inboundReservationRepository: InboundReservationRepository,
-    private val backorderRepository: OpenBackorderRepository,
+    private val skuLockRepository: AllocationSkuLockJpaRepository,
+    private val skuOperationRepository: AllocationSkuOperationJpaRepository,
+    private val orderClaimRepository: AllocationOrderClaimJpaRepository,
+    private val lineRepository: DemandOrderLineJpaRepository,
+    private val inboundSupplyRepository: InboundSupplyJpaRepository,
+    private val stockRepository: StockJpaRepository,
+    private val stockReservationRepository: StockReservationJpaRepository,
+    private val inboundReservationRepository: InboundReservationJpaRepository,
+    private val backorderRepository: OpenBackorderJpaRepository,
     private val clock: Clock,
     private val objectMapper: ObjectMapper
 ) {

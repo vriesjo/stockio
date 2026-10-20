@@ -4,14 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import java.util.UUID
 import nl.stockio.allocation.domain.api.data.AllocationCompletionResult
 import nl.stockio.allocation.domain.api.data.AllocationRunResult
-import nl.stockio.allocation.infra.AllocationJobResultEntity
-import nl.stockio.allocation.infra.AllocationJobResultRepository
+import nl.stockio.stock.infra.AllocationJobResultEntity
+import nl.stockio.stock.infra.AllocationJobResultJpaRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
 @Service
 class AllocationJobCompletionService(
-    private val resultRepository: AllocationJobResultRepository,
+    private val resultRepository: AllocationJobResultJpaRepository,
     private val objectMapper: ObjectMapper
 ) {
 

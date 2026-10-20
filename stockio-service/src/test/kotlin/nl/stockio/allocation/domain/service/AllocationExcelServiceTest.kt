@@ -4,7 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
 import java.time.Clock
-import nl.stockio.product.infra.ProductRepository
+import nl.stockio.product.infra.ProductJpaRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Test
@@ -15,7 +15,7 @@ class AllocationExcelServiceTest {
 
     @Test
     fun `CSV rows remain independent documents with stable line identities on reload`() {
-        val products = mock(ProductRepository::class.java)
+        val products = mock(ProductJpaRepository::class.java)
         `when`(products.findSkuByTitle("Maki Zalm")).thenReturn("MAKI-ZALM")
         val destination = Path.of("build", "allocation-import-${UUID.randomUUID()}.csv")
         Files.createDirectories(destination.parent)
