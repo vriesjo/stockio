@@ -25,6 +25,35 @@ class StockProjectionProcessor(
     private val stockDailySnapshotRepository: StockDailySnapshotRepository
 ) {
 
+    /**
+     * It works in these stages:
+     *
+     * 1. Lock and load the baseline. It acquires the projection lock to prevent concurrent allocation changes, then loads all live stock,
+     *    unreceived inbound shipments, reservations, and open backorders—including records from previous runs.
+     * 2. Choose the projection period. It starts at  max(asOfDate, today)  and ends at the latest relevant shipment arrival,
+     *    reservation delivery date, or backorder delivery date. Overdue events are moved to the start date; it does not reconstruct history.
+     * 3. Turn persisted records into dated movements.
+     *    • Each unreceived shipment adds its full expected quantity on its arrival date.
+     *    • Each reservation removes its quantity on the order’s required delivery date—not when the reservation was created.
+     *    • Each open backorder contributes a shortage on its required delivery date, without reducing physical stock. Currently, shortages are assigned to warehouse  "MAIN" .
+     * 4. Simulate each day, per SKU and warehouse. It adds arrivals, subtracts reserved deliveries, and carries the closing stock into the next day:
+     *    • closing stock = opening stock + inbound − allocated deliveries
+     *    • demand = allocated deliveries + backorder shortage
+     *    It also tracks the same movements and remaining reservations for each individual lot.
+     * 5. Replace the saved forecast. It deletes snapshots from the start date onward and writes both aggregate and lot-level snapshots.
+     *    Earlier snapshots remain untouched. Everything runs in one transaction, so an error rolls the rebuild back.
+     *
+     * For example:
+     *    • With 10 units on hand, 5 arriving tomorrow, and 8 reserved for delivery the day after tomorrow,
+     *    • The projected closing balances are 10 → 15 → 7.
+     *    • Reserving those 8 units does not immediately remove them from physical stock.
+     *
+     * The distinction:
+     *    •  Allocation decides which supply an order reserves;
+     *    •  This processor projects when that supply arrives and leaves.
+     *    •  A separate ledger synchronization step applies today’s projected closing balances to live stock.
+     *
+     */
     @Transactional
     fun process(asOfDate: LocalDate) {
         stockProjectionLockService.acquire()
