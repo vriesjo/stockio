@@ -8,8 +8,7 @@ import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.DemandOrder
 import nl.stockio.allocation.domain.api.data.DemandOrderLine
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
-import nl.stockio.allocation.domain.service.AllocationService
+import nl.stockio.allocation.domain.service.AllocationProcessingService
 import nl.stockio.product.domain.model.ProductAllocationRequest
 import nl.stockio.product.domain.model.ProductAllocationResponse
 import nl.stockio.product.domain.model.ProductAllocationStatus
@@ -35,8 +34,7 @@ class ProductAllocationService(
     private val embeddingClient: OllamaEmbeddingClient,
     private val productRepository: ProductRepository,
     private val productVectorRepository: ProductVectorRepository,
-    private val allocationService: AllocationService,
-    private val stockProjectionProcessor: StockProjectionProcessor,
+    private val processingService: AllocationProcessingService,
     private val properties: ProductResolutionProperties
 ) {
 
@@ -213,8 +211,7 @@ class ProductAllocationService(
                 )
             )
         )
-        val allocationRun = allocationService.allocation(allocationRequest)
-        stockProjectionProcessor.process(request.asOfDate)
+        val allocationRun = processingService.process(allocationRequest)
 
         return ProductAllocationResponse(
             status = ProductAllocationStatus.ALLOCATION_PROCESSED,

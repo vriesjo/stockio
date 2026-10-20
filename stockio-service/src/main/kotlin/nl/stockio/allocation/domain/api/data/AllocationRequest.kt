@@ -79,7 +79,7 @@ data class StockTransaction(
 )
 
 data class ProcessDailyStockRequest(
-    val snapshotDate: LocalDate = LocalDate.now()
+    val snapshotDate: LocalDate? = null
 )
 
 data class StockSyncResult(
@@ -89,9 +89,9 @@ data class StockSyncResult(
     val updatedAt: Instant
 )
 
-data class AllocationAndSyncResult(
+data class AllocationCompletionResult(
     val allocationRun: AllocationRunResult,
-    val stockSync: StockSyncResult
+    val version: Int = 2
 )
 
 data class AllocationJobAccepted(
@@ -101,7 +101,7 @@ data class AllocationJobAccepted(
 data class AllocationJobStatus(
     val jobId: UUID,
     val status: String,
-    val result: AllocationAndSyncResult? = null
+    val result: AllocationCompletionResult? = null
 )
 
 data class InboundShipment(

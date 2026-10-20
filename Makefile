@@ -21,6 +21,9 @@ up-rabbitmq:
 up-postgres:
 	docker compose -f infra/docker/docker-compose.yml up -d --wait postgres
 
+up-ollama:
+	docker compose -f infra/docker/docker-compose.yml up -d --wait ollama
+
 down:
 	docker compose -f infra/docker/docker-compose.yml down
 

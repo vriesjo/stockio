@@ -4,7 +4,7 @@
 
 Stockio is a Kotlin/Spring application for allocating demand against live inventory and expected inbound supply. It persists allocation results and reservations in PostgreSQL, maintains daily aggregate and lot-level stock projections, synchronizes today's projection to live stock, and generates Excel reports. The same core services are exposed through Spring AI MCP tools and a local HTTP API.
 
-PostgreSQL is the system of record. Flyway manages the schema; JPA repositories handle most operational data, while `JdbcTemplate` is used for projection locking and snapshot persistence. Daily snapshots are derived projections from live stock and persisted reservations, not an independent source of inventory truth.
+PostgreSQL is the system of record. Flyway manages the schema; JPA repositories handle operational data and projection locking, while `StockSnapshotRepository` uses `JdbcTemplate` to read and replace snapshots in the same transaction. Snapshots are not JPA-managed entities, so repeated rebuilds do not require clearing the persistence context. Daily snapshots are derived projections from live stock and persisted reservations, not an independent source of inventory truth.
 
 ## Modules and technology
 
@@ -42,16 +42,18 @@ The service runs as a servlet application and exposes MCP tools through Spring A
 | `ProductAllocationTools` / `ProductAllocationService` | Resolves a product phrase through local catalog/vector matching with Tavily fallback, then delegates allocation to the existing allocation and projection services. |
 | Tavily / Ollama clients | Perform external product search and local embedding requests with configured timeouts. |
 | `ProductVectorRepository` | Persists catalog embeddings and Tavily knowledge chunks and performs pgvector similarity searches. |
-| `AllocationController` | Accepts asynchronous allocate-and-project-and-sync requests and exposes JobRunr job status. |
+| `AllocationController` | Accepts asynchronous allocation/projection requests and exposes job, reservation, and ledger-freshness status. |
 | `AllocationAdminController` | Creates allocation requests from CSV, generates reports, and removes jobs with excessive retries. |
 | `AllocationService` | Validates, groups work by SKU, coordinates SKU workers, and completes allocation runs. |
+| `AllocationProcessingService` | Runs allocation or explicit backorder fulfillment, then refreshes projections after the SKU transactions commit. Never synchronizes the ledger. |
 | `AllocationDocumentService` | Registers immutable order/shipment headers and lines before SKU work and assigns one reservation deadline per order. |
 | `AllocationSkuWorker` | Performs one SKU's transactional allocation or backorder fulfillment, reserves stock/supply, and persists resumable operation results. |
 | `AllocationPolicyCalculator` | Applies order priority, FIFO source selection, delivery-date eligibility, and backorder rules. |
 | `StockProjectionProcessor` | Rebuilds aggregate and lot-level daily projections from the live stock baseline and persisted reservations. |
 | `StockLedgerProcessor` | Expires overdue holds, rebuilds today's projection, and synchronizes it to live stock. |
+| `StockLedgerSyncJob` | Independently schedules ledger synchronization twice daily by default. |
 | `ReservationExpiryJob` / expiry services | Release overdue pending orders in transactional batches and rebuild projections. |
-| `AllocationJob` / completion service | Runs the asynchronous allocate-project-and-sync workflow and persists its final result. |
+| `AllocationJob` / completion service | Runs allocation and projection, then persists a versioned allocation-only completion result. |
 | `AllocationExcelService` | Parses the configured CSV and creates a validated allocation request. |
 | `ExcelReportProcessor` | Writes allocation details, sources, pivot tables, and formula summaries to an `.xlsx` workbook. |
 | Repositories and `JdbcTemplate` | Persist operational state, enforce locks, and read/write snapshot data. |
@@ -64,7 +66,7 @@ The service runs as a servlet application and exposes MCP tools through Spring A
 | --- | --- | --- |
 | `allocation_and_stock_projection` | `AllocationRequest` with `runType: NEW_DEMAND` | Allocates demand, persists reservations/backorders, and rebuilds daily projections. It does not synchronize live stock. |
 | `allocate_product_by_name` | `ProductAllocationRequest` | Requires Tavily lookup, resolves a product to an active catalog SKU, allocates through `AllocationService`, rebuilds projections, and returns product evidence plus the allocation result. Unresolved or ambiguous products are not allocated. |
-| `allocate_open_backorders` | `AllocationRequest` with `runType: BACKORDER_FULFILLMENT` | Attempts to fulfill persisted backorders using eligible stock and inbound supply; returns an `AllocationRunResult`. The current tool path does not rebuild projections or synchronize live stock. |
+| `allocate_open_backorders` | `AllocationRequest` with `runType: BACKORDER_FULFILLMENT` | Attempts to fulfill persisted backorders using eligible stock and inbound supply, rebuilds projections, and returns an `AllocationRunResult`. Does not synchronize live stock. |
 | `process_stock_ledger` | `ProcessDailyStockRequest` | Expires overdue reservations, rebuilds today's projection, and applies it to live stock. Only confirmed orders are delivered; allocation is not recalculated. |
 | `get_order_reservation_status` | Order ID | Returns the current lifecycle, deadline, and whether expired reservations still await cleanup. |
 | `generate_excel_report` | `ExcelReportRequest` (`runId`, simple `.xlsx` `fileName`) | Generates a report for a saved allocation run and returns the output path. |
@@ -128,8 +130,9 @@ After resolution, the tool uses Stockio's normal `NEW_DEMAND` behavior. Partial 
 | Method and path | Behavior |
 | --- | --- |
 | `POST /api/products/allocate` | Synchronously performs the agentic product lookup and allocation for a `ProductAllocationRequest`; returns the product-resolution status and allocation result. |
-| `POST /api/logistics/allocate-project-and-sync` | Validates today's `asOfDate`, accepts an allocation request, and returns `202 Accepted` with a JobRunr `jobId` and status URL. |
-| `GET /api/logistics/allocate-project-and-sync/job-status/{jobId}` | Returns the JobRunr state and, when succeeded, the persisted allocation and stock-sync result. |
+| `POST /api/logistics/allocation-jobs` | Validates today's business-date `asOfDate`, accepts allocation/projection work, and returns `202 Accepted` with a JobRunr `jobId` and status URL. Does not synchronize stock. |
+| `GET /api/logistics/allocation-jobs/{jobId}` | Returns JobRunr state and, when succeeded, `{version: 2, allocationRun: ...}` without a stock-sync result. |
+| `GET /api/logistics/stock-ledger/status` | Returns the last committed ledger success, snapshot date/counts, next expected execution, stale deadline, and freshness status. |
 | `GET /api/logistics/orders/{orderId}/reservation` | Returns current reservation lifecycle and deadline, or `404` for an unknown order. |
 | `GET /api/admin/allocations/generate-request-by-csv` | Parses the configured CSV and returns a generated `AllocationRequest`; it does not execute it. |
 | `POST /api/admin/allocations/generate-excel` | Generates an Excel report from a saved run. |
@@ -191,7 +194,9 @@ The nested line contract is a coordinated breaking change. V15 preserves legacy 
 
 ## Asynchronous processing
 
-The REST endpoint publishes an allocation event in a transaction. After commit, `AllocationEventListener` enqueues a JobRunr job using the event's UUID. `AllocationJob` performs the allocation, then its completion service rebuilds projections, synchronizes today's stock, and stores the combined result. JobRunr retries the job up to three times.
+The REST endpoint publishes an allocation event in a transaction. After commit, `AllocationEventListener` enqueues a JobRunr job using the event's UUID. `AllocationJob` uses `AllocationProcessingService` to allocate and refresh projections, then its completion service persists version-2 JSON containing only the allocation run. JobRunr retries the job up to three times. Projection failure can occur after SKU commits; a retry reuses the saved allocation and retries the forecast without reserving twice. No outer transaction spans the parallel SKU workers.
+
+The REST routes were renamed from `allocate-project-and-sync` to `allocation-jobs`. This rollout assumes a recreated database, including JobRunr storage, and coordinated caller updates. Job completion uses direct `ObjectMapper` serialization of `AllocationCompletionResult`; there is no compatibility adapter for historical combined allocation/sync job results.
 
 RabbitMQ requests are first attempted synchronously by `AllocationRabbitListener`. Invalid requests that throw `IllegalArgumentException` are rejected rather than sent to JobRunr. Other synchronous failures use JobRunr as a fallback if a job with that ID does not already exist. The request queue is configured with a dead-letter exchange and queue; rejected messages are not requeued by default.
 
@@ -244,9 +249,17 @@ Before receipt, `LOT-A` has 5 on hand / 5 reserved / 0 available; `SHIP-B` has 4
 
 ### Daily ledger sync
 
-`process_stock_ledger` accepts only today's `snapshotDate`. Under one exclusive lock and transaction, it drains overdue reservation cleanup, rebuilds today's projection, and validates aggregate balances against lot-level balances. A freshly calculated empty projection is valid. Synchronization updates live lot quantities/reservations, removes due confirmed stock reservations, marks arrived shipments as received, and converts remaining inbound holds to stock reservations. Pending reservations are retained even when their delivery date has passed.
+`process_stock_ledger` accepts only today's `snapshotDate`; when omitted, it selects today using the business clock after acquiring the lock. Under one exclusive lock and transaction, it drains overdue reservation cleanup, rebuilds today's projection, and validates aggregate balances against lot-level balances. A freshly calculated empty projection is valid. Synchronization updates live lot quantities/reservations, removes due confirmed stock reservations, marks arrived shipments as received, and converts remaining inbound holds to stock reservations. Pending reservations are retained even when their delivery date has passed.
 
 The sync recomputes the projection but does not recalculate allocations or accept movements. Repeating it is safe because delivered reservations and received shipments are no longer projected as new movements. Projection, expiry, and ledger operations coordinate with allocation through the `stock_projection_lock` row.
+
+`StockLedgerSyncJob` registers the stable JobRunr recurring ID `sync-stock-ledger`. The default five-field cron `0 0,12 * * *` runs at midnight and noon UTC. The configured zone also supplies the shared business `Clock`, including REST date validation, sample publishing, CSV imports, expiry, and projection dates. Each scheduled invocation selects today after acquiring the ledger lock, so delayed retries do not reuse yesterday's allocation date.
+
+Allocation and explicit backorder fulfillment refresh forecasts but never trigger physical synchronization. Ledger sync still rebuilds its own projection under the same transaction and lock immediately before applying it: an earlier forecast may contain expired or changed holds. Until sync runs, arrived supply remains inbound and due confirmed deliveries remain reserved in live stock. Expected arrival and due delivery are still date-driven assumptions, not warehouse event confirmations.
+
+Every successful manual or scheduled sync updates the singleton `stock_ledger_sync_status` row in its transaction and logs success only after commit. `GET /api/logistics/stock-ledger/status` exposes its timestamp and counts. The Actuator `stockLedger` health component becomes `DOWN` after the next expected cron occurrence plus the freshness tolerance (default one hour) passes without another success. Before the first sync, the monitoring-start timestamp provides that initial grace period. With scheduling disabled it reports `UNKNOWN` and does not raise a freshness alarm; manual sync remains available.
+
+All pods must share JobRunr/application storage and identical schedule configuration. Disabling scheduling removes its recurring definition, not already queued/running executions. Retried and overlapping runs remain serialized by the database lock; the recurring ID and job name are not exactly-once guarantees. See [the ledger scheduling feature](issues/feature_stock_ledger_sync_job.md) for rollout and operational trade-offs.
 
 ## Persistence model
 
@@ -271,10 +284,11 @@ The sync recomputes the projection but does not recalculate allocations or accep
 | `stock_daily_snapshots` | Aggregate daily stock trajectory. |
 | `stock_daily_lot_snapshots` | Lot-level daily balances and reservations used by the ledger sync. |
 | `stock_projection_lock` | Database row lock coordinating allocation, projection, and synchronization. |
+| `stock_ledger_sync_status` | Monitoring baseline and last committed manual/scheduled ledger success. |
 | `allocation_job_result` | Serialized result for completed asynchronous allocation jobs. |
 | `flyway_schema_history` | Flyway migration metadata. |
 
-Flyway migrations V1-V15 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, enable pgvector product-resolution storage, add order-reservation expiry, and migrate single-line documents to header/line relationships. V15 preserves lifecycle timestamps, legacy line mappings, and received lots, and rejects inconsistent legacy reservation data. Hibernate validates the migrated schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
+Flyway migrations V1-V16 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, enable pgvector product-resolution storage, add order-reservation expiry, migrate single-line documents to header/line relationships, and persist ledger-sync freshness. V15 preserves lifecycle timestamps, legacy line mappings, and received lots, and rejects inconsistent legacy reservation data. Hibernate validates the migrated JPA schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
 
 ## CSV import and Excel reports
 
@@ -308,6 +322,10 @@ The output directory defaults to `${user.home}/itzitzo-mcp/reports` and is confi
 | `DB_POOL_CONNECTION_TIMEOUT_MS` | `30000` | Time to wait for a pool connection. |
 | `DB_POOL_IDLE_TIMEOUT_MS` | `600000` | Maximum idle connection time. |
 | `DB_POOL_MAX_LIFETIME_MS` | `1800000` | Maximum connection lifetime. |
+| `ALLOCATION_LEDGER_SYNC_ENABLED` | `true` | Register independent ledger synchronization; false deletes its recurring definition. |
+| `ALLOCATION_LEDGER_SYNC_CRON` | `0 0,12 * * *` | Five-field cron for physical ledger processing. |
+| `ALLOCATION_LEDGER_SYNC_ZONE` | `UTC` | Scheduler zone and shared business-clock zone. |
+| `ALLOCATION_LEDGER_SYNC_FRESHNESS_TOLERANCE` | `1h` | Grace after the next expected sync before ledger health becomes stale. |
 | `SERVER_ADDRESS` / `SERVER_PORT` | `127.0.0.1` / `8080` | HTTP bind address and port. |
 | `ALLOCATION_MAX_CONCURRENT_SKUS` | `4` | Maximum concurrent SKU workers. |
 | `ALLOCATION_CSV_PATH` | `docs/allocations.csv` | CSV input path. |

@@ -11,6 +11,7 @@ import nl.stockio.allocation.domain.api.data.DemandOrder
 import nl.stockio.allocation.domain.api.data.DemandOrderLine
 import nl.stockio.allocation.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.domain.service.AllocationService
+import nl.stockio.allocation.domain.service.AllocationProcessingService
 import nl.stockio.product.domain.model.ProductAllocationRequest
 import nl.stockio.product.domain.model.ProductAllocationStatus
 import nl.stockio.product.domain.service.OllamaEmbeddingClient
@@ -408,8 +409,9 @@ class ProductAllocationServiceTest {
             embeddingClient = embeddingClient,
             productRepository = productRepository,
             productVectorRepository = productVectorRepository,
-            allocationService = allocationService,
-            stockProjectionProcessor = mock(StockProjectionProcessor::class.java),
+            processingService = AllocationProcessingService(
+                allocationService, mock(StockProjectionProcessor::class.java)
+            ),
             properties = ProductResolutionProperties()
         )
     }

@@ -22,14 +22,39 @@ The server exposes both MCP STDIO and a local REST API. When using MCP, launch t
 
 | Tool | Purpose |
 | --- | --- |
-| `calculate_allocation` | Allocate new orders by priority and FIFO. Eligible inbound supply can be used only if it arrives by the order's required delivery date. Unfilled quantities are saved as open backorders. |
-| `fulfill_open_backorders` | Fulfill persisted backorders by priority/FIFO using current inventory and inbound shipments arrived by both `asOfDate` and each order's required delivery date. |
-| `process_daily_stock` | Synchronize today's allocation-generated lot snapshot to live stock and turn arrived inbound reservations into stock reservations. |
+| `allocation_and_stock_projection` | Allocate new orders by priority/FIFO and refresh forecasts without changing physical stock. Eligible inbound supply must arrive by the delivery deadline; unfilled quantities become backorders. |
+| `allocate_open_backorders` | Fulfill persisted backorders by priority/FIFO using eligible inventory and arrived inbound supply, then refresh forecasts without synchronizing stock. |
+| `process_stock_ledger` | Manually expire overdue holds, rebuild today's forecast, and apply due receipts/confirmed deliveries to live stock in one transaction. |
 | `generate_excel_report` | Write a workbook with allocation details, source allocations, native pivot tables, and a formula-based SKU/status summary under `~/itzitzo-mcp/reports` by default. Set `REPORT_DIR` to override the output directory. |
 
 ## REST API
 
-`POST /api/logistics/allocate-and-sync` accepts the same JSON payload as `calculate_allocation`, then synchronizes today's saved snapshot. The request's `asOfDate` must be today's date. The response contains both `allocationRun` and `stockSync`; the operation runs in one transaction, so a failed sync also rolls back the allocation.
+`POST /api/logistics/allocation-jobs` accepts the same JSON payload as
+`allocation_and_stock_projection`. The request's `asOfDate` must be today in the
+configured business zone. It returns `202 Accepted` with a `jobId` and a `Location`
+header pointing to `GET /api/logistics/allocation-jobs/{jobId}`. A successful job
+returns `{ "status": "SUCCEEDED", "result": { "version": 2, "allocationRun": ... } }`.
+Allocation refreshes forecasts but does not receive supply or deliver orders.
+There is no `stockSync` result attached to allocation completion.
+
+Physical synchronization is independent: `StockLedgerSyncJob` runs at midnight
+and noon UTC by default. Configure `ALLOCATION_LEDGER_SYNC_CRON`,
+`ALLOCATION_LEDGER_SYNC_ZONE`, and `ALLOCATION_LEDGER_SYNC_ENABLED`; disabling it
+removes the recurring schedule but does not cancel already queued/running work.
+The zone also configures the shared business clock. Manual synchronization remains
+available through `process_stock_ledger`.
+
+`GET /api/logistics/stock-ledger/status` exposes the last committed synchronization
+and its freshness deadline. Actuator's `stockLedger` health component becomes
+`DOWN` after the next expected cron occurrence plus
+`ALLOCATION_LEDGER_SYNC_FRESHNESS_TOLERANCE` (default `1h`) is missed. Configure
+operational monitoring against health/status to alert on stale stock processing.
+With automatic scheduling disabled, that component reports `UNKNOWN`.
+
+Migration V16 adds ledger-success monitoring. Recreate the database, including
+JobRunr storage, and update callers together: the old allocate-and-sync routes
+and combined result contract are retired. Job completion is serialized directly
+with `ObjectMapper`; no historical combined-result compatibility adapter is kept.
 
 The admin endpoint `POST /api/admin/allocations/load-csv` loads the configured CSV and returns the generated `AllocationRequest`. It reads `docs/allocations.csv` by default; set `ALLOCATION_CSV_PATH` to use another server-side file. The endpoint does not run allocation.
 
@@ -49,19 +74,23 @@ curl -X POST http://127.0.0.1:8080/api/admin/reports/excel \
 ```
 
 ```shell
-curl -X POST http://127.0.0.1:8080/api/logistics/allocate-and-sync \
+curl -X POST http://127.0.0.1:8080/api/logistics/allocation-jobs \
   -H 'Content-Type: application/json' \
   -d '{
     "requestId": "11111111-1111-1111-1111-111111111111",
     "asOfDate": "YYYY-MM-DD",
+    "runType": "NEW_DEMAND",
     "demandOrders": [{
       "orderId": "ORDER-1",
       "customer": "Example Customer",
-      "sku": "MAKI-ZALM",
-      "requestedQuantity": 10,
       "priority": 1,
       "placedDate": "YYYY-MM-DD",
-      "requiredDeliveryDate": "YYYY-MM-DD"
+      "lines": [{
+        "orderLineId": "ORDER-1-LINE-1",
+        "sku": "MAKI-ZALM",
+        "requestedQuantity": 10,
+        "requiredDeliveryDate": "YYYY-MM-DD"
+      }]
     }]
   }'
 ```
@@ -76,9 +105,19 @@ val request = allocationCsvLoader.load(Path.of("docs/allocations.csv"))
 
 It maps `Verkoop` rows to demand and `Levering` rows to inbound shipments, resolving product titles through `ProductRepository`; other transaction types are ignored. IDs and customer names are generated anew on each load.
 
-`calculate_allocation` and `fulfill_open_backorders` read persisted lot-level stock, reserve allocated stock, and lock stock rows while allocating so concurrent requests cannot reserve the same quantity. Each allocation run rebuilds daily aggregate and lot-level snapshots from today forward. Allocated units reduce physical closing stock on their required delivery date; backordered quantities contribute to shortage but do not reduce physical stock. Previously registered, unreceived shipments remain available to later allocation runs.
+`allocation_and_stock_projection` and `allocate_open_backorders` reserve persisted
+supply and rebuild aggregate/lot forecasts. Orders are unconfirmed by default and
+their holds expire unless confirmed; only confirmed orders project outgoing
+deliveries and shortages. Unreceived persisted shipments remain available to later
+allocation runs.
 
-Call `process_daily_stock` after calculating today's projections to synchronize today's saved lot balances to live stock. It accepts only `snapshotDate` (which must be today), does not recalculate movements, removes reservations that leave stock today, and converts arrived inbound reservations into live stock reservations. The operation is safe to retry. Allocation runs, shipment supply, reservations, daily snapshots, and open backorders are persisted in PostgreSQL; Flyway applies schema migrations on startup.
+The recurring ledger job, or manual `process_stock_ledger`, independently applies
+today's movements. It first cleans up expiry and rebuilds its projection under the
+same exclusive lock and transaction rather than trusting a saved forecast. Due
+confirmed deliveries are consumed; arrived inbound holds become stock holds when
+still pending or needed for future delivery. Receipt/delivery state makes retries
+safe. PostgreSQL persists all operational data, forecasts, and sync status; Flyway
+applies schema migrations on startup.
 
 ### Example `calculate_allocation` prompt + input:
 

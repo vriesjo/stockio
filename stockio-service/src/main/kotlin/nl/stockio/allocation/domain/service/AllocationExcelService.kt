@@ -5,6 +5,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.time.LocalDate
+import java.time.Clock
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.time.format.ResolverStyle
@@ -26,12 +27,13 @@ private val logger = KotlinLogging.logger {}
 
 @Service
 class AllocationExcelService(
-    private val productRepository: ProductRepository
+    private val productRepository: ProductRepository,
+    private val clock: Clock
 ) {
 
     fun loadCsvAndCreateAllocationRequest(path: Path): AllocationRequest {
         logger.info { "Loading allocation request from CSV '$path'." }
-        val asOfDate = LocalDate.now()
+        val asOfDate = LocalDate.now(clock)
         val demandOrders = mutableListOf<DemandOrder>()
         val inboundShipments = mutableListOf<InboundShipment>()
         val skuByTitle = mutableMapOf<String, String>()

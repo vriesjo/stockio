@@ -2,6 +2,7 @@ package nl.stockio.allocation.domain.job
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.LocalDate
+import java.time.Clock
 import java.util.UUID
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
@@ -27,6 +28,7 @@ private val logger = KotlinLogging.logger {}
 class AllocationRequestPublisher(
     private val rabbitTemplate: RabbitTemplate,
     private val productRepository: ProductRepository,
+    private val clock: Clock,
     @Value("\${stockio.allocation.rabbitmq.exchange}") private val exchange: String,
     @Value("\${stockio.allocation.rabbitmq.routing-key}") private val routingKey: String
 ) {
@@ -36,7 +38,7 @@ class AllocationRequestPublisher(
         initialDelayString = "\${stockio.allocation.rabbitmq.publisher.interval:250}"
     )
     fun publishSampleRequest() {
-        val today = LocalDate.now()
+        val today = LocalDate.now(clock)
         val requestId = UUID.randomUUID()
         val products = productRepository.findAll().toList()
         val demandOrders = mutableListOf<DemandOrder>()
@@ -47,13 +49,13 @@ class AllocationRequestPublisher(
             val arrivalDate = today.plusDays(listOf(1L, 2L, 3L).random())
             demandOrders.add(
                 DemandOrder(
-                    orderId = "rabbit-demo-$requestId-$i",
-                    customer = "RabbitMQ Demo",
+                    orderId = "stockio-mock-publisher-$requestId-$i",
+                    customer = "stockio-mock-publisher",
                     priority = 1,
                     placedDate = today,
                     lines = listOf(
                         DemandOrderLine(
-                            orderLineId = "rabbit-order-line-$requestId-$i",
+                            orderLineId = "stockio-order-line-$requestId-$i",
                             sku = product.sku,
                             requestedQuantity = quantity,
                             requiredDeliveryDate = today.plusDays(3)
@@ -63,10 +65,10 @@ class AllocationRequestPublisher(
             )
             inboundShipments.add(
                 InboundShipment(
-                    shipmentId = "rabbit-demo-$requestId-$i",
+                    shipmentId = "stockio-mock-$requestId-$i",
                     lines = listOf(
                         InboundShipmentLine(
-                            shipmentLineId = "rabbit-shipment-line-$requestId-$i",
+                            shipmentLineId = "stockio-mock-shipment-line-$requestId-$i",
                             sku = product.sku,
                             expectedArrivalDate = arrivalDate,
                             expectedQuantity = quantity,

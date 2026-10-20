@@ -74,6 +74,11 @@ stockio:
   allocation:
     csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
     max-concurrent-skus: ${ALLOCATION_MAX_CONCURRENT_SKUS:4}
+    ledger-sync:
+      enabled: ${ALLOCATION_LEDGER_SYNC_ENABLED:true}
+      cron: ${ALLOCATION_LEDGER_SYNC_CRON:0 0,12 * * *}
+      zone: ${ALLOCATION_LEDGER_SYNC_ZONE:UTC}
+      freshness-tolerance: ${ALLOCATION_LEDGER_SYNC_FRESHNESS_TOLERANCE:1h}
     reservation:
       ttl: ${ALLOCATION_RESERVATION_TTL:30m}
       expiry-interval: ${ALLOCATION_RESERVATION_EXPIRY_INTERVAL:1m}

@@ -10,6 +10,8 @@ import nl.stockio.allocation.domain.api.data.OrderReservationStatus
 import nl.stockio.reservation.domain.service.OrderReservationService
 import nl.stockio.allocation.domain.job.AllocationJobService
 import nl.stockio.allocation.domain.job.AllocationEventPublisher
+import nl.stockio.allocation.domain.service.LedgerSyncStatus
+import nl.stockio.allocation.domain.service.LedgerSyncStatusService
 import org.jobrunr.storage.JobNotFoundException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -27,22 +29,26 @@ import org.springframework.web.bind.annotation.RestController
 class AllocationController(
     private val allocationEventPublisher: AllocationEventPublisher,
     private val allocationJobService: AllocationJobService,
-    private val orderReservationService: OrderReservationService
+    private val orderReservationService: OrderReservationService,
+    private val ledgerSyncStatusService: LedgerSyncStatusService
 ) {
 
-    @PostMapping("/allocate-project-and-sync")
-    fun allocateProjectAndSync(
+    @PostMapping("/allocation-jobs")
+    fun allocateAndProject(
         @Valid @RequestBody request: AllocationRequest
     ): ResponseEntity<AllocationJobAccepted> {
         val accepted = allocationEventPublisher.publish(request)
         return ResponseEntity.accepted()
-            .location(URI.create("/api/logistics/allocate-project-and-sync/job-status/${accepted.jobId}"))
+            .location(URI.create("/api/logistics/allocation-jobs/${accepted.jobId}"))
             .body(accepted)
     }
 
-    @GetMapping("/allocate-project-and-sync/job-status/{jobId}")
-    fun allocateProjectAndSyncJobStatus(@PathVariable jobId: UUID): AllocationJobStatus =
+    @GetMapping("/allocation-jobs/{jobId}")
+    fun allocationJobStatus(@PathVariable jobId: UUID): AllocationJobStatus =
         allocationJobService.getStatus(jobId)
+
+    @GetMapping("/stock-ledger/status")
+    fun stockLedgerStatus(): LedgerSyncStatus = ledgerSyncStatusService.getStatus()
 
     @GetMapping("/orders/{orderId}/reservation")
     fun orderReservationStatus(@PathVariable orderId: String): ResponseEntity<OrderReservationStatus> =

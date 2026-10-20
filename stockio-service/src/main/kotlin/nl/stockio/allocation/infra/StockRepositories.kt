@@ -4,7 +4,6 @@ import jakarta.persistence.LockModeType
 import java.time.LocalDate
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Lock
-import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
 import org.springframework.transaction.annotation.Propagation
@@ -36,39 +35,7 @@ interface StockRepository : JpaRepository<StockEntity, UUID> {
     fun lockAllBySkuIn(@Param("skus") skus: Collection<String>): List<StockEntity>
 }
 
-interface StockDailySnapshotRepository : JpaRepository<StockDailySnapshotEntity, UUID> {
-    fun findAllBySnapshotDate(snapshotDate: LocalDate): List<StockDailySnapshotEntity>
-
-    fun findAllBySkuAndWarehouseCodeOrderBySnapshotDate(
-        sku: String,
-        warehouseCode: String
-    ): List<StockDailySnapshotEntity>
-
-    fun findBySnapshotDateAndSkuAndWarehouseCode(
-        snapshotDate: LocalDate,
-        sku: String,
-        warehouseCode: String
-    ): StockDailySnapshotEntity?
-
-    @Modifying(flushAutomatically = true)
-    @Query("delete from StockDailySnapshotEntity s where s.snapshotDate >= :snapshotDate")
-    fun deleteAllBySnapshotDateGreaterThanEqual(
-        @Param("snapshotDate") snapshotDate: LocalDate
-    ): Int
-}
-
 interface AllocationJobResultRepository : JpaRepository<AllocationJobResultEntity, UUID>
-
-interface StockDailyLotSnapshotRepository :
-    JpaRepository<StockDailyLotSnapshotEntity, StockDailyLotSnapshotId> {
-    fun findAllBySnapshotDate(snapshotDate: LocalDate): List<StockDailyLotSnapshotEntity>
-
-    @Modifying(flushAutomatically = true)
-    @Query("delete from StockDailyLotSnapshotEntity s where s.snapshotDate >= :snapshotDate")
-    fun deleteAllBySnapshotDateGreaterThanEqual(
-        @Param("snapshotDate") snapshotDate: LocalDate
-    ): Int
-}
 
 interface StockReservationRepository : JpaRepository<StockReservationEntity, UUID> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)

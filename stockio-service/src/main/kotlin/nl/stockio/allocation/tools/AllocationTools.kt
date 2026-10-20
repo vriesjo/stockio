@@ -2,13 +2,14 @@ package nl.stockio.allocation.tools
 
 import java.nio.file.Path
 import nl.stockio.allocation.domain.api.data.AllocationRequest
+import nl.stockio.allocation.domain.api.data.AllocationRunResult
+import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.ExcelReportRequest
 import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
 import nl.stockio.allocation.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.domain.service.AllocationRunService
-import nl.stockio.allocation.domain.service.AllocationService
+import nl.stockio.allocation.domain.service.AllocationProcessingService
 import nl.stockio.reservation.domain.service.OrderReservationService
 import org.springframework.ai.tool.annotation.Tool
 import org.springframework.beans.factory.annotation.Value
@@ -16,10 +17,9 @@ import org.springframework.stereotype.Component
 
 @Component
 class AllocationTools(
-    private val allocationService: AllocationService,
+    private val processingService: AllocationProcessingService,
     private val allocationRunService: AllocationRunService,
     private val stockLedgerProcessor: StockLedgerProcessor,
-    private val stockProjectionProcessor: StockProjectionProcessor,
     private val excelReportProcessor: ExcelReportProcessor,
     private val orderReservationService: OrderReservationService,
     @param:Value("\${stockio.report.directory}")
@@ -32,21 +32,26 @@ class AllocationTools(
             "Orders are processed by priority (lower number first), then FIFO. " +
             "Inbound shipments only cover orders when their expected arrival is on or before the required delivery date. " +
             "Any remainder is saved as an open backorder. New orders are unconfirmed temporary reservations " +
-            "that expire unless confirmed. Rebuild daily stock projections; only confirmed orders leave physical stock."
+            "that expire unless confirmed. Rebuild daily stock projections without synchronizing physical stock."
     )
     fun allocateAndStockProject(request: AllocationRequest) {
-        allocationService.allocation(request)
-        stockProjectionProcessor.process(request.asOfDate)
+        require(request.runType == AllocationRunType.NEW_DEMAND) { "Run type must be NEW_DEMAND for allocation." }
+        processingService.process(request)
     }
 
     @Tool(
         name = "allocate_open_backorders",
         description = "Use currently available inventory and shipments that have arrived by asOfDate " +
             "and whose expected arrival is on or before each order's required delivery date to fulfill persisted open backorders " +
-            "in priority/FIFO order. Expired orders are excluded and temporary reservation deadlines are not renewed."
+            "in priority/FIFO order. Expired orders are excluded and temporary reservation deadlines are not renewed. " +
+            "Rebuild daily projections without synchronizing physical stock."
     )
-    fun allocateOpenBackordersByInventoryAndInboundSupply(request: AllocationRequest) =
-        allocationService.allocateOpenBackorders(request)
+    fun allocateOpenBackordersByInventoryAndInboundSupply(request: AllocationRequest): AllocationRunResult {
+        require(request.runType == AllocationRunType.BACKORDER_FULFILLMENT) {
+            "Run type must be BACKORDER_FULFILLMENT for backorder allocation."
+        }
+        return processingService.process(request)
+    }
 
     @Tool(
         name = "process_stock_ledger",

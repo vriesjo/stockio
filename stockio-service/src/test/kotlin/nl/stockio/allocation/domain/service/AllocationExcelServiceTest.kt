@@ -3,6 +3,7 @@ package nl.stockio.allocation.domain.service
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
+import java.time.Clock
 import nl.stockio.product.infra.ProductRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
@@ -29,7 +30,7 @@ class AllocationExcelServiceTest {
             """.trimIndent()
         )
         try {
-            val service = AllocationExcelService(products)
+            val service = AllocationExcelService(products, Clock.systemDefaultZone())
             val first = service.loadCsvAndCreateAllocationRequest(destination)
             val second = service.loadCsvAndCreateAllocationRequest(destination)
 

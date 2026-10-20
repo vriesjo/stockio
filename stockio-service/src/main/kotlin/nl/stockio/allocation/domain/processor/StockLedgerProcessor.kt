@@ -2,6 +2,7 @@ package nl.stockio.allocation.domain.processor
 
 import java.time.Clock
 import java.time.LocalDate
+import java.util.UUID
 import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
 import nl.stockio.allocation.domain.api.data.StockSyncResult
 import nl.stockio.allocation.domain.api.data.ReservationStatus
@@ -9,15 +10,18 @@ import nl.stockio.reservation.domain.service.ReservationCleanupService
 import nl.stockio.allocation.infra.AllocationOrderClaimRepository
 import nl.stockio.allocation.infra.InboundReservationRepository
 import nl.stockio.allocation.infra.InboundSupplyRepository
-import nl.stockio.allocation.infra.StockDailyLotSnapshotRepository
-import nl.stockio.allocation.infra.StockDailySnapshotRepository
+import nl.stockio.allocation.infra.LedgerSyncStatusRepository
+import nl.stockio.allocation.infra.StockSnapshotRepository
 import nl.stockio.allocation.infra.StockEntity
 import nl.stockio.allocation.infra.StockProjectionLockRepository
 import nl.stockio.allocation.infra.StockRepository
 import nl.stockio.allocation.infra.StockReservationEntity
 import nl.stockio.allocation.infra.StockReservationRepository
 import org.springframework.stereotype.Service
+import org.slf4j.LoggerFactory
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.support.TransactionSynchronization
+import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /**
  * Applies today's projected stock balances to the live inventory ledger.
@@ -43,38 +47,54 @@ import org.springframework.transaction.annotation.Transactional
 class StockLedgerProcessor(
     private val stockProjectionLockRepository: StockProjectionLockRepository,
     private val stockRepository: StockRepository,
-    private val stockDailyLotSnapshotRepository: StockDailyLotSnapshotRepository,
+    private val snapshotRepository: StockSnapshotRepository,
     private val stockReservationRepository: StockReservationRepository,
     private val inboundSupplyRepository: InboundSupplyRepository,
     private val inboundReservationRepository: InboundReservationRepository,
-    private val stockDailySnapshotRepository: StockDailySnapshotRepository,
     private val cleanupService: ReservationCleanupService,
     private val stockProjectionProcessor: StockProjectionProcessor,
     private val claimRepository: AllocationOrderClaimRepository,
+    private val syncStatusRepository: LedgerSyncStatusRepository,
     private val clock: Clock
 ) {
 
     /**
      * Synchronizes live stock for the current date according to the injected [Clock].
      *
-     * @param request identifies today's snapshot date; past and future dates are rejected.
+     * @param request optionally identifies today's snapshot date; past and future dates are rejected.
+     * If omitted, today is resolved using the business clock after acquiring the lock.
      * @return the synchronized date, distinct SKU count, lot snapshot count, and update timestamp.
      * The lot count includes projected future lots, not only physically received lots.
      */
     @Transactional
     fun process(request: ProcessDailyStockRequest): StockSyncResult {
         stockProjectionLockRepository.acquire()
-        require(request.snapshotDate == LocalDate.now(clock)) {
+        val today = LocalDate.now(clock)
+        val snapshotDate = request.snapshotDate ?: today
+        require(snapshotDate == today) {
             "Only today's stock snapshot can be synchronized to live stock."
         }
+        return synchronize(snapshotDate)
+    }
+
+    /** Selects today's business date after acquiring the lock, including on delayed job retries. */
+    @Transactional
+    fun processToday(): StockSyncResult {
+        stockProjectionLockRepository.acquire()
+        return synchronize(LocalDate.now(clock))
+    }
+
+    private fun synchronize(snapshotDate: LocalDate): StockSyncResult {
+        val startedAt = System.nanoTime()
+        val syncId = UUID.randomUUID()
         while (cleanupService.expireDueBatch() > 0) {
             // Drain overdue holds before generating the snapshot used by this synchronization.
         }
-        stockProjectionProcessor.process(request.snapshotDate)
+        stockProjectionProcessor.process(snapshotDate)
         val confirmedOrderIds = claimRepository.findAll()
             .filter { it.reservationStatus == ReservationStatus.CONFIRMED }
             .mapTo(mutableSetOf()) { it.orderId }
-        val snapshots = stockDailySnapshotRepository.findAllBySnapshotDate(request.snapshotDate)
+        val snapshots = snapshotRepository.findDailyByDate(snapshotDate)
             .map {
                 AggregateSnapshot(
                     sku = it.sku,
@@ -82,7 +102,7 @@ class StockLedgerProcessor(
                     closingStock = it.closingStock
                 )
             }
-        val lotSnapshots = stockDailyLotSnapshotRepository.findAllBySnapshotDate(request.snapshotDate)
+        val lotSnapshots = snapshotRepository.findLotsByDate(snapshotDate)
             .map {
                 LotSnapshot(
                     sku = it.sku,
@@ -106,7 +126,7 @@ class StockLedgerProcessor(
         }
 
         val arrivedIds = inboundSupplyRepository.findAll()
-            .filter { !it.received && it.expectedArrivalDate <= request.snapshotDate }
+            .filter { !it.received && it.expectedArrivalDate <= snapshotDate }
             .map { it.shipmentLineId }
         val arrivedSupplies = if (arrivedIds.isEmpty()) {
             emptyList()
@@ -137,7 +157,7 @@ class StockLedgerProcessor(
 
         lotSnapshots.forEach { snapshot ->
             val key = StockKey(snapshot.sku, snapshot.warehouseCode, snapshot.lotId)
-            if (liveByKey[key] == null && !snapshot.receivedDate.isAfter(request.snapshotDate)) {
+            if (liveByKey[key] == null && !snapshot.receivedDate.isAfter(snapshotDate)) {
                 liveByKey[key] = StockEntity(
                     sku = snapshot.sku,
                     warehouseCode = snapshot.warehouseCode,
@@ -161,7 +181,7 @@ class StockLedgerProcessor(
             .map { it.id }
             .toSet()
         val dueStockReservations = stockReservationRepository
-            .findAllByRequiredDeliveryDateLessThanEqual(request.snapshotDate)
+            .findAllByRequiredDeliveryDateLessThanEqual(snapshotDate)
             .filter { it.stockId in synchronizedStockIds && it.orderId in confirmedOrderIds }
         val dueReservationIds = dueStockReservations.map { it.id }.toSet()
         val stockReservations = stockReservationRepository.findAll()
@@ -170,7 +190,7 @@ class StockLedgerProcessor(
         val liveByInboundId = liveByKey.values.associateBy { Triple(it.sku, it.warehouseCode, it.lotId) }
 
         inboundReservations.filter {
-            it.orderId !in confirmedOrderIds || it.requiredDeliveryDate > request.snapshotDate
+            it.orderId !in confirmedOrderIds || it.requiredDeliveryDate > snapshotDate
         }.forEach { reservation ->
             val supply = arrivedSupplies.first { it.shipmentLineId == reservation.shipmentLineId }
             val stock = liveByInboundId[Triple(supply.sku, supply.warehouseCode, supply.lotId)]
@@ -200,12 +220,25 @@ class StockLedgerProcessor(
         stockReservationRepository.saveAll(stockReservations.values)
         if (arrivedSupplies.isNotEmpty()) inboundSupplyRepository.saveAll(arrivedSupplies)
 
-        return StockSyncResult(
-            snapshotDate = request.snapshotDate,
+        val result = StockSyncResult(
+            snapshotDate = snapshotDate,
             skuCount = snapshots.map { it.sku }.distinct().size,
             lotCount = lotSnapshots.size,
-            updatedAt = now
+            updatedAt = clock.instant()
         )
+        syncStatusRepository.recordSuccess(result)
+        TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+            override fun afterCommit() {
+                logger.atInfo()
+                    .addKeyValue("syncId", syncId)
+                    .addKeyValue("snapshotDate", result.snapshotDate)
+                    .addKeyValue("skuCount", result.skuCount)
+                    .addKeyValue("lotSnapshotCount", result.lotCount)
+                    .addKeyValue("durationMs", (System.nanoTime() - startedAt) / 1_000_000)
+                    .log("Synchronized live stock ledger.")
+            }
+        })
+        return result
     }
 
     private data class StockKey(val sku: String, val warehouseCode: String, val lotId: String)
@@ -218,4 +251,8 @@ class StockLedgerProcessor(
         val closingStock: Int,
         val quantityReserved: Int
     )
+
+    companion object {
+        private val logger = LoggerFactory.getLogger(StockLedgerProcessor::class.java)
+    }
 }

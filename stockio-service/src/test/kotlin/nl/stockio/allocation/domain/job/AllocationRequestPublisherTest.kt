@@ -1,6 +1,7 @@
 package nl.stockio.allocation.domain.job
 
 import java.time.LocalDate
+import java.time.Clock
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.model.InboundSupplyState
@@ -28,7 +29,9 @@ class AllocationRequestPublisherTest {
         val productRepository = mock(ProductRepository::class.java)
         val product = ProductEntity(sku = "MAKI-KOMKOMMER", title = "Maki Komkommer")
         `when`(productRepository.findAll()).thenReturn(listOf(product))
-        val publisher = AllocationRequestPublisher(rabbitTemplate, productRepository, "allocation.exchange", "allocation.request")
+        val publisher = AllocationRequestPublisher(
+            rabbitTemplate, productRepository, Clock.systemDefaultZone(), "allocation.exchange", "allocation.request"
+        )
 
         val beforePublish = LocalDate.now()
         publisher.publishSampleRequest()

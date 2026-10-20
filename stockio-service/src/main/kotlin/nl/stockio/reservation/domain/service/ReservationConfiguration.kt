@@ -1,10 +1,8 @@
 package nl.stockio.reservation.domain.service
 
-import java.time.Clock
 import java.time.Duration
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.boot.context.properties.EnableConfigurationProperties
-import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
 @ConfigurationProperties("stockio.allocation.reservation")
@@ -24,7 +22,4 @@ data class ReservationProperties(
 
 @Configuration
 @EnableConfigurationProperties(ReservationProperties::class)
-class ReservationConfiguration {
-    @Bean
-    fun reservationClock(): Clock = Clock.systemDefaultZone()
-}
+class ReservationConfiguration

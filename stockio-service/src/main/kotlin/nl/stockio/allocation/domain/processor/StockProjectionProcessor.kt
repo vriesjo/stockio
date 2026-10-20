@@ -1,6 +1,5 @@
 package nl.stockio.allocation.domain.processor
 
-import jakarta.persistence.EntityManager
 import java.time.Clock
 import java.time.LocalDate
 import nl.stockio.allocation.domain.api.data.ReservationStatus
@@ -9,10 +8,9 @@ import nl.stockio.allocation.infra.AllocationOrderClaimRepository
 import nl.stockio.allocation.infra.InboundReservationRepository
 import nl.stockio.allocation.infra.InboundSupplyRepository
 import nl.stockio.allocation.infra.OpenBackorderRepository
-import nl.stockio.allocation.infra.StockDailyLotSnapshotEntity
-import nl.stockio.allocation.infra.StockDailyLotSnapshotRepository
-import nl.stockio.allocation.infra.StockDailySnapshotEntity
-import nl.stockio.allocation.infra.StockDailySnapshotRepository
+import nl.stockio.allocation.infra.StockDailyLotSnapshot
+import nl.stockio.allocation.infra.StockDailySnapshot
+import nl.stockio.allocation.infra.StockSnapshotRepository
 import nl.stockio.allocation.infra.StockProjectionLockRepository
 import nl.stockio.allocation.infra.StockRepository
 import nl.stockio.allocation.infra.StockReservationRepository
@@ -48,11 +46,9 @@ class StockProjectionProcessor(
     private val inboundSupplyRepository: InboundSupplyRepository,
     private val inboundReservationRepository: InboundReservationRepository,
     private val backorderRepository: OpenBackorderRepository,
-    private val stockDailyLotSnapshotRepository: StockDailyLotSnapshotRepository,
-    private val stockDailySnapshotRepository: StockDailySnapshotRepository,
+    private val snapshotRepository: StockSnapshotRepository,
     private val claimRepository: AllocationOrderClaimRepository,
-    private val clock: Clock,
-    private val entityManager: EntityManager
+    private val clock: Clock
 ) {
 
     /**
@@ -64,8 +60,8 @@ class StockProjectionProcessor(
      * such event, or the start date if none exist. Pending order delivery dates do not extend it.
      *
      * Earlier snapshots are retained. Snapshots from the start date onward are deleted even if
-     * there are no remaining stock or confirmed shortage scopes to project. The persistence
-     * context is flushed and cleared after deletion to support repeated rebuilds in one transaction.
+     * there are no remaining stock or confirmed shortage scopes to project. Snapshot replacement
+     * uses JDBC in the same transaction without detaching any managed business entities.
      *
      * Missing order claims or supply references, active demand on expired orders, conflicting
      * lots, and deliveries exceeding available on-hand or reserved quantities fail the transaction.
@@ -176,17 +172,8 @@ class StockProjectionProcessor(
             backordersByDate.keys.maxOfOrNull { it.date } ?: startDate
         )
 
-        stockDailyLotSnapshotRepository.deleteAllBySnapshotDateGreaterThanEqual(startDate)
-        stockDailySnapshotRepository.deleteAllBySnapshotDateGreaterThanEqual(startDate)
-
-        // Hibernate keeps loaded and saved entities in an in-memory persistence context.
-        // But these bulk delete database rows without removing their entities from that context,
-        // hence the flush and clear to avoid duplicate key errors when saving new snapshots.
-        entityManager.flush()
-        entityManager.clear()
-
-
-        if (scopes.isEmpty()) return
+        val dailySnapshots = mutableListOf<StockDailySnapshot>()
+        val lotSnapshots = mutableListOf<StockDailyLotSnapshot>()
         scopes.forEach { (sku, warehouseCode) ->
             val skuLots = states.filterKeys { it.sku == sku && it.warehouseCode == warehouseCode }
             var date = startDate
@@ -225,8 +212,8 @@ class StockProjectionProcessor(
                 val shortage = backordersByDate[ScopeDate(sku, warehouseCode, date)] ?: 0
                 val demand = allocatedQuantity + shortage
                 val closing = skuLots.values.sumOf { it.onHand.toLong() }.toIntExact()
-                stockDailySnapshotRepository.save(
-                    StockDailySnapshotEntity(
+                dailySnapshots.add(
+                    StockDailySnapshot(
                         snapshotDate = date,
                         sku = sku,
                         warehouseCode = warehouseCode,
@@ -239,9 +226,9 @@ class StockProjectionProcessor(
                     )
                 )
 
-                stockDailyLotSnapshotRepository.saveAll(
+                lotSnapshots.addAll(
                     skuLots.map { (key, state) ->
-                        StockDailyLotSnapshotEntity(
+                        StockDailyLotSnapshot(
                             snapshotDate = date,
                             sku = sku,
                             warehouseCode = warehouseCode,
@@ -259,9 +246,10 @@ class StockProjectionProcessor(
                 date = date.plusDays(1)
             }
         }
+        snapshotRepository.replaceFrom(startDate, dailySnapshots, lotSnapshots)
     }
 
-    fun isConfirmed(orderId: String, claims: Map<String, AllocationOrderClaimEntity!>): Boolean {
+    fun isConfirmed(orderId: String, claims: Map<String, AllocationOrderClaimEntity>): Boolean {
         val claim = checkNotNull(claims[orderId]) {
             "Active reservation or backorder '$orderId' has no allocation order claim."
         }
