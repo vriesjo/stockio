@@ -56,7 +56,7 @@ project(":stockio-service") {
     version = '0.0.1-SNAPSHOT'
 
     springBoot {
-        mainClass = 'nl.stockio.McpServerRunnerKt'
+        mainClass = 'nl.stockio.StockioApplicationKt'
     }
 
     dependencies {
@@ -89,9 +89,14 @@ project(":stockio-api") {
 
     dependencies {
         implementation 'org.springframework.ai:spring-ai-starter-mcp-client'
-        implementation 'org.springframework:spring-web'
+        implementation 'org.springframework.boot:spring-boot-starter-web'
+        implementation 'org.springframework.boot:spring-boot-starter-validation'
 
         testImplementation 'org.springframework.boot:spring-boot-starter-test'
         testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+
+    tasks.named('bootRun') {
+        dependsOn ':stockio-service:bootJar'
     }
 }

@@ -2,9 +2,9 @@ package nl.stockio.allocation.domain.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.util.UUID
-import nl.stockio.allocation.domain.bean.AllocationAndSyncResult
-import nl.stockio.allocation.domain.bean.AllocationRunResult
-import nl.stockio.allocation.domain.bean.ProcessDailyStockRequest
+import nl.stockio.allocation.domain.api.data.AllocationAndSyncResult
+import nl.stockio.allocation.domain.api.data.AllocationRunResult
+import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
 import nl.stockio.allocation.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.infra.AllocationJobResultEntity

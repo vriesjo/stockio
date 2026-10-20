@@ -1,8 +1,8 @@
-package nl.stockio.allocation.validator
+package nl.stockio.allocation.domain.api.validator
 
 import jakarta.validation.Validator
-import nl.stockio.allocation.domain.bean.AllocationRequest
-import nl.stockio.allocation.domain.bean.AllocationRunType
+import nl.stockio.allocation.domain.api.data.AllocationRequest
+import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.infra.AllocationRecordRepository
 import org.springframework.stereotype.Component
 

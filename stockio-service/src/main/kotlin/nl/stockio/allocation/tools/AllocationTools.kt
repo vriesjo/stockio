@@ -1,9 +1,9 @@
 package nl.stockio.allocation.tools
 
 import java.nio.file.Path
-import nl.stockio.allocation.domain.bean.AllocationRequest
-import nl.stockio.allocation.domain.bean.ExcelReportRequest
-import nl.stockio.allocation.domain.bean.ProcessDailyStockRequest
+import nl.stockio.allocation.domain.api.data.AllocationRequest
+import nl.stockio.allocation.domain.api.data.ExcelReportRequest
+import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
 import nl.stockio.allocation.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
 import nl.stockio.allocation.domain.processor.StockProjectionProcessor

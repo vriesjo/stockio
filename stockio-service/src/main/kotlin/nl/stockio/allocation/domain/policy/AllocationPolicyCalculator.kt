@@ -1,9 +1,9 @@
 package nl.stockio.allocation.domain.policy
 
 import java.time.LocalDate
-import nl.stockio.allocation.domain.bean.AllocationRecord
-import nl.stockio.allocation.domain.bean.AllocationSource
-import nl.stockio.allocation.domain.bean.AllocationStatus
+import nl.stockio.allocation.domain.api.data.AllocationRecord
+import nl.stockio.allocation.domain.api.data.AllocationSource
+import nl.stockio.allocation.domain.api.data.AllocationStatus
 import nl.stockio.allocation.domain.model.AllocationCalculationResult
 import nl.stockio.allocation.domain.model.AllocationOrder
 import nl.stockio.allocation.domain.model.BackorderRegistration

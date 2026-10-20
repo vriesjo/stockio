@@ -1,4 +1,5 @@
 HELP.md
+.ollamassist
 .gradle
 build/
 *.class

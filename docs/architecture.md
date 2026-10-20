@@ -15,7 +15,7 @@ The Gradle build includes two modules:
 | `:stockio-service` (`stockio-service/`) | Spring Boot application, MCP tools, REST API, allocation workflows, persistence, CSV import, and Excel generation. |
 | `:stockio-api` (`stockio-api/`) | Sample Spring AI MCP client. It is not required by the service at runtime. |
 
-The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL, Flyway, RabbitMQ, JobRunr, Apache POI, HikariCP, and Spring Boot Actuator. Allocation work is parallelized across SKUs with Kotlin coroutines.
+The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL with pgvector, Flyway, RabbitMQ, JobRunr, Apache POI, HikariCP, and Spring Boot Actuator. Natural-language product allocation also uses the Tavily search API and Ollama embeddings. Allocation work is parallelized across SKUs with Kotlin coroutines.
 
 ## System context
 
@@ -24,6 +24,8 @@ flowchart LR
     Operator["Operator / REST client"] -->|"HTTP / JSON"| API["Stockio service"]
     Agent["MCP client"] -->|"MCP tools"| API
     API -->|"JPA / JDBC"| DB[("PostgreSQL")]
+    API -->|"Product lookup"| Tavily["Tavily Search API"]
+    API -->|"Embeddings"| Ollama["Ollama"]
     API -->|"Allocation requests"| Rabbit["RabbitMQ"]
     API -->|"Background jobs"| JobRunr["JobRunr"]
     API -->|"Read"| CSV["Configured allocation CSV"]
@@ -37,6 +39,9 @@ The service runs as a servlet application and exposes MCP tools through Spring A
 | Component | Responsibility |
 | --- | --- |
 | `AllocationTools` | MCP adapter for new-demand allocation and projection, backorder fulfillment, stock-ledger synchronization, and Excel report generation. |
+| `ProductAllocationTools` / `ProductAllocationService` | Resolves a product phrase through local catalog/vector matching with Tavily fallback, then delegates allocation to the existing allocation and projection services. |
+| Tavily / Ollama clients | Perform external product search and local embedding requests with configured timeouts. |
+| `ProductVectorRepository` | Persists catalog embeddings and Tavily knowledge chunks and performs pgvector similarity searches. |
 | `AllocationController` | Accepts asynchronous allocate-and-project-and-sync requests and exposes JobRunr job status. |
 | `AllocationAdminController` | Creates allocation requests from CSV, generates reports, and removes jobs with excessive retries. |
 | `AllocationService` | Validates, groups work by SKU, coordinates SKU workers, and completes allocation runs. |
@@ -56,14 +61,70 @@ The service runs as a servlet application and exposes MCP tools through Spring A
 | Tool | Input | Behavior |
 | --- | --- | --- |
 | `allocation_and_stock_projection` | `AllocationRequest` with `runType: NEW_DEMAND` | Allocates demand, persists reservations/backorders, and rebuilds daily projections. It does not synchronize live stock. |
+| `allocate_product_by_name` | `ProductAllocationRequest` | Requires Tavily lookup, resolves a product to an active catalog SKU, allocates through `AllocationService`, rebuilds projections, and returns product evidence plus the allocation result. Unresolved or ambiguous products are not allocated. |
 | `allocate_open_backorders` | `AllocationRequest` with `runType: BACKORDER_FULFILLMENT` | Attempts to fulfill persisted backorders using eligible stock and inbound supply; returns an `AllocationRunResult`. The current tool path does not rebuild projections or synchronize live stock. |
 | `process_stock_ledger` | `ProcessDailyStockRequest` | Applies today's existing snapshot to live stock and returns a `StockSyncResult`. It does not recalculate allocations or stock movements. |
 | `generate_excel_report` | `ExcelReportRequest` (`runId`, simple `.xlsx` `fileName`) | Generates a report for a saved allocation run and returns the output path. |
+
+### Agentic product-allocation flow
+
+The MCP caller interprets the user's natural-language request and submits a structured `ProductAllocationRequest`. For example, “Hold 50 units of Maki Komkommer, or the nearest equivalent” becomes a request with `productQuery: "Maki Komkommer"`, `quantity: 50`, and `allowEquivalent: true`. The caller must also supply `requestId`, `orderId`, `customer`, `priority`, `placedDate`, `requiredDeliveryDate`, and `asOfDate`; the service does not invent order identity or dates.
+
+```mermaid
+sequenceDiagram
+    actor Caller as MCP caller
+    participant Tool as ProductAllocationTools
+    participant Tavily as Tavily Search
+    participant Ollama
+    participant DB as PostgreSQL + pgvector
+    participant Alloc as AllocationService
+    participant Projection as StockProjectionProcessor
+
+    Caller->>Tool: ProductAllocationRequest
+    Tool->>Tool: Validate required order fields
+    Tool->>DB: Load active catalog products
+    alt Exact normalized title match
+        Tool->>Tool: Resolve SKU without external calls
+    else No exact match and equivalents allowed
+        Tool->>Ollama: Embed query and stale or missing catalog descriptions
+        Ollama-->>Tool: 768-dimensional embeddings
+        Tool->>DB: Refresh catalog vectors and search catalog and cached knowledge
+        alt Strong, separated local match
+            Tool->>Tool: Resolve SKU without Tavily
+        else Weak or ambiguous local match
+            Tool->>Tavily: Search product / nearest equivalent
+            Tavily-->>Tool: Titles, snippets, source URLs or failure
+            Tool->>Ollama: Embed evidence, reusing query embedding
+            Tool->>DB: Search catalog and cached knowledge vectors
+            Tool->>Tool: Check evidence relevance and candidate score / gap
+            opt One product SKU is resolved
+                Tool->>Ollama: Embed source content chunks
+                Tool->>DB: Upsert chunks with SKU and provenance
+            end
+        end
+    end
+    alt Resolution or ingestion failed, or no exact match with equivalents disabled
+        Tool-->>Caller: Failure status and candidates, no allocation
+    else One product SKU is resolved
+        Tool->>Alloc: NEW_DEMAND AllocationRequest with resolved SKU
+        Alloc->>DB: Persist allocation, reservations, and any backorder
+        Alloc-->>Tool: AllocationRunResult
+        Tool->>Projection: Rebuild daily projections
+        Tool-->>Caller: Selected product, sources, and actual allocation result
+    end
+```
+
+Resolution is local-first. An exact normalized active-catalog title match skips Ollama and Tavily. If no exact match exists and `allowEquivalent` is false, resolution stops without external calls. Otherwise, query embeddings search catalog and cached-knowledge vectors after stale catalog embeddings are refreshed. A candidate scoring at least `0.90` with a lead of at least `0.08` skips Tavily. These local-only thresholds are independently configurable starting points and should be evaluated against representative queries.
+
+Weak or ambiguous local matches fall back to Tavily. Fallback evidence must meet the configured cosine-similarity threshold (`0.25` by default); a candidate must meet the fallback minimum similarity (`0.72` by default) and lead the next candidate by the configured gap (`0.04` by default). The tool returns candidates without allocating if evidence is irrelevant, no candidate qualifies, or the result remains ambiguous. Tavily or Ollama failures are returned as explicit non-allocation statuses. Local-only resolutions return an empty sources list.
+
+After resolution, the tool uses Stockio's normal `NEW_DEMAND` behavior. Partial allocations are allowed, and any unfilled quantity becomes an open backorder. The response reports the selected product, Tavily source URLs, and the actual `AllocationRunResult`; it does not claim the full requested quantity was held unless the allocation result confirms it. The tool rebuilds projections but does not synchronize live stock.
 
 ### REST endpoints
 
 | Method and path | Behavior |
 | --- | --- |
+| `POST /api/products/allocate` | Synchronously performs the agentic product lookup and allocation for a `ProductAllocationRequest`; returns the product-resolution status and allocation result. |
 | `POST /api/logistics/allocate-project-and-sync` | Validates today's `asOfDate`, accepts an allocation request, and returns `202 Accepted` with a JobRunr `jobId` and status URL. |
 | `GET /api/logistics/allocate-project-and-sync/job-status/{jobId}` | Returns the JobRunr state and, when succeeded, the persisted allocation and stock-sync result. |
 | `GET /api/admin/allocations/generate-request-by-csv` | Parses the configured CSV and returns a generated `AllocationRequest`; it does not execute it. |
@@ -73,6 +134,8 @@ The service runs as a servlet application and exposes MCP tools through Spring A
 | `GET /actuator/metrics/{metricName}` | Reads an exposed Micrometer metric. |
 
 The asynchronous REST workflow uses an event published inside a transaction and schedules its JobRunr job after commit. Job status is read through JobRunr's `StorageProvider`; the result payload is persisted separately in `allocation_job_result`.
+
+`POST /api/products/allocate` is a synchronous endpoint and delegates to the same `ProductAllocationService` as the MCP tool. Product-resolution failures are returned in the `ProductAllocationResponse` body without creating an allocation; invalid request fields return `400 Bad Request`.
 
 ### Allocation request shape
 
@@ -168,6 +231,8 @@ The sync does not recompute the projection or accept movements. Repeating it is 
 | Table | Responsibility |
 | --- | --- |
 | `products` | Product catalog and SKU reference data. |
+| `product_embeddings` | Cached 768-dimensional Ollama embeddings for active catalog products, refreshed when product text or model changes. |
+| `product_knowledge_chunks` | Tavily source text associated with a resolved SKU, with provenance, content hash, retrieval time, and a 768-dimensional embedding. |
 | `stock` | Current physical quantity and future reservations by lot. |
 | `stock_reservation` | Order reservations against live stock lots. |
 | `inbound_supply` | Expected receipts, received state, and reserved shipment quantities. |
@@ -185,7 +250,7 @@ The sync does not recompute the projection or accept movements. Repeating it is 
 | `allocation_job_result` | Serialized result for completed asynchronous allocation jobs. |
 | `flyway_schema_history` | Flyway migration metadata. |
 
-Flyway migrations V1-V12 create and evolve these tables, seed products, add daily projections and concurrency support, and remove the retired stock-ledger tables. Hibernate validates the migrated schema at startup; it does not create or alter tables.
+Flyway migrations V1-V13 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, and enable pgvector product-resolution storage. Hibernate validates the migrated schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
 
 ## CSV import and Excel reports
 
@@ -212,7 +277,7 @@ The output directory defaults to `${user.home}/itzitzo-mcp/reports` and is confi
 
 | Variable / property | Default | Purpose |
 | --- | --- | --- |
-| `DB_URL` | `jdbc:postgresql://localhost:5436/logistics` | PostgreSQL JDBC URL. |
+| `DB_URL` | `jdbc:postgresql://localhost:5437/logistics` | PostgreSQL JDBC URL for the pgvector-enabled local Compose database. |
 | `DB_USERNAME` / `DB_PASSWORD` | `logistics` / `logistics` | Database credentials. |
 | `DB_POOL_MAX_SIZE` | `10` | Hikari maximum pool size. |
 | `DB_POOL_MIN_IDLE` | `2` | Hikari minimum idle connections. |
@@ -223,6 +288,18 @@ The output directory defaults to `${user.home}/itzitzo-mcp/reports` and is confi
 | `ALLOCATION_MAX_CONCURRENT_SKUS` | `4` | Maximum concurrent SKU workers. |
 | `ALLOCATION_CSV_PATH` | `docs/allocations.csv` | CSV input path. |
 | `REPORT_DIR` | `${user.home}/itzitzo-mcp/reports` | Excel output directory. |
+| `TAVILY_API_KEY` | empty (required for fallback searches) | Tavily API credential. |
+| `TAVILY_BASE_URL` | `https://api.tavily.com` | Tavily API base URL. |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama service URL. |
+| `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model; it must return 768 dimensions. |
+| `PRODUCT_RESOLUTION_TIMEOUT` | `15s` | Connect/read timeout for Tavily and Ollama calls. |
+| `PRODUCT_RESOLUTION_MAX_RESULTS` | `5` | Tavily search result count. |
+| `PRODUCT_RESOLUTION_MAX_CANDIDATES` | `5` | Maximum product candidates used/returned. |
+| `PRODUCT_RESOLUTION_MINIMUM_SIMILARITY` | `0.72` | Minimum score for non-exact product matches. |
+| `PRODUCT_RESOLUTION_MINIMUM_SIMILARITY_GAP` | `0.04` | Required lead over the second candidate to accept an equivalent. |
+| `PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY` | `0.90` | Minimum local vector score to bypass Tavily. |
+| `PRODUCT_RESOLUTION_MINIMUM_LOCAL_SIMILARITY_GAP` | `0.08` | Required local lead over the second candidate to bypass Tavily. |
+| `PRODUCT_RESOLUTION_MINIMUM_TAVILY_EVIDENCE_SIMILARITY` | `0.25` | Minimum cosine similarity between the requested phrase and Tavily evidence. |
 | `RABBITMQ_HOST` / `RABBITMQ_PORT` | `localhost` / `5672` | RabbitMQ server address. |
 | `RABBITMQ_USERNAME` / `RABBITMQ_PASSWORD` | `stockio` / `stockio` | RabbitMQ credentials. |
 | `ALLOCATION_RABBITMQ_EXCHANGE` | `stockio.allocation.exchange` | Allocation request exchange. |

@@ -2,8 +2,8 @@ package nl.stockio.allocation.domain.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.util.UUID
-import nl.stockio.allocation.domain.bean.AllocationAndSyncResult
-import nl.stockio.allocation.domain.bean.AllocationJobStatus
+import nl.stockio.allocation.domain.api.data.AllocationAndSyncResult
+import nl.stockio.allocation.domain.api.data.AllocationJobStatus
 import nl.stockio.allocation.infra.AllocationJobResultRepository
 import org.jobrunr.jobs.states.StateName
 import org.jobrunr.storage.StorageProvider
