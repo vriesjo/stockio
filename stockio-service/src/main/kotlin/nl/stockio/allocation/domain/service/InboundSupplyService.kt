@@ -1,47 +1,59 @@
 package nl.stockio.allocation.domain.service
 
 import nl.stockio.allocation.domain.api.data.InboundShipment
-import nl.stockio.allocation.infra.InboundSupplyEntity
-import nl.stockio.allocation.infra.InboundSupplyRepository
+import nl.stockio.reservation.infra.InboundShipmentEntity
+import nl.stockio.reservation.infra.InboundShipmentJpaRepository
+import nl.stockio.reservation.infra.InboundSupplyEntity
+import nl.stockio.reservation.infra.InboundSupplyJpaRepository
 import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Propagation
+import org.springframework.transaction.annotation.Transactional
 
 @Service
 class InboundSupplyService(
-    private val inboundSupplyRepository: InboundSupplyRepository
+    private val shipmentRepository: InboundShipmentJpaRepository,
+    private val supplyRepository: InboundSupplyJpaRepository
 ) {
-
+    @Transactional(propagation = Propagation.MANDATORY)
     fun registerInboundSupply(shipments: List<InboundShipment>) {
-        if (shipments.isEmpty()) return
-        val ids = shipments.map { it.shipmentId }
-        val supplies = if (ids.isEmpty()) {
-            mutableMapOf()
-        } else {
-            inboundSupplyRepository.lockAllByShipmentIdIn(ids).associateByTo(mutableMapOf()) { it.shipmentId }
-        }
-        shipments.forEach { shipment ->
-            val existing = supplies[shipment.shipmentId]
-            if (existing == null) {
-                supplies[shipment.shipmentId] = InboundSupplyEntity(
-                    shipmentId = shipment.shipmentId,
-                    sku = shipment.sku,
-                    warehouseCode = shipment.warehouseCode,
-                    expectedQuantity = shipment.expectedQuantity,
-                    expectedArrivalDate = shipment.expectedArrivalDate
-                )
+        shipments.sortedBy { it.shipmentId }.forEach { shipment ->
+            val exists = shipmentRepository.existsById(shipment.shipmentId)
+            val existing = supplyRepository.findAllByShipmentId(shipment.shipmentId).associateBy { it.shipmentLineId }
+            if (exists) {
+                require(existing.keys == shipment.lines.map { it.shipmentLineId }.toSet()) {
+                    "Shipment '${shipment.shipmentId}' cannot change its registered line membership."
+                }
             } else {
-                require(
-                    existing.sku == shipment.sku &&
-                        existing.warehouseCode == shipment.warehouseCode &&
-                        existing.expectedArrivalDate == shipment.expectedArrivalDate
-                ) {
-                    "Inbound shipment ID '${shipment.shipmentId}' has already been used with different SKU, warehouse, or arrival date."
+                require(supplyRepository.findAllById(shipment.lines.map { it.shipmentLineId }).isEmpty()) {
+                    "Shipment line IDs already belong to another shipment."
                 }
-                require(shipment.expectedQuantity >= existing.quantityReserved) {
-                    "Inbound shipment '${shipment.shipmentId}' cannot be reduced below its reserved quantity."
-                }
-                existing.expectedQuantity = shipment.expectedQuantity
+                shipmentRepository.saveAndFlush(InboundShipmentEntity(shipment.shipmentId))
             }
+            val supplies = shipment.lines.map { line ->
+                val supply = existing[line.shipmentLineId]
+                if (supply == null) {
+                    InboundSupplyEntity(
+                        shipmentId = shipment.shipmentId,
+                        shipmentLineId = line.shipmentLineId,
+                        sku = line.sku,
+                        warehouseCode = line.warehouseCode,
+                        expectedQuantity = line.expectedQuantity,
+                        expectedArrivalDate = line.expectedArrivalDate
+                    )
+                } else {
+                    require(supply.sku == line.sku && supply.warehouseCode == line.warehouseCode &&
+                        supply.expectedArrivalDate == line.expectedArrivalDate) {
+                        "Shipment line '${line.shipmentLineId}' has different SKU, warehouse, or arrival date."
+                    }
+                    require(line.expectedQuantity >= supply.quantityReserved &&
+                        (!supply.received || line.expectedQuantity == supply.expectedQuantity)) {
+                        "Shipment line '${line.shipmentLineId}' cannot change received quantity or fall below reservations."
+                    }
+                    supply.expectedQuantity = line.expectedQuantity
+                    supply
+                }
+            }
+            supplyRepository.saveAll(supplies)
         }
-        inboundSupplyRepository.saveAll(supplies.values)
     }
 }

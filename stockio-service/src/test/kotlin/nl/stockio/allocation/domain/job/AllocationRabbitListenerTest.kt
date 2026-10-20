@@ -4,6 +4,7 @@ import java.time.LocalDate
 import java.util.UUID
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
+import nl.stockio.allocation.domain.service.AllocationProjectionException
 import org.jobrunr.jobs.Job
 import org.jobrunr.storage.JobNotFoundException
 import org.jobrunr.storage.StorageProvider
@@ -27,7 +28,7 @@ class AllocationRabbitListenerTest {
         val allocationJob = mock(AllocationJob::class.java)
         val allocationEventListener = mock(AllocationEventListener::class.java)
         val storageProvider = mock(StorageProvider::class.java)
-        doThrow(IllegalStateException("Synchronous execution failed"))
+        doThrow(AllocationProjectionException(UUID.randomUUID(), IllegalArgumentException("Projection is inconsistent")))
             .`when`(allocationJob)
             .execute(request.requestId, request)
         doThrow(JobNotFoundException(request.requestId))
@@ -52,7 +53,7 @@ class AllocationRabbitListenerTest {
         val allocationJob = mock(AllocationJob::class.java)
         val allocationEventListener = mock(AllocationEventListener::class.java)
         val storageProvider = mock(StorageProvider::class.java)
-        doThrow(IllegalArgumentException("Only today's stock snapshot can be synchronized to live stock."))
+        doThrow(IllegalArgumentException("Invalid allocation request."))
             .`when`(allocationJob)
             .execute(request.requestId, request)
 

@@ -19,7 +19,8 @@ class ProductAllocationTools(
             "Do not allocate if the product match is missing or ambiguous. Provide requestId, orderId, customer, " +
             "quantity, priority, placedDate, requiredDeliveryDate, asOfDate, and productQuery. " +
             "Equivalent products may be selected when allowEquivalent is true. Shortages follow Stockio's " +
-            "partial-allocation and backorder behavior."
+            "partial-allocation and backorder behavior. Creates one order with one stable product line; " +
+            "results identify both orderId and orderLineId and distinguish processed lines from lines skipped after order expiry."
     )
     fun allocateProduct(request: ProductAllocationRequest): ProductAllocationResponse =
         productAllocationService.allocate(request)

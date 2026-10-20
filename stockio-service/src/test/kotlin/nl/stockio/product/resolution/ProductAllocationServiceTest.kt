@@ -8,8 +8,10 @@ import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunResult
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.DemandOrder
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
+import nl.stockio.allocation.domain.api.data.DemandOrderLine
+import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.domain.service.AllocationService
+import nl.stockio.allocation.domain.service.AllocationProcessingService
 import nl.stockio.product.domain.model.ProductAllocationRequest
 import nl.stockio.product.domain.model.ProductAllocationStatus
 import nl.stockio.product.domain.service.OllamaEmbeddingClient
@@ -21,15 +23,16 @@ import nl.stockio.product.domain.service.TavilySearchClient
 import nl.stockio.product.domain.service.TavilySearchResult
 import nl.stockio.product.infra.ProductEntity
 import nl.stockio.product.infra.ProductKnowledgeMatch
-import nl.stockio.product.infra.ProductRepository
+import nl.stockio.product.infra.ProductJpaRepository
 import nl.stockio.product.infra.ProductVectorMatch
-import nl.stockio.product.infra.ProductVectorRepository
+import nl.stockio.product.infra.ProductVectorJdbcTemplateRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
@@ -105,12 +108,14 @@ class ProductAllocationServiceTest {
         )
 
         val response = sut.allocate(requested)
+        val replay = sut.allocate(requested)
 
         assertEquals(ProductAllocationStatus.ALLOCATION_PROCESSED, response.status)
         assertEquals("MAKI-KOMKOMMER", response.selectedProduct?.sku)
         assertFalse(response.selectedProduct?.equivalent ?: true)
         assertEquals(expectedRun, response.allocationRun)
-        verify(allocationService).allocation(expectedRequest)
+        assertEquals(expectedRun, replay.allocationRun)
+        verify(allocationService, times(2)).allocation(expectedRequest)
         verifyNoInteractions(tavilySearchClient, embeddingClient)
         assertTrue(response.sources.isEmpty())
     }
@@ -224,7 +229,7 @@ class ProductAllocationServiceTest {
     fun `cached knowledge can resolve a local match without Tavily`() {
         val product = ProductEntity(sku = "MAKI-KOMKOMMER", title = "Maki Komkommer")
         val vectors = vectorRepository(listOf(product), emptyList())
-        val embedding = List(ProductVectorRepository.EMBEDDING_DIMENSIONS) { 0.01 }
+        val embedding = List(ProductVectorJdbcTemplateRepository.EMBEDDING_DIMENSIONS) { 0.01 }
         `when`(vectors.findSimilarKnowledge(embedding, "nomic-embed-text", 25)).thenReturn(
             listOf(ProductKnowledgeMatch(product.sku, 0.96))
         )
@@ -370,7 +375,7 @@ class ProductAllocationServiceTest {
 
         assertEquals(ProductAllocationStatus.ALLOCATION_PROCESSED, response.status)
         val inOrder = org.mockito.Mockito.inOrder(vectors)
-        val embedding = List(ProductVectorRepository.EMBEDDING_DIMENSIONS) { 0.01 }
+        val embedding = List(ProductVectorJdbcTemplateRepository.EMBEDDING_DIMENSIONS) { 0.01 }
         inOrder.verify(vectors).upsertProductEmbedding(
             product.sku, "nomic-embed-text", sha256("Maki Komkommer. V"), embedding
         )
@@ -384,12 +389,12 @@ class ProductAllocationServiceTest {
             listOf(TavilySearchResult("Maki Komkommer", "https://example.test/maki", "Cucumber maki sushi"))
         },
         embeddingClient: OllamaEmbeddingClient = OllamaEmbeddingClient { texts ->
-            texts.map { List(ProductVectorRepository.EMBEDDING_DIMENSIONS) { 0.01 } }
+            texts.map { List(ProductVectorJdbcTemplateRepository.EMBEDDING_DIMENSIONS) { 0.01 } }
         },
-        productRepository: ProductRepository = productRepository(
+        productRepository: ProductJpaRepository = productRepository(
             listOf(ProductEntity(sku = "MAKI-KOMKOMMER", title = "Maki Komkommer", category = "V"))
         ),
-        productVectorRepository: ProductVectorRepository = vectorRepository(
+        productVectorRepository: ProductVectorJdbcTemplateRepository = vectorRepository(
             listOf(ProductEntity(sku = "MAKI-KOMKOMMER", title = "Maki Komkommer", category = "V"))
         ),
         allocationService: AllocationService = mock(AllocationService::class.java)
@@ -404,23 +409,24 @@ class ProductAllocationServiceTest {
             embeddingClient = embeddingClient,
             productRepository = productRepository,
             productVectorRepository = productVectorRepository,
-            allocationService = allocationService,
-            stockProjectionProcessor = mock(StockProjectionProcessor::class.java),
+            processingService = AllocationProcessingService(
+                allocationService, mock(StockProjectionProcessor::class.java)
+            ),
             properties = ProductResolutionProperties()
         )
     }
 
-    private fun productRepository(products: List<ProductEntity>): ProductRepository =
-        mock(ProductRepository::class.java).also {
+    private fun productRepository(products: List<ProductEntity>): ProductJpaRepository =
+        mock(ProductJpaRepository::class.java).also {
             `when`(it.findAllByStatus("ACTIVE")).thenReturn(products)
         }
 
     private fun vectorRepository(
         products: List<ProductEntity>,
         matches: List<ProductVectorMatch> = products.map { ProductVectorMatch(it.sku, it.title, 0.90) }
-    ): ProductVectorRepository =
-        mock(ProductVectorRepository::class.java).also {
-            val embedding = List(ProductVectorRepository.EMBEDDING_DIMENSIONS) { 0.01 }
+    ): ProductVectorJdbcTemplateRepository =
+        mock(ProductVectorJdbcTemplateRepository::class.java).also {
+            val embedding = List(ProductVectorJdbcTemplateRepository.EMBEDDING_DIMENSIONS) { 0.01 }
             `when`(it.findSimilarProducts(embedding, "nomic-embed-text", 5))
                 .thenReturn(matches)
             `when`(it.findSimilarKnowledge(embedding, "nomic-embed-text", 25))
@@ -435,11 +441,18 @@ class ProductAllocationServiceTest {
             DemandOrder(
                 orderId = request.orderId,
                 customer = request.customer,
-                sku = sku,
-                requestedQuantity = request.quantity,
                 priority = request.priority,
                 placedDate = request.placedDate,
-                requiredDeliveryDate = request.requiredDeliveryDate
+                lines = listOf(
+                    DemandOrderLine(
+                        orderLineId = UUID.nameUUIDFromBytes(
+                            "stockio:product-order-line:${request.orderId}".toByteArray(Charsets.UTF_8)
+                        ).toString(),
+                        sku = sku,
+                        requestedQuantity = request.quantity,
+                        requiredDeliveryDate = request.requiredDeliveryDate
+                    )
+                )
             )
         )
     )
@@ -462,5 +475,5 @@ class ProductAllocationServiceTest {
             .joinToString("") { byte -> "%02x".format(byte) }
 
     private fun unitVector(index: Int) =
-        List(ProductVectorRepository.EMBEDDING_DIMENSIONS) { if (it == index) 1.0 else 0.0 }
+        List(ProductVectorJdbcTemplateRepository.EMBEDDING_DIMENSIONS) { if (it == index) 1.0 else 0.0 }
 }

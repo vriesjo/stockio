@@ -29,6 +29,18 @@ export interface ProductCandidate {
   similarity: number;
 }
 
+export type AllocationProcessingOutcome = "PROCESSED" | "SKIPPED_ORDER_EXPIRED";
+
+export interface AllocationSource {
+  sourceId: string;
+  sourceType: "INVENTORY" | "INBOUND";
+  quantity: number;
+  sourceDate: string;
+  warehouseLocation: string | null;
+  shipmentId: string | null;
+  shipmentLineId: string | null;
+}
+
 export interface AllocationResult {
   status: string;
   message: string;
@@ -40,12 +52,15 @@ export interface AllocationResult {
     openBackorderCount: number;
     allocations: {
       orderId: string;
+      orderLineId: string;
       sku: string;
       requestedQuantity: number;
       allocatedFromInventory: number;
       allocatedFromInbound: number;
       backorderedQuantity: number;
-      status: string;
+      status: string | null;
+      processingOutcome: AllocationProcessingOutcome;
+      sources: AllocationSource[];
     }[];
   } | null;
 }
@@ -115,6 +130,15 @@ function candidate(value: unknown): value is ProductCandidate {
   return record(value) && text(value.sku) && text(value.title) && number(value.similarity);
 }
 
+function allocationSource(value: unknown): value is AllocationSource {
+  return record(value) && text(value.sourceId) &&
+    (value.sourceType === "INVENTORY" || value.sourceType === "INBOUND") &&
+    number(value.quantity) && text(value.sourceDate) &&
+    (value.warehouseLocation === null || text(value.warehouseLocation)) &&
+    (value.shipmentId === null || text(value.shipmentId)) &&
+    (value.shipmentLineId === null || text(value.shipmentLineId));
+}
+
 function allocationResult(value: unknown): value is AllocationResult {
   if (!record(value) || !text(value.status) || !text(value.message)) return false;
   if (!("selectedProduct" in value) || !("allocationRun" in value)) return false;
@@ -129,8 +153,11 @@ function allocationResult(value: unknown): value is AllocationResult {
     const run = value.allocationRun;
     if (!record(run) || !text(run.runId) || !number(run.openBackorderCount) ||
         !Array.isArray(run.allocations) || !run.allocations.every(
-          (item: unknown) => record(item) && text(item.orderId) && text(item.sku) &&
-            text(item.status) && number(item.requestedQuantity) &&
+          (item: unknown) => record(item) && text(item.orderId) && text(item.orderLineId) && text(item.sku) &&
+            ((item.processingOutcome === "PROCESSED" && text(item.status)) ||
+             (item.processingOutcome === "SKIPPED_ORDER_EXPIRED" && item.status === null)) &&
+            Array.isArray(item.sources) && item.sources.every(allocationSource) &&
+            number(item.requestedQuantity) &&
             number(item.allocatedFromInventory) && number(item.allocatedFromInbound) &&
             number(item.backorderedQuantity),
         )) return false;

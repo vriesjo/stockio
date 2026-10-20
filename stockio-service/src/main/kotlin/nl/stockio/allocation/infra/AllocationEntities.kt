@@ -10,6 +10,8 @@ import jakarta.persistence.UniqueConstraint
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.AllocationSourceType
 import nl.stockio.allocation.domain.api.data.AllocationStatus
+import nl.stockio.allocation.domain.api.data.ReservationStatus
+import nl.stockio.allocation.domain.api.data.AllocationProcessingOutcome
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
@@ -23,6 +25,10 @@ class AllocationRunEntity(
     var requestId: UUID = UUID.randomUUID(),
     @Column(name = "request_hash", nullable = false, length = 64)
     var requestHash: String = "",
+    @Column(name = "contract_version", nullable = false)
+    var contractVersion: Int = 2,
+    @Column(name = "documents_initialized", nullable = false)
+    var documentsInitialized: Boolean = false,
     @Enumerated(EnumType.STRING)
     @Column(name = "run_type", nullable = false, length = 40)
     var runType: AllocationRunType = AllocationRunType.NEW_DEMAND,
@@ -68,15 +74,56 @@ class AllocationSkuOperationEntity(
 )
 
 @Entity
-@Table(name = "allocation_order_claim")
+@Table(name = "demand_order")
 class AllocationOrderClaimEntity(
     @Id
     @Column(name = "order_id", length = 100)
     var orderId: String = "",
     @Column(name = "run_id", nullable = false)
     var runId: UUID = UUID.randomUUID(),
+    @Column(nullable = false, length = 200)
+    var customer: String = "",
+    @Column(nullable = false)
+    var priority: Int = 1,
+    @Column(name = "placed_date", nullable = false)
+    var placedDate: LocalDate = LocalDate.now(),
+    @Enumerated(EnumType.STRING)
+    @Column(name = "reservation_status", nullable = false, length = 40)
+    var reservationStatus: ReservationStatus = ReservationStatus.PENDING_CONFIRMATION,
+    @Column(name = "reservation_created_at", nullable = false)
+    var reservationCreatedAt: Instant = Instant.now(),
+    @Column(name = "reservation_expires_at")
+    var reservationExpiresAt: Instant? = null,
+    @Column(name = "confirmed_at")
+    var confirmedAt: Instant? = null,
+    @Column(name = "expired_at")
+    var expiredAt: Instant? = null
+) {
+    fun canAllocate(now: Instant): Boolean = when (reservationStatus) {
+        ReservationStatus.PENDING_CONFIRMATION -> requireNotNull(reservationExpiresAt) {
+            "Pending order '$orderId' has no reservation deadline."
+        } > now
+        ReservationStatus.CONFIRMED -> true
+        ReservationStatus.EXPIRED -> false
+    }
+}
+
+@Entity
+@Table(name = "demand_order_line")
+class DemandOrderLineEntity(
+    @Id
+    @Column(name = "order_line_id", length = 100)
+    var orderLineId: String = "",
+    @Column(name = "order_id", nullable = false, length = 100)
+    var orderId: String = "",
     @Column(nullable = false, length = 64)
-    var sku: String = ""
+    var sku: String = "",
+    @Column(name = "requested_quantity", nullable = false)
+    var requestedQuantity: Int = 0,
+    @Column(name = "required_delivery_date", nullable = false)
+    var requiredDeliveryDate: LocalDate = LocalDate.now(),
+    @Column(name = "sequence_number", nullable = false)
+    var sequenceNumber: Int = 0
 )
 
 @Entity
@@ -90,6 +137,8 @@ class AllocationRecordEntity(
     var sequenceNumber: Int = 0,
     @Column(name = "order_id", nullable = false, length = 100)
     var orderId: String = "",
+    @Column(name = "order_line_id", nullable = false, length = 100)
+    var orderLineId: String = "",
     @Column(nullable = false, length = 200)
     var customer: String = "",
     @Column(nullable = false, length = 100)
@@ -109,8 +158,11 @@ class AllocationRecordEntity(
     @Column(name = "backordered_quantity", nullable = false)
     var backorderedQuantity: Int = 0,
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 40)
-    var status: AllocationStatus = AllocationStatus.BACKORDERED
+    @Column(length = 40)
+    var status: AllocationStatus? = AllocationStatus.BACKORDERED,
+    @Enumerated(EnumType.STRING)
+    @Column(name = "processing_outcome", nullable = false, length = 40)
+    var processingOutcome: AllocationProcessingOutcome = AllocationProcessingOutcome.PROCESSED
 )
 
 @Entity
@@ -125,6 +177,10 @@ class AllocationSourceEntity(
     var sourceType: AllocationSourceType = AllocationSourceType.INVENTORY,
     @Column(name = "source_id", nullable = false, length = 100)
     var sourceId: String = "",
+    @Column(name = "shipment_id", length = 100)
+    var shipmentId: String? = null,
+    @Column(name = "shipment_line_id", length = 100)
+    var shipmentLineId: String? = null,
     @Column(nullable = false)
     var quantity: Int = 0,
     @Column(name = "source_date", nullable = false)
@@ -137,6 +193,8 @@ class AllocationSourceEntity(
 @Table(name = "open_backorder")
 class OpenBackorderEntity(
     @Id
+    @Column(name = "order_line_id", length = 100)
+    var orderLineId: String = "",
     @Column(name = "order_id", length = 100)
     var orderId: String = "",
     @Column(nullable = false, length = 200)

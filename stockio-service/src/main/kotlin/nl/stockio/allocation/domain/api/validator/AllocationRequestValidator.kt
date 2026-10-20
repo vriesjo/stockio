@@ -3,13 +3,11 @@ package nl.stockio.allocation.domain.api.validator
 import jakarta.validation.Validator
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.infra.AllocationRecordRepository
 import org.springframework.stereotype.Component
 
 @Component
 class AllocationRequestValidator(
-    private val validator: Validator,
-    private val recordRepository: AllocationRecordRepository,
+    private val validator: Validator
 ) {
 
     fun validate(request: AllocationRequest) {
@@ -24,7 +22,9 @@ class AllocationRequestValidator(
             AllocationRequestException("Run type must be of type: NEW_DEMAND")
         }
         validateBean(request)
-        requireAndThrow(request.demandOrders.all { it.placedDate <= it.requiredDeliveryDate }) {
+        requireAndThrow(request.demandOrders.all { order ->
+            order.lines.all { order.placedDate <= it.requiredDeliveryDate }
+        }) {
             AllocationRequestException("An order's placed date must be on or before its required delivery date.")
         }
         val inboundShipments = request.inboundShipments
@@ -36,15 +36,11 @@ class AllocationRequestValidator(
         requireAndThrow(orderIds.distinct().size == orderIds.size) {
             AllocationRequestException("Demand order IDs must be unique within a request.")
         }
-        val previouslyProcessedOrderIds = recordRepository.findAllByOrderIdIn(orderIds)
-            .map { it.orderId }
-            .distinct()
-        requireAndThrow(previouslyProcessedOrderIds.isEmpty()) {
-            AllocationRequestException(
-                "Orders have already been processed: ${previouslyProcessedOrderIds.joinToString()}. " +
-                    "Fulfill or resolve existing backorders instead of submitting those orders again."
-            )
+        val lineIds = request.demandOrders.flatMap { it.lines }.map { it.orderLineId }
+        requireAndThrow(lineIds.distinct().size == lineIds.size) {
+            AllocationRequestException("Demand order line IDs must be globally unique within a request.")
         }
+        validateShipmentLineIds(request)
     }
 
     private fun validateBackorderAllocationRequest(request: AllocationRequest) {
@@ -58,8 +54,15 @@ class AllocationRequestValidator(
         requireAndThrow(inboundShipments.map { it.shipmentId }.distinct().size == inboundShipments.size) {
             AllocationRequestException("Inbound shipment IDs must be unique within a backorder request.")
         }
+        validateShipmentLineIds(request)
     }
 
+    private fun validateShipmentLineIds(request: AllocationRequest) {
+        val ids = request.inboundShipments.flatMap { it.lines }.map { it.shipmentLineId }
+        requireAndThrow(ids.distinct().size == ids.size) {
+            AllocationRequestException("Inbound shipment line IDs must be globally unique within a request.")
+        }
+    }
     private fun validateBean(value: Any) {
         val violations: Map<String, String> = validator
             .validate(value)

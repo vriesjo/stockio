@@ -3,7 +3,9 @@ package nl.stockio.allocation.domain.service
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.time.LocalDate
+import java.time.Clock
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.time.format.ResolverStyle
@@ -14,8 +16,10 @@ import kotlin.random.Random
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.DemandOrder
+import nl.stockio.allocation.domain.api.data.DemandOrderLine
 import nl.stockio.allocation.domain.api.data.InboundShipment
-import nl.stockio.product.infra.ProductRepository
+import nl.stockio.allocation.domain.api.data.InboundShipmentLine
+import nl.stockio.product.infra.ProductJpaRepository
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Service
 
@@ -23,14 +27,26 @@ private val logger = KotlinLogging.logger {}
 
 @Service
 class AllocationExcelService(
-    private val productRepository: ProductRepository
+    private val productRepository: ProductJpaRepository,
+    private val clock: Clock
 ) {
 
     fun loadCsvAndCreateAllocationRequest(path: Path): AllocationRequest {
         logger.info { "Loading allocation request from CSV '$path'." }
+        val asOfDate = LocalDate.now(clock)
         val demandOrders = mutableListOf<DemandOrder>()
         val inboundShipments = mutableListOf<InboundShipment>()
         val skuByTitle = mutableMapOf<String, String>()
+        val fileHash = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(path).use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                fileHash.update(buffer, 0, count)
+            }
+        }
+        val importId = fileHash.digest().joinToString("") { "%02x".format(it) }
 
         Files.newBufferedReader(path, StandardCharsets.UTF_8).use { reader ->
             val header = reader.readLine()
@@ -53,19 +69,20 @@ class AllocationExcelService(
                 }
 
                 val title = columns[0]
+                val documentId = UUID.nameUUIDFromBytes(
+                    "stockio:csv:$importId:row:$lineNumber".toByteArray(StandardCharsets.UTF_8)
+                ).toString()
                 when (columns[1]) {
                     "Verkoop" -> {
                         val sku = findSku(title, path, lineNumber, skuByTitle)
                         val quantity = parseQuantity(columns[2], lineNumber)
                         val date = parseDate(columns[3], lineNumber)
                         demandOrders += DemandOrder(
-                            orderId = UUID.randomUUID().toString(),
-                            customer = randomCustomerName(),
-                            sku = sku,
-                            requestedQuantity = quantity,
+                            orderId = documentId,
+                            customer = randomCustomerName(documentId.hashCode()),
                             priority = 1,
                             placedDate = date,
-                            requiredDeliveryDate = date
+                            lines = listOf(DemandOrderLine(documentId, sku, quantity, date))
                         )
                     }
 
@@ -74,11 +91,8 @@ class AllocationExcelService(
                         val quantity = parseQuantity(columns[2], lineNumber)
                         val date = parseDate(columns[3], lineNumber)
                         inboundShipments += InboundShipment(
-                            shipmentId = UUID.randomUUID().toString(),
-                            sku = sku,
-                            expectedQuantity = quantity,
-                            expectedArrivalDate = date,
-                            warehouseCode = "MAIN"
+                            shipmentId = documentId,
+                            lines = listOf(InboundShipmentLine(documentId, sku, quantity, date, "MAIN"))
                         )
                     }
 
@@ -95,8 +109,11 @@ class AllocationExcelService(
             throw IllegalArgumentException(message)
         }
         val request = AllocationRequest(
-            requestId = UUID.randomUUID(),
-            asOfDate = LocalDate.now(),
+            // Same-date reloads replay; another date must not reclaim the same documents.
+            requestId = UUID.nameUUIDFromBytes(
+                "stockio:csv:request:$importId:$asOfDate".toByteArray(StandardCharsets.UTF_8)
+            ),
+            asOfDate = asOfDate,
             demandOrders = demandOrders,
             inboundShipments = inboundShipments,
             runType = AllocationRunType.NEW_DEMAND
@@ -144,9 +161,10 @@ class AllocationExcelService(
             }
         }
 
-    private fun randomCustomerName(): String {
-        val firstName = FIRST_NAMES[Random.Default.nextInt(FIRST_NAMES.size)]
-        val lastName = LAST_NAMES[Random.Default.nextInt(LAST_NAMES.size)]
+    private fun randomCustomerName(seed: Int): String {
+        val random = Random(seed)
+        val firstName = FIRST_NAMES[random.nextInt(FIRST_NAMES.size)]
+        val lastName = LAST_NAMES[random.nextInt(LAST_NAMES.size)]
         return "$firstName $lastName"
     }
 

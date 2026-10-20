@@ -2,12 +2,13 @@ package nl.stockio.product.domain.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.security.MessageDigest
+import java.util.UUID
 import kotlin.math.sqrt
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.DemandOrder
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
-import nl.stockio.allocation.domain.service.AllocationService
+import nl.stockio.allocation.domain.api.data.DemandOrderLine
+import nl.stockio.allocation.domain.service.AllocationProcessingService
 import nl.stockio.product.domain.model.ProductAllocationRequest
 import nl.stockio.product.domain.model.ProductAllocationResponse
 import nl.stockio.product.domain.model.ProductAllocationStatus
@@ -16,18 +17,24 @@ import nl.stockio.product.domain.model.ProductSource
 import nl.stockio.product.domain.model.ResolvedProduct
 import nl.stockio.product.infra.ProductEntity
 import nl.stockio.product.infra.ProductKnowledgeChunk
-import nl.stockio.product.infra.ProductRepository
-import nl.stockio.product.infra.ProductVectorRepository
+import nl.stockio.product.infra.ProductJpaRepository
+import nl.stockio.product.infra.ProductVectorJdbcTemplateRepository
 import org.springframework.stereotype.Service
 
+/**
+ * Service responsible for allocating products based on a product query.
+ *
+ * This service handles the allocation of products by first checking for exact matches in the product catalog.
+ * If no exact match is found, it uses embeddings to find similar products and may fall back to Tavily search results.
+ * The service also manages the persistence of knowledge embeddings for future allocations.
+ */
 @Service
 class ProductAllocationService(
     private val tavilySearchClient: TavilySearchClient,
     private val embeddingClient: OllamaEmbeddingClient,
-    private val productRepository: ProductRepository,
-    private val productVectorRepository: ProductVectorRepository,
-    private val allocationService: AllocationService,
-    private val stockProjectionProcessor: StockProjectionProcessor,
+    private val productRepository: ProductJpaRepository,
+    private val productVectorRepository: ProductVectorJdbcTemplateRepository,
+    private val processingService: AllocationProcessingService,
     private val properties: ProductResolutionProperties
 ) {
 
@@ -189,16 +196,22 @@ class ProductAllocationService(
                 DemandOrder(
                     orderId = request.orderId,
                     customer = request.customer,
-                    sku = selected.sku,
-                    requestedQuantity = request.quantity,
                     priority = request.priority,
                     placedDate = request.placedDate,
-                    requiredDeliveryDate = request.requiredDeliveryDate
+                    lines = listOf(
+                        DemandOrderLine(
+                            orderLineId = UUID.nameUUIDFromBytes(
+                                "stockio:product-order-line:${request.orderId}".toByteArray(Charsets.UTF_8)
+                            ).toString(),
+                            sku = selected.sku,
+                            requestedQuantity = request.quantity,
+                            requiredDeliveryDate = request.requiredDeliveryDate
+                        )
+                    )
                 )
             )
         )
-        val allocationRun = allocationService.allocation(allocationRequest)
-        stockProjectionProcessor.process(request.asOfDate)
+        val allocationRun = processingService.process(allocationRequest)
 
         return ProductAllocationResponse(
             status = ProductAllocationStatus.ALLOCATION_PROCESSED,
@@ -327,9 +340,9 @@ class ProductAllocationService(
     }
 
     private fun validateEmbedding(embedding: List<Double>) {
-        if (embedding.size != ProductVectorRepository.Companion.EMBEDDING_DIMENSIONS || embedding.any { !it.isFinite() }) {
+        if (embedding.size != ProductVectorJdbcTemplateRepository.Companion.EMBEDDING_DIMENSIONS || embedding.any { !it.isFinite() }) {
             throw EmbeddingClientException(
-                "The configured Ollama embedding model must return ${ProductVectorRepository.Companion.EMBEDDING_DIMENSIONS} finite values."
+                "The configured Ollama embedding model must return ${ProductVectorJdbcTemplateRepository.Companion.EMBEDDING_DIMENSIONS} finite values."
             )
         }
     }

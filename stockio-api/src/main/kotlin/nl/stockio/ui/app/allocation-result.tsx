@@ -26,22 +26,35 @@ export default function AllocationResultView({ result }: { result: AllocationRes
           {result.allocationRun.allocations.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <caption className="sr-only">Inventory allocation, inbound allocation, and backorders per order</caption>
+                <caption className="sr-only">Inventory allocation, inbound allocation, and backorders per order line</caption>
                 <thead className="border-b border-stone-200 text-xs text-stone-500">
-                  <tr>{["Order / SKU", "Requested", "Inventory", "Inbound", "Backordered"].map((label) => <th key={label} scope="col" className="px-2 py-3 font-medium">{label}</th>)}</tr>
+                  <tr>{["Order / Line / SKU", "Requested", "Inventory", "Inbound", "Backordered"].map((label) => <th key={label} scope="col" className="px-2 py-3 font-medium">{label}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {result.allocationRun.allocations.map((allocation, index) => (
-                    <tr key={`${allocation.orderId}-${allocation.sku}-${index}`} className="border-b border-stone-100">
+                  {result.allocationRun.allocations.map((allocation) => (
+                    <tr key={allocation.orderLineId} className="border-b border-stone-100">
                       <th scope="row" className="px-2 py-3 font-normal">
                         <span className="block font-medium">{allocation.orderId}</span>
+                        <span className="block break-all font-mono text-xs text-stone-500">{allocation.orderLineId}</span>
                         <span className="block text-xs text-stone-500">{allocation.sku}</span>
-                        <span className="mt-1 block text-xs text-stone-500">{allocation.status.replaceAll("_", " ")}</span>
+                        <span className="mt-1 block text-xs text-stone-500">
+                          {allocation.processingOutcome === "SKIPPED_ORDER_EXPIRED"
+                            ? "Skipped: order expired"
+                            : allocation.status?.replaceAll("_", " ")}
+                        </span>
+                        {allocation.sources.filter((source) => source.sourceType === "INBOUND").map((source, index) => (
+                          <span key={`${source.sourceId}-${index}`} className="mt-1 block text-xs text-stone-500">
+                            Shipment: {source.shipmentId ?? "unavailable"} / Line: {source.shipmentLineId ?? source.sourceId}
+                            {" · "}{source.quantity} units
+                          </span>
+                        ))}
                       </th>
                       <td className="px-2 py-3">{allocation.requestedQuantity}</td>
                       <td className="px-2 py-3">{allocation.allocatedFromInventory}</td>
                       <td className="px-2 py-3">{allocation.allocatedFromInbound}</td>
-                      <td className="px-2 py-3 font-semibold text-amber-800">{allocation.backorderedQuantity}</td>
+                      <td className="px-2 py-3 font-semibold text-amber-800">
+                        {allocation.processingOutcome === "SKIPPED_ORDER_EXPIRED" ? "Not created" : allocation.backorderedQuantity}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -50,7 +63,7 @@ export default function AllocationResultView({ result }: { result: AllocationRes
           ) : <p className="text-sm text-stone-500">This run returned no allocation records. No quantities can be inferred.</p>}
           <p className="mt-3 text-xs leading-6 text-stone-500">
             Run: <span className="break-all font-mono">{result.allocationRun.runId}</span><br />
-            Open backorders reported by this run: {result.allocationRun.openBackorderCount}
+            Open backorder orders reported by this run: {result.allocationRun.openBackorderCount}
           </p>
         </div>}
 

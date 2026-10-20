@@ -36,14 +36,15 @@ class AllocationPolicyCalculator(
         val inboundBySku = mutableInboundSupply
             .groupBy { it.sku }
             .mapValues { (_, supplies) ->
-                supplies.sortedWith(compareBy<InboundSupplyState> { it.expectedArrivalDate }.thenBy { it.shipmentId })
+                supplies.sortedWith(compareBy<InboundSupplyState> { it.expectedArrivalDate }
+                    .thenBy { it.shipmentId }.thenBy { it.shipmentLineId })
             }
         val inboundRemaining = mutableInboundSupply.associate {
-            it.shipmentId to (it.expectedQuantity - it.quantityReserved)
+            it.shipmentLineId to (it.expectedQuantity - it.quantityReserved)
         }.toMutableMap()
-        val stockReservationsByKey = stockReservations.associateByTo(mutableMapOf()) { it.orderId to it.stockId }
+        val stockReservationsByKey = stockReservations.associateByTo(mutableMapOf()) { it.orderLineId to it.stockId }
         val inboundReservationsByKey = inboundReservations.associateByTo(mutableMapOf()) {
-            it.orderId to it.shipmentId
+            it.orderLineId to it.shipmentLineId
         }
 
         val allocations = orders.withIndex()
@@ -63,6 +64,7 @@ class AllocationPolicyCalculator(
                     lotsBySku = inventoryBySku,
                     sources = sources,
                     orderId = order.orderId,
+                    orderLineId = order.orderLineId,
                     reservationsByOrderAndStock = stockReservationsByKey,
                     deliveryDate = deliveryDate
                 ).also { remaining -= it }
@@ -74,11 +76,13 @@ class AllocationPolicyCalculator(
                     remainingByShipment = inboundRemaining,
                     sources = sources,
                     orderId = order.orderId,
+                    orderLineId = order.orderLineId,
                     deliveryDate = deliveryDate,
                     reservationsByOrderAndShipment = inboundReservationsByKey
                 ).also { remaining -= it }
                 AllocationRecord(
                     orderId = order.orderId,
+                    orderLineId = order.orderLineId,
                     customer = order.customer,
                     sku = order.sku,
                     priority = order.priority,
@@ -101,6 +105,7 @@ class AllocationPolicyCalculator(
             allocations.filter { it.backorderedQuantity > 0 }.map {
                 BackorderRegistration(
                     orderId = it.orderId,
+                    orderLineId = it.orderLineId,
                     customer = it.customer,
                     sku = it.sku,
                     priority = it.priority,

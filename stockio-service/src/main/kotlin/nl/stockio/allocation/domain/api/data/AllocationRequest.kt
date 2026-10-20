@@ -2,6 +2,8 @@ package nl.stockio.allocation.domain.api.data
 
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
+import jakarta.validation.constraints.NotEmpty
+import jakarta.validation.constraints.Size
 import jakarta.validation.constraints.Positive
 import jakarta.validation.constraints.PositiveOrZero
 import java.time.Instant
@@ -20,16 +22,27 @@ data class AllocationRequest(
 
 data class DemandOrder(
     @field:NotBlank
+    @field:Size(max = 100)
     val orderId: String,
     @field:NotBlank
     val customer: String,
-    @field:NotBlank
-    val sku: String,
-    @field:Positive
-    val requestedQuantity: Int,
     @field:Positive
     val priority: Int,
     val placedDate: LocalDate,
+    @field:Valid
+    @field:NotEmpty
+    val lines: List<DemandOrderLine>
+)
+
+data class DemandOrderLine(
+    @field:NotBlank
+    @field:Size(max = 100)
+    val orderLineId: String,
+    @field:NotBlank
+    @field:Size(max = 64)
+    val sku: String,
+    @field:Positive
+    val requestedQuantity: Int,
     val requiredDeliveryDate: LocalDate
 )
 
@@ -66,7 +79,7 @@ data class StockTransaction(
 )
 
 data class ProcessDailyStockRequest(
-    val snapshotDate: LocalDate = LocalDate.now()
+    val snapshotDate: LocalDate? = null
 )
 
 data class StockSyncResult(
@@ -76,9 +89,9 @@ data class StockSyncResult(
     val updatedAt: Instant
 )
 
-data class AllocationAndSyncResult(
+data class AllocationCompletionResult(
     val allocationRun: AllocationRunResult,
-    val stockSync: StockSyncResult
+    val version: Int = 2
 )
 
 data class AllocationJobAccepted(
@@ -88,18 +101,30 @@ data class AllocationJobAccepted(
 data class AllocationJobStatus(
     val jobId: UUID,
     val status: String,
-    val result: AllocationAndSyncResult? = null
+    val result: AllocationCompletionResult? = null
 )
 
 data class InboundShipment(
     @field:NotBlank
+    @field:Size(max = 100)
     val shipmentId: String,
+    @field:Valid
+    @field:NotEmpty
+    val lines: List<InboundShipmentLine>
+)
+
+data class InboundShipmentLine(
     @field:NotBlank
+    @field:Size(max = 100)
+    val shipmentLineId: String,
+    @field:NotBlank
+    @field:Size(max = 64)
     val sku: String,
     @field:Positive
     val expectedQuantity: Int,
     val expectedArrivalDate: LocalDate,
     @field:NotBlank
+    @field:Size(max = 50)
     val warehouseCode: String = "MAIN"
 )
 
@@ -126,8 +151,15 @@ data class AllocationSource(
     val sourceId: String,
     val quantity: Int,
     val sourceDate: LocalDate,
-    val warehouseLocation: String? = null
+    val warehouseLocation: String? = null,
+    val shipmentId: String? = if (sourceType == AllocationSourceType.INBOUND) sourceId else null,
+    val shipmentLineId: String? = if (sourceType == AllocationSourceType.INBOUND) sourceId else null
 )
+
+enum class AllocationProcessingOutcome {
+    PROCESSED,
+    SKIPPED_ORDER_EXPIRED
+}
 
 data class AllocationRecord(
     val orderId: String,
@@ -140,8 +172,10 @@ data class AllocationRecord(
     val allocatedFromInventory: Int,
     val allocatedFromInbound: Int,
     val backorderedQuantity: Int,
-    val status: AllocationStatus,
-    val sources: List<AllocationSource>
+    val status: AllocationStatus?,
+    val sources: List<AllocationSource>,
+    val orderLineId: String = orderId,
+    val processingOutcome: AllocationProcessingOutcome = AllocationProcessingOutcome.PROCESSED
 )
 
 data class AllocationRunResult(

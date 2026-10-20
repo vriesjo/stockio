@@ -7,6 +7,7 @@ import nl.stockio.allocation.domain.api.data.AllocationRecord
 
 data class AllocationOrder(
     val orderId: String,
+    val orderLineId: String,
     val customer: String,
     val sku: String,
     val quantity: Int,
@@ -27,6 +28,7 @@ data class InventoryLotState(
 
 data class InboundSupplyState(
     val shipmentId: String,
+    val shipmentLineId: String,
     val sku: String,
     val warehouseCode: String,
     val expectedQuantity: Int,
@@ -37,6 +39,7 @@ data class InboundSupplyState(
 data class StockReservationChange(
     val id: UUID?,
     val orderId: String,
+    val orderLineId: String,
     val stockId: UUID,
     var quantity: Int,
     var requiredDeliveryDate: LocalDate,
@@ -46,7 +49,9 @@ data class StockReservationChange(
 data class InboundReservationChange(
     val id: UUID?,
     val orderId: String,
+    val orderLineId: String,
     val shipmentId: String,
+    val shipmentLineId: String,
     var quantity: Int,
     var requiredDeliveryDate: LocalDate,
     val createdAt: Instant?
@@ -54,6 +59,7 @@ data class InboundReservationChange(
 
 data class BackorderRegistration(
     val orderId: String,
+    val orderLineId: String,
     val customer: String,
     val sku: String,
     val priority: Int,

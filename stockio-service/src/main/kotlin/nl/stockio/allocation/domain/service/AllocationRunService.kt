@@ -7,23 +7,23 @@ import nl.stockio.allocation.domain.api.data.AllocationRunResult
 import nl.stockio.allocation.domain.api.data.AllocationSource
 import nl.stockio.allocation.domain.api.data.AllocationRecord
 import nl.stockio.allocation.infra.AllocationRecordEntity
-import nl.stockio.allocation.infra.AllocationRecordRepository
+import nl.stockio.allocation.infra.AllocationRecordJpaRepository
 import nl.stockio.allocation.infra.AllocationRunEntity
-import nl.stockio.allocation.infra.AllocationRunRepository
-import nl.stockio.allocation.infra.AllocationSkuOperationRepository
+import nl.stockio.allocation.infra.AllocationRunJpaRepository
+import nl.stockio.allocation.infra.AllocationSkuOperationJpaRepository
 import nl.stockio.allocation.infra.AllocationSourceEntity
-import nl.stockio.allocation.infra.AllocationSourceRepository
-import nl.stockio.allocation.infra.OpenBackorderRepository
+import nl.stockio.allocation.infra.AllocationSourceJpaRepository
+import nl.stockio.allocation.infra.OpenBackorderJpaRepository
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 
 @Component
 class AllocationRunService(
-    private val runRepository: AllocationRunRepository,
-    private val skuOperationRepository: AllocationSkuOperationRepository,
-    private val backorderRepository: OpenBackorderRepository,
-    private val recordRepository: AllocationRecordRepository,
-    private val sourceRepository: AllocationSourceRepository
+    private val runRepository: AllocationRunJpaRepository,
+    private val skuOperationRepository: AllocationSkuOperationJpaRepository,
+    private val backorderRepository: OpenBackorderJpaRepository,
+    private val recordRepository: AllocationRecordJpaRepository,
+    private val sourceRepository: AllocationSourceJpaRepository
 ) {
 
     @Transactional(readOnly = true)
@@ -51,6 +51,8 @@ class AllocationRunService(
                 val allocations = entities.map { entity ->
                     AllocationRecord(
                         orderId = entity.orderId,
+                        orderLineId = entity.orderLineId,
+                        processingOutcome = entity.processingOutcome,
                         customer = entity.customer,
                         sku = entity.sku,
                         priority = entity.priority,
@@ -65,6 +67,8 @@ class AllocationRunService(
                             AllocationSource(
                                 sourceType = it.sourceType,
                                 sourceId = it.sourceId,
+                                shipmentId = it.shipmentId,
+                                shipmentLineId = it.shipmentLineId,
                                 quantity = it.quantity,
                                 sourceDate = it.sourceDate,
                                 warehouseLocation = it.warehouseLocation
@@ -105,6 +109,8 @@ class AllocationRunService(
                 val allocations = entities.map { entity ->
                     AllocationRecord(
                         orderId = entity.orderId,
+                        orderLineId = entity.orderLineId,
+                        processingOutcome = entity.processingOutcome,
                         customer = entity.customer,
                         sku = entity.sku,
                         priority = entity.priority,
@@ -119,6 +125,8 @@ class AllocationRunService(
                             AllocationSource(
                                 sourceType = it.sourceType,
                                 sourceId = it.sourceId,
+                                shipmentId = it.shipmentId,
+                                shipmentLineId = it.shipmentLineId,
                                 quantity = it.quantity,
                                 sourceDate = it.sourceDate,
                                 warehouseLocation = it.warehouseLocation
@@ -156,7 +164,7 @@ class AllocationRunService(
         val run = runRepository.findByRequestId(request.requestId)
             ?: throw IllegalStateException("Allocation request '${request.requestId}' could not be initialized.")
         require(
-            run.requestHash == requestHash &&
+            run.contractVersion == 2 && run.requestHash == requestHash &&
                 run.runType == request.runType &&
                 run.asOfDate == request.asOfDate
         ) {
@@ -178,6 +186,7 @@ class AllocationRunService(
         val run = runRepository.lockById(runId)
             ?: throw IllegalArgumentException("Allocation run '$runId' was not found.")
         if (run.completed) return requireNotNull(getRunById(runId))
+        check(run.documentsInitialized) { "Allocation run '$runId' has not initialized its documents." }
 
         val completedSkus = skuOperationRepository.findAllByRunId(runId).map { it.sku }.toSet()
         require(completedSkus == expectedSkus) {
@@ -189,6 +198,8 @@ class AllocationRunService(
                 runId = run.id,
                 sequenceNumber = index,
                 orderId = allocation.orderId,
+                orderLineId = allocation.orderLineId,
+                processingOutcome = allocation.processingOutcome,
                 customer = allocation.customer,
                 sku = allocation.sku,
                 priority = allocation.priority,
@@ -208,6 +219,8 @@ class AllocationRunService(
                     allocationRecordId = record.id,
                     sourceType = source.sourceType,
                     sourceId = source.sourceId,
+                    shipmentId = source.shipmentId,
+                    shipmentLineId = source.shipmentLineId,
                     quantity = source.quantity,
                     sourceDate = source.sourceDate,
                     warehouseLocation = source.warehouseLocation
@@ -215,7 +228,7 @@ class AllocationRunService(
             }
         }
         sourceRepository.saveAll(sourceEntities)
-        run.openBackorderCount = backorderRepository.count().toInt()
+        run.openBackorderCount = Math.toIntExact(backorderRepository.countDistinctOrders())
         run.completed = true
         skuOperationRepository.deleteAllByRunId(runId)
 

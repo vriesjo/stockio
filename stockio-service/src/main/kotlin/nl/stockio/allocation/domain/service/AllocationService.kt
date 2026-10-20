@@ -10,7 +10,7 @@ import nl.stockio.allocation.domain.api.data.AllocationRecord
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunResult
 import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.infra.OpenBackorderRepository
+import nl.stockio.allocation.infra.OpenBackorderJpaRepository
 import nl.stockio.util.requestHash
 import nl.stockio.allocation.domain.api.validator.AllocationRequestValidator
 import org.springframework.beans.factory.annotation.Value
@@ -21,7 +21,8 @@ class AllocationService(
     private val allocationRequestValidator: AllocationRequestValidator,
     private val allocationRunService: AllocationRunService,
     private val allocationSkuWorker: AllocationSkuWorker,
-    private val backorderRepository: OpenBackorderRepository,
+    private val allocationDocumentService: AllocationDocumentService,
+    private val backorderRepository: OpenBackorderJpaRepository,
     @Value("\${stockio.allocation.max-concurrent-skus:4}")
     maxConcurrentSkus: Int
 ) {
@@ -46,8 +47,9 @@ class AllocationService(
             return requireNotNull(existingCompletedRun(request, AllocationRunType.NEW_DEMAND))
         }
 
-        val ordersBySku = request.demandOrders.groupBy { it.sku }
-        val shipmentsBySku = request.inboundShipments.groupBy { it.sku }
+        allocationDocumentService.initialize(run.id, request)
+        val ordersBySku = request.allocationLines().groupBy { it.sku }
+        val shipmentsBySku = request.inboundShipments.flatMap { it.lines }.groupBy { it.sku }
         val skus = (ordersBySku.keys + shipmentsBySku.keys).distinct().sorted()
         val allocationsBySku = runSkuWorkers(skus) { sku ->
             allocationSkuWorker.allocateNewDemand(
@@ -55,8 +57,7 @@ class AllocationService(
                 requestHash = requestHash,
                 sku = sku,
                 asOfDate = request.asOfDate,
-                orders = ordersBySku[sku].orEmpty(),
-                shipments = shipmentsBySku[sku].orEmpty()
+                orders = ordersBySku[sku].orEmpty()
             )
         }
         val allocations = orderByRequest(allocationsBySku.flatten(), request)
@@ -76,7 +77,8 @@ class AllocationService(
             return requireNotNull(existingCompletedRun(request, AllocationRunType.BACKORDER_FULFILLMENT))
         }
 
-        val shipmentsBySku = request.inboundShipments.groupBy { it.sku }
+        allocationDocumentService.initialize(run.id, request)
+        val shipmentsBySku = request.inboundShipments.flatMap { it.lines }.groupBy { it.sku }
         val priorOperationSkus = allocationRunService.getOperationSkus(run.id)
         val skus = (backorderRepository.findDistinctSkus() + shipmentsBySku.keys + priorOperationSkus)
             .distinct()
@@ -86,8 +88,7 @@ class AllocationService(
                 runId = run.id,
                 requestHash = requestHash,
                 sku = sku,
-                asOfDate = request.asOfDate,
-                shipments = shipmentsBySku[sku].orEmpty()
+                asOfDate = request.asOfDate
             )
         }
         val allocations = allocationsBySku.flatten()
@@ -101,6 +102,9 @@ class AllocationService(
     ): AllocationRunResult? {
         val expectedHash = requestHash(request)
         return allocationRunService.getRun(request) { previousRun, newRequest ->
+            require(previousRun.contractVersion == 2) {
+                "Legacy requests cannot be replayed through the multiline contract; read the saved run by ID."
+            }
             previousRun.runType == runType &&
                 previousRun.requestHash == expectedHash &&
                 previousRun.requestHash == requestHash(newRequest)
@@ -111,12 +115,12 @@ class AllocationService(
         allocations: List<AllocationRecord>,
         request: AllocationRequest
     ): List<AllocationRecord> {
-        val inputOrder = request.demandOrders.withIndex()
-            .associate { it.value.orderId to it.index }
+        val inputOrder = request.allocationLines().withIndex()
+            .associate { it.value.orderLineId to it.index }
         return allocations.sortedWith(
             compareBy<AllocationRecord> { it.priority }
                 .thenBy { it.placedDate }
-                .thenBy { inputOrder[it.orderId] ?: Int.MAX_VALUE }
+                .thenBy { inputOrder[it.orderLineId] ?: Int.MAX_VALUE }
         )
     }
 

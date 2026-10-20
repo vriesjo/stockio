@@ -28,8 +28,20 @@ test("submits the form through the Next proxy and preserves identity on retry", 
             openBackorderCount: 1,
             allocations: [{
               orderId: body.orderId, sku: "MAKI-KOMKOMMER", requestedQuantity: body.quantity,
+              orderLineId: "ORDER-LINE-001",
               allocatedFromInventory: 30, allocatedFromInbound: 10, backorderedQuantity: 10,
               status: "PARTIALLY_BACKORDERED",
+              processingOutcome: "PROCESSED",
+              sources: [{
+                sourceId: "SHIPMENT-LINE-001", sourceType: "INBOUND", quantity: 10,
+                sourceDate: body.requiredDeliveryDate, warehouseLocation: "MAIN",
+                shipmentId: "SHIPMENT-001", shipmentLineId: "SHIPMENT-LINE-001",
+              }],
+            }, {
+              orderId: body.orderId, orderLineId: "ORDER-LINE-002", sku: "MAKI-KOMKOMMER",
+              requestedQuantity: 5, allocatedFromInventory: 0, allocatedFromInbound: 0,
+              backorderedQuantity: 0, status: null, processingOutcome: "SKIPPED_ORDER_EXPIRED",
+              sources: [],
             }],
           },
         }),
@@ -53,6 +65,11 @@ test("submits the form through the Next proxy and preserves identity on retry", 
     await expect(page.getByRole("heading", { name: "Allocation processed", exact: true })).toBeVisible();
     await expect(page.getByRole("table")).toContainText("50");
     await expect(page.getByRole("table")).toContainText("PARTIALLY BACKORDERED");
+    await expect(page.getByRole("table")).toContainText("ORDER-LINE-001");
+    await expect(page.getByRole("table")).toContainText("ORDER-LINE-002");
+    await expect(page.getByRole("table")).toContainText("Skipped: order expired");
+    await expect(page.getByRole("table")).toContainText("SHIPMENT-001 / Line: SHIPMENT-LINE-001");
+    await expect(page.getByRole("table").getByRole("row")).toHaveCount(3);
     expect(requests[0]).toMatchObject({
       orderId: "ORDER-UI-001", customer: "Example Customer", productQuery: "Maki Komkommer",
       quantity: 50, priority: 1, allowEquivalent: true,

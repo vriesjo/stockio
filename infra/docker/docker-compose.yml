@@ -27,6 +27,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+  ollama:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
 
 volumes:
   logistics-postgres:
+  ollama-data:

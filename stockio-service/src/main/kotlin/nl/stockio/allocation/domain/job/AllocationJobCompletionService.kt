@@ -2,37 +2,29 @@ package nl.stockio.allocation.domain.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationAndSyncResult
+import nl.stockio.allocation.domain.api.data.AllocationCompletionResult
 import nl.stockio.allocation.domain.api.data.AllocationRunResult
-import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
-import nl.stockio.allocation.domain.processor.StockLedgerProcessor
-import nl.stockio.allocation.domain.processor.StockProjectionProcessor
-import nl.stockio.allocation.infra.AllocationJobResultEntity
-import nl.stockio.allocation.infra.AllocationJobResultRepository
+import nl.stockio.stock.infra.AllocationJobResultEntity
+import nl.stockio.stock.infra.AllocationJobResultJpaRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
 @Service
 class AllocationJobCompletionService(
-    private val stockProjectionProcessor: StockProjectionProcessor,
-    private val stockLedgerProcessor: StockLedgerProcessor,
-    private val resultRepository: AllocationJobResultRepository,
+    private val resultRepository: AllocationJobResultJpaRepository,
     private val objectMapper: ObjectMapper
 ) {
 
     @Transactional
     fun complete(
         jobId: UUID,
-        allocationRun: AllocationRunResult,
-        request: ProcessDailyStockRequest
-    ): AllocationAndSyncResult {
+        allocationRun: AllocationRunResult
+    ): AllocationCompletionResult {
         resultRepository.findById(jobId).orElse(null)?.let {
-            return objectMapper.readValue(it.resultJson, AllocationAndSyncResult::class.java)
+            return objectMapper.readValue(it.resultJson, AllocationCompletionResult::class.java)
         }
 
-        stockProjectionProcessor.process(request.snapshotDate)
-        val stockSync = stockLedgerProcessor.process(request)
-        val result = AllocationAndSyncResult(allocationRun, stockSync)
+        val result = AllocationCompletionResult(allocationRun)
         resultRepository.save(
             AllocationJobResultEntity(
                 jobId = jobId,
