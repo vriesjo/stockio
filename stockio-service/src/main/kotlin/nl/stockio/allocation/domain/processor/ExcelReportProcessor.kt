@@ -4,7 +4,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import nl.stockio.allocation.domain.api.data.AllocationRunResult
 import nl.stockio.allocation.domain.api.data.AllocationSourceType
-import nl.stockio.allocation.domain.api.data.AllocationStatus
 import org.apache.poi.ss.SpreadsheetVersion
 import org.apache.poi.ss.usermodel.DataConsolidateFunction
 import org.apache.poi.ss.usermodel.Row
@@ -25,6 +24,7 @@ class ExcelReportProcessor {
             val detailHeaders = listOf(
                 "Run ID",
                 "Order ID",
+                "Order Line ID",
                 "Customer",
                 "SKU",
                 "Priority",
@@ -35,6 +35,7 @@ class ExcelReportProcessor {
                 "Allocated From Inbound",
                 "Backordered Quantity",
                 "Status",
+                "Processing Outcome",
                 "Inventory Sources",
                 "Inbound Sources"
             )
@@ -47,10 +48,13 @@ class ExcelReportProcessor {
                     .joinToString("; ") { "${it.sourceId}: ${it.quantity}" }
                 val inboundSources = record.sources
                     .filter { it.sourceType == AllocationSourceType.INBOUND }
-                    .joinToString("; ") { "${it.sourceId}: ${it.quantity}" }
+                    .joinToString("; ") {
+                        "${it.shipmentId.orEmpty()}/${it.shipmentLineId ?: it.sourceId}: ${it.quantity}"
+                    }
                 val values = listOf(
                     run.runId.toString(),
                     record.orderId,
+                    record.orderLineId,
                     record.customer,
                     record.sku,
                     record.priority,
@@ -60,7 +64,8 @@ class ExcelReportProcessor {
                     record.allocatedFromInventory,
                     record.allocatedFromInbound,
                     record.backorderedQuantity,
-                    record.status.name,
+                    record.status?.name.orEmpty(),
+                    record.processingOutcome.name,
                     inventorySources,
                     inboundSources
                 )
@@ -72,10 +77,13 @@ class ExcelReportProcessor {
             val sourceHeaders = listOf(
                 "Run ID",
                 "Order ID",
+                "Order Line ID",
                 "Customer",
                 "SKU",
                 "Source Type",
                 "Source ID",
+                "Shipment ID",
+                "Shipment Line ID",
                 "Quantity",
                 "Source Date",
                 "Warehouse Location"
@@ -88,10 +96,13 @@ class ExcelReportProcessor {
                     val values = listOf(
                         run.runId.toString(),
                         record.orderId,
+                        record.orderLineId,
                         record.customer,
                         record.sku,
                         source.sourceType.name,
                         source.sourceId,
+                        source.shipmentId.orEmpty(),
+                        source.shipmentLineId.orEmpty(),
                         source.quantity,
                         source.sourceDate.toString(),
                         source.warehouseLocation.orEmpty()
@@ -104,7 +115,7 @@ class ExcelReportProcessor {
             val pivotSheet = workbook.createSheet("Pivot Summary")
             if (run.allocations.isNotEmpty()) {
                 val sourceRange = AreaReference(
-                    "A1:N${run.allocations.size + 1}",
+                    "A1:P${run.allocations.size + 1}",
                     SpreadsheetVersion.EXCEL2007
                 )
                 val bySku = pivotSheet.createPivotTable(
@@ -112,23 +123,24 @@ class ExcelReportProcessor {
                     CellReference("A3"),
                     detailsSheet
                 )
-                bySku.addRowLabel(3)
-                bySku.addRowLabel(11)
-                bySku.addColumnLabel(DataConsolidateFunction.SUM, 7, "Requested Quantity")
-                bySku.addColumnLabel(DataConsolidateFunction.SUM, 8, "Allocated From Inventory")
-                bySku.addColumnLabel(DataConsolidateFunction.SUM, 9, "Allocated From Inbound")
-                bySku.addColumnLabel(DataConsolidateFunction.SUM, 10, "Backordered Quantity")
+                bySku.addRowLabel(4)
+                bySku.addRowLabel(12)
+                bySku.addRowLabel(13)
+                bySku.addColumnLabel(DataConsolidateFunction.SUM, 8, "Requested Quantity")
+                bySku.addColumnLabel(DataConsolidateFunction.SUM, 9, "Allocated From Inventory")
+                bySku.addColumnLabel(DataConsolidateFunction.SUM, 10, "Allocated From Inbound")
+                bySku.addColumnLabel(DataConsolidateFunction.SUM, 11, "Backordered Quantity")
 
                 val backordersByCustomer = pivotSheet.createPivotTable(
                     sourceRange,
                     CellReference("J3"),
                     detailsSheet
                 )
-                backordersByCustomer.addRowLabel(2)
                 backordersByCustomer.addRowLabel(3)
+                backordersByCustomer.addRowLabel(4)
                 backordersByCustomer.addColumnLabel(
                     DataConsolidateFunction.SUM,
-                    10,
+                    11,
                     "Backordered Quantity"
                 )
             } else {
@@ -139,6 +151,7 @@ class ExcelReportProcessor {
             val formulaSummaryHeaders = listOf(
                 "SKU",
                 "Status",
+                "Processing Outcome",
                 "Requested Quantity",
                 "Allocated From Inventory",
                 "Allocated From Inbound",
@@ -146,22 +159,24 @@ class ExcelReportProcessor {
             )
             writeHeader(formulaSummarySheet, formulaSummaryHeaders, workbook)
             val summaryGroups = run.allocations
-                .map { it.sku to it.status }
+                .map { Triple(it.sku, it.status?.name.orEmpty(), it.processingOutcome.name) }
                 .distinct()
                 .sortedWith(
-                    compareBy<Pair<String, AllocationStatus>> { it.first }
-                        .thenBy { it.second.name }
+                    compareBy<Triple<String, String, String>> { it.first }
+                        .thenBy { it.second }
+                        .thenBy { it.third }
                 )
-            val sumColumns = listOf("H", "I", "J", "K")
-            summaryGroups.forEachIndexed { index, (sku, status) ->
+            val sumColumns = listOf("I", "J", "K", "L")
+            summaryGroups.forEachIndexed { index, (sku, status, outcome) ->
                 val rowNumber = index + 2
                 val row = formulaSummarySheet.createRow(index + 1)
                 row.createCell(0).setCellValue(sku)
-                row.createCell(1).setCellValue(status.name)
+                row.createCell(1).setCellValue(status)
+                row.createCell(2).setCellValue(outcome)
                 sumColumns.forEachIndexed { columnIndex, sourceColumn ->
                     val sourceRange = "$sourceColumn:$sourceColumn"
-                    row.createCell(columnIndex + 2).cellFormula =
-                        "SUMIFS('Allocation Details'!$sourceRange,'Allocation Details'!D:D,A$rowNumber,'Allocation Details'!L:L,B$rowNumber)"
+                    row.createCell(columnIndex + 3).cellFormula =
+                        "SUMIFS('Allocation Details'!$sourceRange,'Allocation Details'!E:E,A$rowNumber,'Allocation Details'!M:M,B$rowNumber,'Allocation Details'!N:N,C$rowNumber)"
                 }
             }
             formatSheet(formulaSummarySheet, formulaSummaryHeaders.size)

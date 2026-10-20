@@ -16,6 +16,7 @@ class InventoryAllocationPolicy {
         lotsBySku: Map<String, List<InventoryLotState>>,
         sources: MutableList<AllocationSource>,
         orderId: String,
+        orderLineId: String,
         reservationsByOrderAndStock: MutableMap<Pair<String, UUID>, StockReservationChange>,
         deliveryDate: LocalDate
     ): Int {
@@ -26,11 +27,12 @@ class InventoryAllocationPolicy {
             val allocated = min(remaining, available)
             if (allocated > 0) {
                 lot.quantityReserved += allocated
-                val key = orderId to lot.stockId
+                val key = orderLineId to lot.stockId
                 val reservation = reservationsByOrderAndStock.getOrPut(key) {
                     StockReservationChange(
                         id = null,
                         orderId = orderId,
+                        orderLineId = orderLineId,
                         stockId = lot.stockId,
                         quantity = 0,
                         requiredDeliveryDate = deliveryDate,

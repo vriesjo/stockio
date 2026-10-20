@@ -65,7 +65,33 @@ interface AllocationSkuOperationRepository : JpaRepository<AllocationSkuOperatio
     fun deleteAllByRunId(runId: UUID)
 }
 
-interface AllocationOrderClaimRepository : JpaRepository<AllocationOrderClaimEntity, String>
+interface AllocationOrderClaimRepository : JpaRepository<AllocationOrderClaimEntity, String> {
+    @Query(
+        value = """
+            SELECT * FROM demand_order
+            WHERE reservation_status = 'PENDING_CONFIRMATION' AND reservation_expires_at <= :now
+            ORDER BY reservation_expires_at, order_id
+            LIMIT :batchSize
+            FOR UPDATE
+        """,
+        nativeQuery = true
+    )
+    fun lockExpiredBatch(
+        @Param("now") now: Instant,
+        @Param("batchSize") batchSize: Int
+    ): List<AllocationOrderClaimEntity>
+
+    @Query(
+        "select min(c.reservationExpiresAt) from AllocationOrderClaimEntity c " +
+            "where c.reservationStatus = nl.stockio.allocation.domain.api.data.ReservationStatus.PENDING_CONFIRMATION " +
+            "and c.reservationExpiresAt <= :now"
+    )
+    fun findOldestOverdueDeadline(@Param("now") now: Instant): Instant?
+}
+
+interface DemandOrderLineRepository : JpaRepository<DemandOrderLineEntity, String> {
+    fun findAllByOrderIdInOrderByOrderIdAscSequenceNumberAsc(orderIds: Collection<String>): List<DemandOrderLineEntity>
+}
 
 interface OpenBackorderRepository : JpaRepository<OpenBackorderEntity, String> {
     fun findAllByOrderByPriorityAscPlacedDateAscCreatedAtAscOrderIdAsc(): List<OpenBackorderEntity>
@@ -73,10 +99,15 @@ interface OpenBackorderRepository : JpaRepository<OpenBackorderEntity, String> {
     @Query("select distinct b.sku from OpenBackorderEntity b")
     fun findDistinctSkus(): List<String>
 
+    @Query("select count(distinct b.orderId) from OpenBackorderEntity b")
+    fun countDistinctOrders(): Long
+
+    fun deleteAllByOrderIdIn(orderIds: Collection<String>)
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query(
-        "select b from OpenBackorderEntity b where b.sku = :sku " +
-            "order by b.priority, b.placedDate, b.createdAt, b.orderId"
+        "select b from OpenBackorderEntity b join DemandOrderLineEntity l on l.orderLineId = b.orderLineId " +
+            "where b.sku = :sku order by b.priority, b.placedDate, b.createdAt, b.orderId, l.sequenceNumber"
     )
     fun lockAllBySkuOrderByPriorityFifo(@Param("sku") sku: String): List<OpenBackorderEntity>
 }

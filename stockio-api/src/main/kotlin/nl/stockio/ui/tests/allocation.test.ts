@@ -30,12 +30,23 @@ const allocation = {
     openBackorderCount: 1,
     allocations: [{
       orderId: "ORDER-API-001",
+      orderLineId: "ORDER-LINE-001",
       sku: "MAKI-KOMKOMMER",
       requestedQuantity: 50,
       allocatedFromInventory: 30,
       allocatedFromInbound: 10,
       backorderedQuantity: 10,
       status: "PARTIALLY_BACKORDERED",
+      processingOutcome: "PROCESSED",
+      sources: [{
+        sourceId: "SHIPMENT-LINE-001",
+        sourceType: "INBOUND",
+        quantity: 10,
+        sourceDate: "2026-10-21",
+        warehouseLocation: "MAIN",
+        shipmentId: "SHIPMENT-001",
+        shipmentLineId: "SHIPMENT-LINE-001",
+      }],
     }],
   },
 };
@@ -83,6 +94,51 @@ test("reads JSON embedded in MCP text and preserves actual shortage quantities",
 test("supports MCP structured content and domain non-allocation statuses", () => {
   const noMatch = { ...allocation, status: "NO_PRODUCT_MATCH", selectedProduct: null, allocationRun: null };
   assert.deepEqual(readAllocationResult({ structuredContent: noMatch }), noMatch);
+});
+
+test("preserves repeated order and SKU lines and a skipped expiry outcome", () => {
+  const processed = allocation.allocationRun.allocations[0];
+  const multiLine = {
+    ...allocation,
+    allocationRun: {
+      ...allocation.allocationRun,
+      allocations: [
+        processed,
+        {
+          ...processed,
+          orderLineId: "ORDER-LINE-002",
+          status: null,
+          processingOutcome: "SKIPPED_ORDER_EXPIRED",
+          allocatedFromInventory: 0,
+          allocatedFromInbound: 0,
+          backorderedQuantity: 0,
+          sources: [],
+        },
+      ],
+    },
+  };
+  const result = readAllocationResult({ structuredContent: multiLine });
+  assert.deepEqual(result, multiLine);
+  assert.equal(result.allocationRun?.allocations[0].sources[0].shipmentLineId, "SHIPMENT-LINE-001");
+  assert.equal(result.allocationRun?.allocations[1].status, null);
+});
+
+test("rejects missing line identity, invalid outcomes and inconsistent skipped status", () => {
+  for (const patch of [
+    { orderLineId: undefined }, { processingOutcome: "UNKNOWN" },
+    { status: null }, { processingOutcome: "SKIPPED_ORDER_EXPIRED" },
+    { sources: [{ sourceType: "INBOUND", shipmentId: "SHIPMENT-001" }] },
+  ]) {
+    assert.throws(() => readAllocationResult({
+      structuredContent: {
+        ...allocation,
+        allocationRun: {
+          ...allocation.allocationRun,
+          allocations: [{ ...allocation.allocationRun.allocations[0], ...patch }],
+        },
+      },
+    }));
+  }
 });
 
 test("treats MCP isError as failure even when a successful payload is also present", () => {

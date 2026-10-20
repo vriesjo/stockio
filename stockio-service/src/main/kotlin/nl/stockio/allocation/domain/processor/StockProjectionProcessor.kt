@@ -1,6 +1,11 @@
 package nl.stockio.allocation.domain.processor
 
+import jakarta.persistence.EntityManager
+import java.time.Clock
 import java.time.LocalDate
+import nl.stockio.allocation.domain.api.data.ReservationStatus
+import nl.stockio.allocation.infra.AllocationOrderClaimEntity
+import nl.stockio.allocation.infra.AllocationOrderClaimRepository
 import nl.stockio.allocation.infra.InboundReservationRepository
 import nl.stockio.allocation.infra.InboundSupplyRepository
 import nl.stockio.allocation.infra.OpenBackorderRepository
@@ -8,62 +13,82 @@ import nl.stockio.allocation.infra.StockDailyLotSnapshotEntity
 import nl.stockio.allocation.infra.StockDailyLotSnapshotRepository
 import nl.stockio.allocation.infra.StockDailySnapshotEntity
 import nl.stockio.allocation.infra.StockDailySnapshotRepository
+import nl.stockio.allocation.infra.StockProjectionLockRepository
 import nl.stockio.allocation.infra.StockRepository
 import nl.stockio.allocation.infra.StockReservationRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * Rebuilds daily stock forecasts from persisted inventory, inbound supply, and order commitments.
+ *
+ * The projection includes records from all allocation runs, grouped by SKU, warehouse, and
+ * receiving lot. Each unreceived shipment line contributes its full expected quantity on arrival,
+ * whether reserved or not. Only confirmed orders generate outgoing deliveries and backorder
+ * shortages; unconfirmed orders remain reserved holds. Shortages are assigned to warehouse
+ * `MAIN` and do not reduce physical stock.
+ *
+ * For each projected day, closing stock equals opening stock plus arrivals minus confirmed
+ * allocated deliveries. Demand equals those deliveries plus confirmed backorder shortages.
+ * Lot snapshots also track the reserved quantity remaining after each day's movements.
+ *
+ * For example, with 10 units on hand, 5 arriving tomorrow, and 8 reserved for a confirmed order
+ * due the day after tomorrow, projected closing balances are 10, 15, and 7. If the order is
+ * unconfirmed, its reservation does not cause the final reduction.
+ *
+ * This processor only replaces forecast snapshots; it does not allocate demand, receive supply,
+ * deliver orders, or expire reservations. [StockLedgerProcessor] applies today's forecast to live
+ * stock. Expiry cleanup is a separate operation, and future TTL expiry is not simulated here.
+ */
 @Service
 class StockProjectionProcessor(
-    private val stockProjectionLockService: StockProjectionLockService,
+    private val stockProjectionLockRepository: StockProjectionLockRepository,
     private val stockRepository: StockRepository,
     private val stockReservationRepository: StockReservationRepository,
     private val inboundSupplyRepository: InboundSupplyRepository,
     private val inboundReservationRepository: InboundReservationRepository,
     private val backorderRepository: OpenBackorderRepository,
     private val stockDailyLotSnapshotRepository: StockDailyLotSnapshotRepository,
-    private val stockDailySnapshotRepository: StockDailySnapshotRepository
+    private val stockDailySnapshotRepository: StockDailySnapshotRepository,
+    private val claimRepository: AllocationOrderClaimRepository,
+    private val clock: Clock,
+    private val entityManager: EntityManager
 ) {
 
     /**
-     * It works in these stages:
+     * Replaces aggregate and lot-level snapshots from `max(asOfDate, today)` onward.
      *
-     * 1. Lock and load the baseline. It acquires the projection lock to prevent concurrent allocation changes, then loads all live stock,
-     *    unreceived inbound shipments, reservations, and open backorders—including records from previous runs.
-     * 2. Choose the projection period. It starts at  max(asOfDate, today)  and ends at the latest relevant shipment arrival,
-     *    reservation delivery date, or backorder delivery date. Overdue events are moved to the start date; it does not reconstruct history.
-     * 3. Turn persisted records into dated movements.
-     *    • Each unreceived shipment adds its full expected quantity on its arrival date.
-     *    • Each reservation removes its quantity on the order’s required delivery date—not when the reservation was created.
-     *    • Each open backorder contributes a shortage on its required delivery date, without reducing physical stock. Currently, shortages are assigned to warehouse  "MAIN" .
-     * 4. Simulate each day, per SKU and warehouse. It adds arrivals, subtracts reserved deliveries, and carries the closing stock into the next day:
-     *    • closing stock = opening stock + inbound − allocated deliveries
-     *    • demand = allocated deliveries + backorder shortage
-     *    It also tracks the same movements and remaining reservations for each individual lot.
-     * 5. Replace the saved forecast. It deletes snapshots from the start date onward and writes both aggregate and lot-level snapshots.
-     *    Earlier snapshots remain untouched. Everything runs in one transaction, so an error rolls the rebuild back.
+     * Acquires the exclusive stock-projection lock for the transaction before loading the
+     * baseline. Overdue arrivals and confirmed deliveries or shortages are moved to the start
+     * date; historical stock is not reconstructed. The inclusive horizon ends at the latest
+     * such event, or the start date if none exist. Pending order delivery dates do not extend it.
      *
-     * For example:
-     *    • With 10 units on hand, 5 arriving tomorrow, and 8 reserved for delivery the day after tomorrow,
-     *    • The projected closing balances are 10 → 15 → 7.
-     *    • Reserving those 8 units does not immediately remove them from physical stock.
+     * Earlier snapshots are retained. Snapshots from the start date onward are deleted even if
+     * there are no remaining stock or confirmed shortage scopes to project. The persistence
+     * context is flushed and cleared after deletion to support repeated rebuilds in one transaction.
      *
-     * The distinction:
-     *    •  Allocation decides which supply an order reserves;
-     *    •  This processor projects when that supply arrives and leaves.
-     *    •  A separate ledger synchronization step applies today’s projected closing balances to live stock.
+     * Missing order claims or supply references, active demand on expired orders, conflicting
+     * lots, and deliveries exceeding available on-hand or reserved quantities fail the transaction.
+     * Snapshot deletion and replacement roll back together on failure.
      *
+     * @param asOfDate requested projection start, clamped to today's date using the injected [Clock].
      */
     @Transactional
     fun process(asOfDate: LocalDate) {
-        stockProjectionLockService.acquire()
-        val startDate = maxOf(asOfDate, LocalDate.now())
+        stockProjectionLockRepository.acquire()
+
+        val startDate = maxOf(asOfDate, LocalDate.now(clock))
+        val claims = claimRepository.findAll().associateBy { it.orderId }
+
         val stocks = stockRepository.findAll()
         val supplies = inboundSupplyRepository.findAll().filterNot { it.received }
         val stockById = stocks.associateBy { it.id }
-        val supplyById = supplies.associateBy { it.shipmentId }
-        val states = linkedMapOf<LotKey, LotState>()
+        val supplyById = supplies.associateBy { it.shipmentLineId }
+        val supplyByLot = supplies.associateBy { LotKey(it.sku, it.warehouseCode, it.lotId) }
 
+        // Build the initial lot states from existing stock and unreceived inbound supply.
+        // Use a LinkedHashMap to preserve insertion order for deterministic snapshot generation.
+        val states = linkedMapOf<LotKey, LotState>()
         stocks.forEach { stock ->
             val key = LotKey(stock.sku, stock.warehouseCode, stock.lotId)
             states[key] = LotState(
@@ -73,9 +98,13 @@ class StockProjectionProcessor(
             )
         }
 
+        // Track the earliest date each lot is expected to arrive, for use in the daily rebuild loop.
+        // This is needed because the inbound supply may be filtered to only unreceived shipments, but
+        // the projection must still include the expected arrival date for each lot to determine when
+        // to add its expected quantity to the on-hand balance.
         val inboundDateByLot = mutableMapOf<LotKey, LocalDate>()
         supplies.forEach { supply ->
-            val key = LotKey(supply.sku, supply.warehouseCode, supply.shipmentId)
+            val key = LotKey(supply.sku, supply.warehouseCode, supply.lotId)
             require(key !in states) {
                 "Inbound shipment '${supply.shipmentId}' conflicts with an existing stock lot."
             }
@@ -90,39 +119,51 @@ class StockProjectionProcessor(
 
         val allocatedByLotDate = mutableMapOf<LotDate, Int>()
         val stockReservations = stockReservationRepository.findAll()
+        // Only confirmed reservations contribute to projected allocations; unconfirmed reservations
+        // remain reserved but do not reduce on-hand stock. Reservations for missing lots fail the rebuild
+        // transaction, as do reservations for missing order claims or expired orders.
         stockReservations.forEach { reservation ->
             val stock = stockById[reservation.stockId]
-                ?: throw IllegalStateException("Stock reservation '${reservation.id}' references missing stock.")
+                ?: error("Stock reservation '${reservation.id}' references missing stock.")
             val key = LotKey(stock.sku, stock.warehouseCode, stock.lotId)
             require(key in states) { "Reserved stock lot '${stock.lotId}' is missing from the projection." }
-            addQuantity(
-                allocatedByLotDate,
-                LotDate(key, maxOf(reservation.requiredDeliveryDate, startDate)),
-                reservation.quantity
-            )
+            if (isConfirmed(reservation.orderId, claims)) {
+                addQuantity(
+                    allocatedByLotDate,
+                    LotDate(key, maxOf(reservation.requiredDeliveryDate, startDate)),
+                    reservation.quantity
+                )
+            }
         }
 
+        // Only confirmed inbound reservations contribute to projected allocations; unconfirmed reservations
+        // remain reserved but do not reduce on-hand stock. Reservations for missing lots fail the rebuild
+        // transaction, as do reservations for missing order claims or expired orders.
         val inboundReservations = inboundReservationRepository.findAll()
         inboundReservations.forEach { reservation ->
-            val supply = supplyById[reservation.shipmentId]
+            val supply = supplyById[reservation.shipmentLineId]
                 ?: throw IllegalStateException("Inbound reservation '${reservation.id}' references missing supply.")
-            val key = LotKey(supply.sku, supply.warehouseCode, supply.shipmentId)
+            val key = LotKey(supply.sku, supply.warehouseCode, supply.lotId)
             require(key in states) { "Reserved inbound lot '${supply.shipmentId}' is missing from the projection." }
-            addQuantity(
-                allocatedByLotDate,
-                LotDate(key, maxOf(reservation.requiredDeliveryDate, startDate)),
-                reservation.quantity
-            )
+            if (isConfirmed(reservation.orderId, claims)) {
+                addQuantity(
+                    allocatedByLotDate,
+                    LotDate(key, maxOf(reservation.requiredDeliveryDate, startDate)),
+                    reservation.quantity
+                )
+            }
         }
 
         val backordersByDate = mutableMapOf<ScopeDate, Int>()
         val backorders = backorderRepository.findAll()
         backorders.forEach { backorder ->
-            addQuantity(
-                backordersByDate,
-                ScopeDate(backorder.sku, "MAIN", maxOf(backorder.requiredDeliveryDate, startDate)),
-                backorder.remainingQuantity
-            )
+            if (isConfirmed(backorder.orderId, claims)) {
+                addQuantity(
+                    backordersByDate,
+                    ScopeDate(backorder.sku, "MAIN", maxOf(backorder.requiredDeliveryDate, startDate)),
+                    backorder.remainingQuantity
+                )
+            }
         }
 
         val scopes = (states.keys.map { it.sku to it.warehouseCode } +
@@ -137,8 +178,15 @@ class StockProjectionProcessor(
 
         stockDailyLotSnapshotRepository.deleteAllBySnapshotDateGreaterThanEqual(startDate)
         stockDailySnapshotRepository.deleteAllBySnapshotDateGreaterThanEqual(startDate)
-        if (scopes.isEmpty()) return
 
+        // Hibernate keeps loaded and saved entities in an in-memory persistence context.
+        // But these bulk delete database rows without removing their entities from that context,
+        // hence the flush and clear to avoid duplicate key errors when saving new snapshots.
+        entityManager.flush()
+        entityManager.clear()
+
+
+        if (scopes.isEmpty()) return
         scopes.forEach { (sku, warehouseCode) ->
             val skuLots = states.filterKeys { it.sku == sku && it.warehouseCode == warehouseCode }
             var date = startDate
@@ -149,7 +197,7 @@ class StockProjectionProcessor(
 
                 skuLots.forEach { (key, state) ->
                     if (inboundDateByLot[key] == date) {
-                        val supply = supplyById[key.lotId]
+                        val supply = supplyByLot[key]
                             ?: throw IllegalStateException("Projected inbound lot '${key.lotId}' has no supply record.")
                         state.inboundToday = supply.expectedQuantity
                         state.onHand = Math.addExact(state.onHand, supply.expectedQuantity)
@@ -211,6 +259,16 @@ class StockProjectionProcessor(
                 date = date.plusDays(1)
             }
         }
+    }
+
+    fun isConfirmed(orderId: String, claims: Map<String, AllocationOrderClaimEntity!>): Boolean {
+        val claim = checkNotNull(claims[orderId]) {
+            "Active reservation or backorder '$orderId' has no allocation order claim."
+        }
+        check(claim.reservationStatus != ReservationStatus.EXPIRED) {
+            "Expired order '$orderId' still has active reservations or backorders."
+        }
+        return claim.reservationStatus == ReservationStatus.CONFIRMED
     }
 
     private fun <K> addQuantity(values: MutableMap<K, Int>, key: K, quantity: Int) {

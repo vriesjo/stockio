@@ -74,6 +74,10 @@ stockio:
   allocation:
     csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
     max-concurrent-skus: ${ALLOCATION_MAX_CONCURRENT_SKUS:4}
+    reservation:
+      ttl: ${ALLOCATION_RESERVATION_TTL:30m}
+      expiry-interval: ${ALLOCATION_RESERVATION_EXPIRY_INTERVAL:1m}
+      expiry-batch-size: ${ALLOCATION_RESERVATION_EXPIRY_BATCH_SIZE:100}
     rabbitmq:
       exchange: ${ALLOCATION_RABBITMQ_EXCHANGE:stockio.allocation.exchange}
       routing-key: ${ALLOCATION_RABBITMQ_ROUTING_KEY:allocation.request}
@@ -82,7 +86,7 @@ stockio:
       dead-letter-routing-key: ${ALLOCATION_RABBITMQ_DEAD_LETTER_ROUTING_KEY:allocation.failed}
       dead-letter-queue: ${ALLOCATION_RABBITMQ_DEAD_LETTER_QUEUE:stockio.allocation.dead}
       publisher:
-        enabled: ${ALLOCATION_RABBITMQ_PUBLISHER_ENABLED:false}
+        enabled: ${ALLOCATION_RABBITMQ_PUBLISHER_ENABLED:true}
         interval: ${ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL:1000}
   report:
     directory: ${REPORT_DIR:${user.home}/itzitzo-mcp/reports}

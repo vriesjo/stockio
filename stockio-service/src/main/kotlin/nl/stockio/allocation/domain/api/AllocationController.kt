@@ -6,6 +6,8 @@ import java.util.UUID
 import nl.stockio.allocation.domain.api.data.AllocationJobAccepted
 import nl.stockio.allocation.domain.api.data.AllocationJobStatus
 import nl.stockio.allocation.domain.api.data.AllocationRequest
+import nl.stockio.allocation.domain.api.data.OrderReservationStatus
+import nl.stockio.reservation.domain.service.OrderReservationService
 import nl.stockio.allocation.domain.job.AllocationJobService
 import nl.stockio.allocation.domain.job.AllocationEventPublisher
 import org.jobrunr.storage.JobNotFoundException
@@ -24,7 +26,8 @@ import org.springframework.web.bind.annotation.RestController
 @RequestMapping("/api/logistics")
 class AllocationController(
     private val allocationEventPublisher: AllocationEventPublisher,
-    private val allocationJobService: AllocationJobService
+    private val allocationJobService: AllocationJobService,
+    private val orderReservationService: OrderReservationService
 ) {
 
     @PostMapping("/allocate-project-and-sync")
@@ -40,6 +43,11 @@ class AllocationController(
     @GetMapping("/allocate-project-and-sync/job-status/{jobId}")
     fun allocateProjectAndSyncJobStatus(@PathVariable jobId: UUID): AllocationJobStatus =
         allocationJobService.getStatus(jobId)
+
+    @GetMapping("/orders/{orderId}/reservation")
+    fun orderReservationStatus(@PathVariable orderId: String): ResponseEntity<OrderReservationStatus> =
+        orderReservationService.getStatus(orderId)?.let { ResponseEntity.ok(it) }
+            ?: ResponseEntity.notFound().build()
 
     @ExceptionHandler(IllegalArgumentException::class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)

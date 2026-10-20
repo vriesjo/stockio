@@ -8,6 +8,7 @@ import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunResult
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.DemandOrder
+import nl.stockio.allocation.domain.api.data.DemandOrderLine
 import nl.stockio.allocation.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.domain.service.AllocationService
 import nl.stockio.product.domain.model.ProductAllocationRequest
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
@@ -105,12 +107,14 @@ class ProductAllocationServiceTest {
         )
 
         val response = sut.allocate(requested)
+        val replay = sut.allocate(requested)
 
         assertEquals(ProductAllocationStatus.ALLOCATION_PROCESSED, response.status)
         assertEquals("MAKI-KOMKOMMER", response.selectedProduct?.sku)
         assertFalse(response.selectedProduct?.equivalent ?: true)
         assertEquals(expectedRun, response.allocationRun)
-        verify(allocationService).allocation(expectedRequest)
+        assertEquals(expectedRun, replay.allocationRun)
+        verify(allocationService, times(2)).allocation(expectedRequest)
         verifyNoInteractions(tavilySearchClient, embeddingClient)
         assertTrue(response.sources.isEmpty())
     }
@@ -435,11 +439,18 @@ class ProductAllocationServiceTest {
             DemandOrder(
                 orderId = request.orderId,
                 customer = request.customer,
-                sku = sku,
-                requestedQuantity = request.quantity,
                 priority = request.priority,
                 placedDate = request.placedDate,
-                requiredDeliveryDate = request.requiredDeliveryDate
+                lines = listOf(
+                    DemandOrderLine(
+                        orderLineId = UUID.nameUUIDFromBytes(
+                            "stockio:product-order-line:${request.orderId}".toByteArray(Charsets.UTF_8)
+                        ).toString(),
+                        sku = sku,
+                        requestedQuantity = request.quantity,
+                        requiredDeliveryDate = request.requiredDeliveryDate
+                    )
+                )
             )
         )
     )

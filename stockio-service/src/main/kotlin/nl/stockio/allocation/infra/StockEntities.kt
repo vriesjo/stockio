@@ -11,6 +11,13 @@ import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
 
+@Entity
+@Table(name = "stock_projection_lock")
+class StockProjectionLockEntity(
+    @Id
+    var id: Int = 1
+)
+
 data class StockDailyLotSnapshotId(
     var snapshotDate: LocalDate = LocalDate.MIN,
     var sku: String = "",
@@ -130,7 +137,7 @@ class StockDailyLotSnapshotEntity(
     name = "stock_reservation",
     uniqueConstraints = [UniqueConstraint(
         name = "uq_stock_reservation_order_lot",
-        columnNames = ["order_id", "stock_id"]
+        columnNames = ["order_line_id", "stock_id"]
     )]
 )
 class StockReservationEntity(
@@ -138,6 +145,8 @@ class StockReservationEntity(
     var id: UUID = UUID.randomUUID(),
     @Column(name = "order_id", nullable = false, length = 100)
     var orderId: String = "",
+    @Column(name = "order_line_id", nullable = false, length = 100)
+    var orderLineId: String = "",
     @Column(name = "stock_id", nullable = false)
     var stockId: UUID = UUID.randomUUID(),
     @Column(nullable = false)
@@ -149,11 +158,23 @@ class StockReservationEntity(
 )
 
 @Entity
+@Table(name = "inbound_shipment")
+class InboundShipmentEntity(
+    @Id
+    @Column(name = "shipment_id", length = 100)
+    var shipmentId: String = ""
+)
+
+@Entity
 @Table(name = "inbound_supply")
 class InboundSupplyEntity(
     @Id
-    @Column(name = "shipment_id", length = 100)
+    @Column(name = "shipment_line_id", length = 100)
+    var shipmentLineId: String = "",
+    @Column(name = "shipment_id", nullable = false, length = 100)
     var shipmentId: String = "",
+    @Column(name = "lot_id", nullable = false, length = 64)
+    var lotId: String = UUID.randomUUID().toString(),
     @Column(nullable = false, length = 64)
     var sku: String = "",
     @Column(name = "warehouse_code", nullable = false, length = 50)
@@ -178,7 +199,7 @@ class InboundSupplyEntity(
     name = "inbound_reservation",
     uniqueConstraints = [UniqueConstraint(
         name = "uq_inbound_reservation_order_shipment",
-        columnNames = ["order_id", "shipment_id"]
+        columnNames = ["order_line_id", "shipment_line_id"]
     )]
 )
 class InboundReservationEntity(
@@ -186,8 +207,12 @@ class InboundReservationEntity(
     var id: UUID = UUID.randomUUID(),
     @Column(name = "order_id", nullable = false, length = 100)
     var orderId: String = "",
+    @Column(name = "order_line_id", nullable = false, length = 100)
+    var orderLineId: String = "",
     @Column(name = "shipment_id", nullable = false, length = 100)
     var shipmentId: String = "",
+    @Column(name = "shipment_line_id", nullable = false, length = 100)
+    var shipmentLineId: String = "",
     @Column(nullable = false)
     var quantity: Int = 0,
     @Column(name = "required_delivery_date", nullable = false)

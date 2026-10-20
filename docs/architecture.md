@@ -45,10 +45,12 @@ The service runs as a servlet application and exposes MCP tools through Spring A
 | `AllocationController` | Accepts asynchronous allocate-and-project-and-sync requests and exposes JobRunr job status. |
 | `AllocationAdminController` | Creates allocation requests from CSV, generates reports, and removes jobs with excessive retries. |
 | `AllocationService` | Validates, groups work by SKU, coordinates SKU workers, and completes allocation runs. |
+| `AllocationDocumentService` | Registers immutable order/shipment headers and lines before SKU work and assigns one reservation deadline per order. |
 | `AllocationSkuWorker` | Performs one SKU's transactional allocation or backorder fulfillment, reserves stock/supply, and persists resumable operation results. |
 | `AllocationPolicyCalculator` | Applies order priority, FIFO source selection, delivery-date eligibility, and backorder rules. |
 | `StockProjectionProcessor` | Rebuilds aggregate and lot-level daily projections from the live stock baseline and persisted reservations. |
-| `StockLedgerProcessor` | Validates and synchronizes today's saved lot-level projection to live stock. |
+| `StockLedgerProcessor` | Expires overdue holds, rebuilds today's projection, and synchronizes it to live stock. |
+| `ReservationExpiryJob` / expiry services | Release overdue pending orders in transactional batches and rebuild projections. |
 | `AllocationJob` / completion service | Runs the asynchronous allocate-project-and-sync workflow and persists its final result. |
 | `AllocationExcelService` | Parses the configured CSV and creates a validated allocation request. |
 | `ExcelReportProcessor` | Writes allocation details, sources, pivot tables, and formula summaries to an `.xlsx` workbook. |
@@ -63,7 +65,8 @@ The service runs as a servlet application and exposes MCP tools through Spring A
 | `allocation_and_stock_projection` | `AllocationRequest` with `runType: NEW_DEMAND` | Allocates demand, persists reservations/backorders, and rebuilds daily projections. It does not synchronize live stock. |
 | `allocate_product_by_name` | `ProductAllocationRequest` | Requires Tavily lookup, resolves a product to an active catalog SKU, allocates through `AllocationService`, rebuilds projections, and returns product evidence plus the allocation result. Unresolved or ambiguous products are not allocated. |
 | `allocate_open_backorders` | `AllocationRequest` with `runType: BACKORDER_FULFILLMENT` | Attempts to fulfill persisted backorders using eligible stock and inbound supply; returns an `AllocationRunResult`. The current tool path does not rebuild projections or synchronize live stock. |
-| `process_stock_ledger` | `ProcessDailyStockRequest` | Applies today's existing snapshot to live stock and returns a `StockSyncResult`. It does not recalculate allocations or stock movements. |
+| `process_stock_ledger` | `ProcessDailyStockRequest` | Expires overdue reservations, rebuilds today's projection, and applies it to live stock. Only confirmed orders are delivered; allocation is not recalculated. |
+| `get_order_reservation_status` | Order ID | Returns the current lifecycle, deadline, and whether expired reservations still await cleanup. |
 | `generate_excel_report` | `ExcelReportRequest` (`runId`, simple `.xlsx` `fileName`) | Generates a report for a saved allocation run and returns the output path. |
 
 ### Agentic product-allocation flow
@@ -127,6 +130,7 @@ After resolution, the tool uses Stockio's normal `NEW_DEMAND` behavior. Partial 
 | `POST /api/products/allocate` | Synchronously performs the agentic product lookup and allocation for a `ProductAllocationRequest`; returns the product-resolution status and allocation result. |
 | `POST /api/logistics/allocate-project-and-sync` | Validates today's `asOfDate`, accepts an allocation request, and returns `202 Accepted` with a JobRunr `jobId` and status URL. |
 | `GET /api/logistics/allocate-project-and-sync/job-status/{jobId}` | Returns the JobRunr state and, when succeeded, the persisted allocation and stock-sync result. |
+| `GET /api/logistics/orders/{orderId}/reservation` | Returns current reservation lifecycle and deadline, or `404` for an unknown order. |
 | `GET /api/admin/allocations/generate-request-by-csv` | Parses the configured CSV and returns a generated `AllocationRequest`; it does not execute it. |
 | `POST /api/admin/allocations/generate-excel` | Generates an Excel report from a saved run. |
 | `DELETE /api/admin/allocations/delete-jobs-with-excessive-retries` | Removes qualifying JobRunr jobs with excessive retry transitions. |
@@ -144,28 +148,46 @@ An `AllocationRequest` contains:
 - `requestId`: UUID used for idempotency.
 - `asOfDate`: date used for the allocation and projection.
 - `runType`: `NEW_DEMAND` or `BACKORDER_FULFILLMENT`.
-- `demandOrders`: order ID, customer, SKU, requested quantity, priority, placed date, and required delivery date.
-- `inboundShipments`: shipment ID, SKU, expected quantity, expected arrival date, and warehouse code.
+- `demandOrders`: order headers with order ID, customer, priority, placed date, and a nonempty `lines` list. Each line has a globally unique `orderLineId`, SKU, requested quantity, and required delivery date.
+- `inboundShipments`: shipment headers with shipment ID and a nonempty `lines` list. Each line has a globally unique `shipmentLineId`, SKU, expected quantity, expected arrival date, and warehouse code.
 
 The server validates required fields, positive quantities and priorities, date order, and unique IDs within a request. A new-demand request cannot reuse order IDs already processed as new demand; unresolved quantities belong to the backorder-fulfillment workflow.
+
+An order or shipment may contain repeated SKUs, including separate lines with identical dates. Reservation/backorder identity is the line ID, not the header ID or SKU. Allocation results remain flat but include both `orderId` and `orderLineId`; inbound sources include shipment header and line IDs. `openBackorderCount` counts distinct open orders, not lines.
 
 ## Allocation behavior
 
 1. Orders are processed by ascending numeric priority, then placed date, then original request order.
 2. For each SKU, persisted stock lots are considered FIFO by received date, lot ID, and warehouse code.
 3. Available live stock is `quantity_on_hand - quantity_reserved`.
-4. Remaining demand may use inbound supply ordered by expected arrival date and shipment ID, if its arrival is no later than the order's required delivery date.
+4. Remaining demand may use inbound lines ordered by expected arrival date, shipment ID, and shipment line ID, if arrival is no later than the demand line's required delivery date.
 5. Available unreceived supply is `expected_quantity - quantity_reserved`. Backorder fulfillment additionally considers only supply that has arrived by `asOfDate`.
-6. Unfilled quantity is saved as an open backorder. Backordered quantity contributes to projected shortage but is not deducted from physical stock.
-7. Allocated quantities are reserved when the run is processed and leave projected physical stock on `max(asOfDate, requiredDeliveryDate)`.
+6. Unfilled quantity is saved as an open backorder. Only confirmed backorders contribute to projected shortage; shortages do not reduce physical stock.
+7. New orders create unconfirmed temporary reservations. Only confirmed reservations leave projected physical stock on their effective delivery date.
 
 Allocations retain source-level detail identifying the stock lot or inbound shipment. A new shipment is classified as inbound supply in the run that allocates it; its unreserved surplus becomes live stock when received and can be allocated as inventory by a later request.
+
+### Reservation lifecycle and expiry
+
+New order headers are `PENDING_CONFIRMATION` with one persisted UTC deadline shared by all lines, by default 30 minutes after document initialization. Initialization commits before per-SKU work and is serialized with the exclusive projection lock. A recurring JobRunr job checks overdue headers every minute, in batches of 100 orders. Configure these with `ALLOCATION_RESERVATION_TTL`, `ALLOCATION_RESERVATION_EXPIRY_INTERVAL`, and `ALLOCATION_RESERVATION_EXPIRY_BATCH_SIZE`. Durations and batch size must be positive.
+
+At the deadline, an order is logically expired. Cleanup releases its stock and inbound reservation counters, deletes reservation rows and remaining open backorders, marks its claim `EXPIRED`, and rebuilds today's projections atomically under the exclusive projection lock. Physical stock and expected inbound quantities do not change. Background execution can lag after the deadline; overdue orders cannot receive additional backorder allocations while waiting. Retries and backorder fulfillment never renew a deadline.
+
+Pending orders hold quantity but are not physical deliveries or committed shortages. Receipt converts their inbound reservations to stock reservations even when the delivery date has passed, preserving the original order deadline. Daily snapshots reflect current holds; they do not simulate future TTL release.
+
+The confirmation command is not implemented yet, so all newly allocated orders eventually expire unless a later confirmation feature is deployed. Migration V14 preserves pre-feature order claims as `CONFIRMED` without TTL. Allocation runs, cached job results, and reports remain historical after expiry; use the order-reservation read operation for current lifecycle. `cleanupPending: true` means the deadline has passed but physical reservation cleanup has not committed. Expired order IDs cannot be reused.
+
+Per-SKU transactions still allow partial allocation. If an order expires while its run is incomplete, committed line results remain historical and late workers return `SKIPPED_ORDER_EXPIRED` with null allocation status and no active demand. Retries cannot recreate released holds. Status reads expose a `lines` collection rather than one header-level SKU.
+
+Deploy the lifecycle-aware allocation, projections, ledger, and expiry job together; old ledger code must not run concurrently with temporary holds. See [the feature design](issues/feature_expire_allocation_reservations.md) for lifecycle invariants and acceptance scenarios.
 
 ### Idempotency and parallel work
 
 Allocation runs are keyed by `requestId` and store a request hash. A retry with the same ID and payload resumes or returns the existing run; reusing the ID with conflicting data is rejected. Per-SKU operation results and order claims support retries without allocating an order twice. A unique SKU lock serializes concurrent changes for the same SKU, while a shared projection lock coordinates allocation with projection and stock synchronization.
 
 SKU work is limited by `stockio.allocation.max-concurrent-skus` (default `4`) and runs in separate transactions. Set `ALLOCATION_MAX_CONCURRENT_SKUS` to tune that limit. The maximum applies to the shared allocation dispatcher, not independently to each SKU in each request.
+
+The nested line contract is a coordinated breaking change. V15 preserves legacy run hashes as contract version 1; new runs use version 2. Legacy runs/results remain readable, but their old requests cannot be submitted or resumed through the new contract. Drain old allocation jobs and reconcile unfinished legacy runs before upgrading all writers together.
 
 ## Asynchronous processing
 
@@ -191,7 +213,7 @@ closing_stock = opening_stock + inbound_qty - allocated_qty
 demand_qty = allocated_qty + shortage_qty
 ```
 
-The day's closing balance becomes the next day's opening balance. A backorder contributes to `shortage_qty` on its required delivery date but does not reduce physical stock. Allocated stock and inbound supply reduce physical stock on their effective delivery date.
+The day's closing balance becomes the next day's opening balance. A confirmed backorder contributes to `shortage_qty` on its required delivery date but does not reduce physical stock. Only confirmed stock and inbound reservations reduce physical stock on their effective delivery date; pending reservations remain holds.
 
 After allocation changes, `StockProjectionProcessor` uses current live stock as its baseline and rebuilds from `max(asOfDate, today)` forward through the latest relevant arrival, reservation, or backorder date. Earlier snapshots are retained; the service does not reconstruct historical physical stock from today's quantities.
 
@@ -211,7 +233,7 @@ inbound_quantity_available = expected_quantity - quantity_reserved
 
 ### Example
 
-On day D, assume live lot `LOT-A` has 5 units and a new shipment `SHIP-B` brings 4 units arriving on D. Two orders are due on D+1: `ORDER-1` requests 3 and `ORDER-2` requests 4, with equal priority and placed date.
+On day D, assume live lot `LOT-A` has 5 units and a new shipment `SHIP-B` brings 4 units arriving on D. Two confirmed orders are due on D+1: `ORDER-1` requests 3 and `ORDER-2` requests 4, with equal priority and placed date. This example assumes confirmed commitments, not the default temporary holds.
 
 | Order | Requested | From inventory | From inbound | Backordered |
 | --- | ---: | ---: | ---: | ---: |
@@ -222,9 +244,9 @@ Before receipt, `LOT-A` has 5 on hand / 5 reserved / 0 available; `SHIP-B` has 4
 
 ### Daily ledger sync
 
-`process_stock_ledger` accepts only today's `snapshotDate`. Today's aggregate snapshots must exist, and each aggregate closing quantity must equal the sum of its lot-level closing quantities. Synchronization updates live lot quantities/reservations, sets omitted unreserved lots in the affected SKU/warehouse scopes to zero, removes due stock reservations, marks arrived shipments as received, and converts their future inbound reservations to stock reservations.
+`process_stock_ledger` accepts only today's `snapshotDate`. Under one exclusive lock and transaction, it drains overdue reservation cleanup, rebuilds today's projection, and validates aggregate balances against lot-level balances. A freshly calculated empty projection is valid. Synchronization updates live lot quantities/reservations, removes due confirmed stock reservations, marks arrived shipments as received, and converts remaining inbound holds to stock reservations. Pending reservations are retained even when their delivery date has passed.
 
-The sync does not recompute the projection or accept movements. Repeating it is safe because it reapplies the saved closing balances and processes due reservations/receipts idempotently. Projection and ledger operations coordinate with allocation through the `stock_projection_lock` row.
+The sync recomputes the projection but does not recalculate allocations or accept movements. Repeating it is safe because delivered reservations and received shipments are no longer projected as new movements. Projection, expiry, and ledger operations coordinate with allocation through the `stock_projection_lock` row.
 
 ## Persistence model
 
@@ -235,22 +257,24 @@ The sync does not recompute the projection or accept movements. Repeating it is 
 | `product_knowledge_chunks` | Tavily source text associated with a resolved SKU, with provenance, content hash, retrieval time, and a 768-dimensional embedding. |
 | `stock` | Current physical quantity and future reservations by lot. |
 | `stock_reservation` | Order reservations against live stock lots. |
-| `inbound_supply` | Expected receipts, received state, and reserved shipment quantities. |
+| `inbound_shipment` | Shipment header identity and immutable line membership. |
+| `inbound_supply` | Shipment lines with expected/received state, reserved quantities, and stable receiving-lot IDs. |
 | `inbound_reservation` | Order reservations against unreceived shipments. |
 | `allocation_run` | Idempotent run metadata, type, as-of date, completion state, and request hash. |
 | `allocation_record` | Per-order allocation and backorder results. |
 | `allocation_source` | Lot/shipment source detail for each allocation record. |
-| `open_backorder` | Current unfulfilled quantity by order. |
+| `open_backorder` | Current unfulfilled quantity by order line. |
 | `allocation_sku_lock` | Per-SKU serialization for allocation workers. |
 | `allocation_sku_operation` | Per-run, per-SKU result used to resume work safely. |
-| `allocation_order_claim` | Prevents an order from being submitted as new demand more than once. |
+| `demand_order` | Order header, original-run ownership, and shared confirmation/expiry lifecycle. |
+| `demand_order_line` | Immutable line identity, SKU, requested quantity, delivery date, and document position. |
 | `stock_daily_snapshots` | Aggregate daily stock trajectory. |
 | `stock_daily_lot_snapshots` | Lot-level daily balances and reservations used by the ledger sync. |
 | `stock_projection_lock` | Database row lock coordinating allocation, projection, and synchronization. |
 | `allocation_job_result` | Serialized result for completed asynchronous allocation jobs. |
 | `flyway_schema_history` | Flyway migration metadata. |
 
-Flyway migrations V1-V13 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, and enable pgvector product-resolution storage. Hibernate validates the migrated schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
+Flyway migrations V1-V15 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, enable pgvector product-resolution storage, add order-reservation expiry, and migrate single-line documents to header/line relationships. V15 preserves lifecycle timestamps, legacy line mappings, and received lots, and rejects inconsistent legacy reservation data. Hibernate validates the migrated schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
 
 ## CSV import and Excel reports
 
@@ -260,7 +284,7 @@ The CSV loader expects these columns, in this order:
 Artikel,Transactie_type,QTY,Datum
 ```
 
-`Verkoop` rows become demand orders; `Levering` rows become inbound shipments. Other transaction types are skipped with a warning. Dates must be valid `yyyy-MM-dd` or day-first `d-M-yyyy` dates. Product titles are resolved through the product repository; an unknown title or malformed row fails the import. The loader generates new request, order, and shipment IDs and sample customer names, so loading the same file creates a new request rather than replaying an identical one.
+`Verkoop` rows become single-line demand orders; `Levering` rows become single-line inbound shipments. Rows are not grouped by SKU or customer. Other transaction types are skipped with a warning. Dates must be valid `yyyy-MM-dd` or day-first `d-M-yyyy` dates. Product titles are resolved through the product repository; an unknown title or malformed row fails the import. Document/line IDs are deterministic from the CSV byte hash and row position; request IDs also include the captured `asOfDate`. Identical bytes on the same date replay the same request regardless of file path. A different date retains document ownership and cannot allocate the same transactions again. Byte changes represent a new import.
 
 The configured default path is `docs/allocations.csv`. If the input file is not present there, set `ALLOCATION_CSV_PATH` to the location of the CSV to import.
 

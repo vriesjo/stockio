@@ -3,6 +3,11 @@ package nl.stockio.allocation.domain.job
 import java.time.LocalDate
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
+import nl.stockio.allocation.domain.model.InboundSupplyState
+import nl.stockio.allocation.domain.policy.AllocationPolicyCalculator
+import nl.stockio.allocation.domain.policy.InboundAllocationPolicy
+import nl.stockio.allocation.domain.policy.InventoryAllocationPolicy
+import nl.stockio.allocation.domain.service.allocationLines
 import nl.stockio.product.infra.ProductEntity
 import nl.stockio.product.infra.ProductRepository
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -41,20 +46,60 @@ class AllocationRequestPublisherTest {
         assertEquals(AllocationRunType.NEW_DEMAND, request.runType)
         assertEquals(5, request.demandOrders.size)
         assertEquals(5, request.inboundShipments.size)
+        assertEquals(5, request.demandOrders.map { it.orderId }.distinct().size)
+        assertEquals(5, request.demandOrders.flatMap { it.lines }.map { it.orderLineId }.distinct().size)
+        assertEquals(5, request.inboundShipments.map { it.shipmentId }.distinct().size)
+        assertEquals(5, request.inboundShipments.flatMap { it.lines }.map { it.shipmentLineId }.distinct().size)
         val allowedQuantities = setOf(1, 2, 3, 5, 8, 13, 21)
         request.demandOrders.forEach { order ->
-            assertEquals(product.sku, order.sku)
-            assertTrue(order.requestedQuantity in allowedQuantities)
+            val line = order.lines.single()
+            assertEquals(product.sku, line.sku)
+            assertTrue(line.requestedQuantity in allowedQuantities)
             assertEquals(request.asOfDate, order.placedDate)
-            assertEquals(request.asOfDate, order.requiredDeliveryDate)
+            assertEquals(request.asOfDate.plusDays(3), line.requiredDeliveryDate)
         }
         request.inboundShipments.forEach { shipment ->
-            assertEquals(product.sku, shipment.sku)
-            assertTrue(shipment.expectedQuantity in allowedQuantities)
+            val line = shipment.lines.single()
+            assertEquals(product.sku, line.sku)
+            assertTrue(line.expectedQuantity in allowedQuantities)
             assertTrue(
-                shipment.expectedArrivalDate in request.asOfDate.plusDays(1)..request.asOfDate.plusDays(3)
+                line.expectedArrivalDate in request.asOfDate.plusDays(1)..request.asOfDate.plusDays(3)
             )
-            assertEquals("MAIN", shipment.warehouseCode)
+            assertEquals("MAIN", line.warehouseCode)
+        }
+        request.demandOrders.zip(request.inboundShipments).forEach { (order, shipment) ->
+            assertEquals(order.lines.single().requestedQuantity, shipment.lines.single().expectedQuantity)
+            assertTrue(shipment.lines.single().expectedArrivalDate <= order.lines.single().requiredDeliveryDate)
+        }
+
+        val calculation = AllocationPolicyCalculator(InventoryAllocationPolicy(), InboundAllocationPolicy()).calculate(
+            orders = request.allocationLines(),
+            asOfDate = request.asOfDate,
+            inventory = emptyList(),
+            inboundSupply = request.inboundShipments.flatMap { shipment ->
+                shipment.lines.map { line ->
+                    InboundSupplyState(
+                        shipmentId = shipment.shipmentId,
+                        shipmentLineId = line.shipmentLineId,
+                        sku = line.sku,
+                        warehouseCode = line.warehouseCode,
+                        expectedQuantity = line.expectedQuantity,
+                        expectedArrivalDate = line.expectedArrivalDate,
+                        quantityReserved = 0
+                    )
+                }
+            },
+            stockReservations = emptyList(),
+            inboundReservations = emptyList(),
+            registerBackorders = true
+        )
+        calculation.allocations.forEach { allocation ->
+            assertEquals(allocation.requestedQuantity, allocation.allocatedFromInbound)
+            assertEquals(0, allocation.backorderedQuantity)
+            assertEquals(
+                allocation.requestedQuantity,
+                calculation.inboundReservations.filter { it.orderLineId == allocation.orderLineId }.sumOf { it.quantity }
+            )
         }
     }
 }

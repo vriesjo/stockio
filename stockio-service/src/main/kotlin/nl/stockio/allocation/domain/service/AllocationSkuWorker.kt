@@ -3,12 +3,12 @@ package nl.stockio.allocation.domain.service
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.time.Instant
+import java.time.Clock
 import java.time.LocalDate
 import java.util.UUID
 import nl.stockio.allocation.domain.api.data.AllocationRecord
 import nl.stockio.allocation.domain.api.data.AllocationStatus
-import nl.stockio.allocation.domain.api.data.DemandOrder
-import nl.stockio.allocation.domain.api.data.InboundShipment
+import nl.stockio.allocation.domain.api.data.AllocationProcessingOutcome
 import nl.stockio.allocation.domain.converter.toInboundReservationChange
 import nl.stockio.allocation.domain.converter.toInboundSupplyState
 import nl.stockio.allocation.domain.converter.toInventoryLotState
@@ -18,12 +18,12 @@ import nl.stockio.allocation.domain.model.AllocationOrder
 import nl.stockio.allocation.domain.policy.AllocationPolicyCalculator
 import nl.stockio.allocation.domain.policy.InboundAllocationPolicy
 import nl.stockio.allocation.domain.policy.InventoryAllocationPolicy
-import nl.stockio.allocation.domain.processor.StockProjectionLockService
-import nl.stockio.allocation.infra.AllocationOrderClaimEntity
+import nl.stockio.allocation.infra.StockProjectionLockRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimRepository
 import nl.stockio.allocation.infra.AllocationSkuLockRepository
 import nl.stockio.allocation.infra.AllocationSkuOperationEntity
 import nl.stockio.allocation.infra.AllocationSkuOperationRepository
+import nl.stockio.allocation.infra.DemandOrderLineRepository
 import nl.stockio.allocation.infra.InboundReservationEntity
 import nl.stockio.allocation.infra.InboundReservationRepository
 import nl.stockio.allocation.infra.InboundSupplyEntity
@@ -39,17 +39,18 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 class AllocationSkuWorker(
-    private val stockProjectionLockService: StockProjectionLockService,
+    private val stockProjectionLockRepository: StockProjectionLockRepository,
     private val allocationRunService: AllocationRunService,
     private val skuLockRepository: AllocationSkuLockRepository,
     private val skuOperationRepository: AllocationSkuOperationRepository,
     private val orderClaimRepository: AllocationOrderClaimRepository,
-    private val inboundSupplyService: InboundSupplyService,
+    private val lineRepository: DemandOrderLineRepository,
     private val inboundSupplyRepository: InboundSupplyRepository,
     private val stockRepository: StockRepository,
     private val stockReservationRepository: StockReservationRepository,
     private val inboundReservationRepository: InboundReservationRepository,
     private val backorderRepository: OpenBackorderRepository,
+    private val clock: Clock,
     private val objectMapper: ObjectMapper
 ) {
 
@@ -64,8 +65,7 @@ class AllocationSkuWorker(
         requestHash: String,
         sku: String,
         asOfDate: LocalDate,
-        orders: List<DemandOrder>,
-        shipments: List<InboundShipment>
+        orders: List<AllocationOrder>
     ): List<AllocationRecord> {
         lockSku(sku)
         existingResult(runId, sku, requestHash)?.let { return it }
@@ -73,39 +73,47 @@ class AllocationSkuWorker(
             return run.allocations.filter { it.sku == sku }
         }
 
-        val orderIds = orders.map { it.orderId }
-        val existingClaims = orderClaimRepository.findAllById(orderIds)
-        require(existingClaims.isEmpty()) {
-            "Orders have already been submitted: ${existingClaims.map { it.orderId }.joinToString()}."
+        val claims = orderClaimRepository.findAllById(orders.map { it.orderId }.distinct()).associateBy { it.orderId }
+        val storedLines = lineRepository.findAllById(orders.map { it.orderLineId }).associateBy { it.orderLineId }
+        val now = clock.instant()
+        val (eligible, expired) = orders.partition { order ->
+            val claim = checkNotNull(claims[order.orderId]) { "Order '${order.orderId}' was not initialized." }
+            val line = checkNotNull(storedLines[order.orderLineId]) {
+                "Order line '${order.orderLineId}' was not initialized."
+            }
+            require(claim.runId == runId) { "Order '${order.orderId}' belongs to another run." }
+            require(line.orderId == order.orderId && line.sku == sku && order.sku == sku &&
+                line.requestedQuantity == order.quantity && line.requiredDeliveryDate == order.requiredDeliveryDate &&
+                claim.customer == order.customer && claim.priority == order.priority && claim.placedDate == order.placedDate) {
+                "Order line '${order.orderLineId}' does not match its registered document."
+            }
+            claim.canAllocate(now)
         }
-        orderClaimRepository.saveAll(orders.map {
-            AllocationOrderClaimEntity(orderId = it.orderId, runId = runId, sku = sku)
-        })
+        val lineIds = eligible.map { it.orderLineId }
 
-        inboundSupplyService.registerInboundSupply(shipments)
         val inboundSupplyById = lockUnreceivedSupply(sku)
         val stockById = lockStock(sku, asOfDate)
         val calculation = allocationPolicyCalculator.calculate(
-            orders = orders.map {
-                AllocationOrder(
-                    orderId = it.orderId,
-                    customer = it.customer,
-                    sku = it.sku,
-                    quantity = it.requestedQuantity,
-                    priority = it.priority,
-                    placedDate = it.placedDate,
-                    requiredDeliveryDate = it.requiredDeliveryDate
-                )
-            },
+            orders = eligible,
             asOfDate = asOfDate,
             inventory = stockById.values.flatten().map(::toInventoryLotState),
             inboundSupply = inboundSupplyById.values.map(::toInboundSupplyState),
-            stockReservations = loadStockReservations(orderIds).map(::toStockReservationChange),
-            inboundReservations = loadInboundReservations(orderIds).map(::toInboundReservationChange),
+            stockReservations = loadStockReservations(lineIds).map(::toStockReservationChange),
+            inboundReservations = loadInboundReservations(lineIds).map(::toInboundReservationChange),
             registerBackorders = true
         )
         saveCalculationChanges(calculation, stockById, inboundSupplyById)
-        return persistResult(runId, requestHash, sku, calculation.allocations)
+        val skipped = expired.map { order ->
+            AllocationRecord(
+                orderId = order.orderId, orderLineId = order.orderLineId, customer = order.customer,
+                sku = order.sku, priority = order.priority, placedDate = order.placedDate,
+                requiredDeliveryDate = order.requiredDeliveryDate, requestedQuantity = order.quantity,
+                allocatedFromInventory = 0, allocatedFromInbound = 0, backorderedQuantity = 0,
+                status = null, sources = emptyList(),
+                processingOutcome = AllocationProcessingOutcome.SKIPPED_ORDER_EXPIRED
+            )
+        }
+        return persistResult(runId, requestHash, sku, calculation.allocations + skipped)
     }
 
     @Transactional
@@ -113,8 +121,7 @@ class AllocationSkuWorker(
         runId: UUID,
         requestHash: String,
         sku: String,
-        asOfDate: LocalDate,
-        shipments: List<InboundShipment>
+        asOfDate: LocalDate
     ): List<AllocationRecord> {
         lockSku(sku)
         existingResult(runId, sku, requestHash)?.let { return it }
@@ -122,16 +129,24 @@ class AllocationSkuWorker(
             return run.allocations.filter { it.sku == sku }
         }
 
-        inboundSupplyService.registerInboundSupply(shipments)
-        val pendingBackorders = backorderRepository.lockAllBySkuOrderByPriorityFifo(sku)
+        val backorders = backorderRepository.lockAllBySkuOrderByPriorityFifo(sku)
+        val claims = orderClaimRepository.findAllById(backorders.map { it.orderId }).associateBy { it.orderId }
+        val now = clock.instant()
+        val pendingBackorders = backorders.filter { backorder ->
+            val claim = checkNotNull(claims[backorder.orderId]) {
+                "Backorder '${backorder.orderId}' has no allocation order claim."
+            }
+            claim.canAllocate(now)
+        }
         val inboundSupplyById = lockUnreceivedSupply(sku)
         val stockById = lockStock(sku, asOfDate)
         val eligibleSupply = inboundSupplyById.values.filter { it.expectedArrivalDate <= asOfDate }
-        val orderIds = pendingBackorders.map { it.orderId }
+        val lineIds = pendingBackorders.map { it.orderLineId }
         val calculation = allocationPolicyCalculator.calculate(
             orders = pendingBackorders.map {
                 AllocationOrder(
                     orderId = it.orderId,
+                    orderLineId = it.orderLineId,
                     customer = it.customer,
                     sku = it.sku,
                     quantity = it.remainingQuantity,
@@ -143,13 +158,13 @@ class AllocationSkuWorker(
             asOfDate = asOfDate,
             inventory = stockById.values.flatten().map(::toInventoryLotState),
             inboundSupply = eligibleSupply.map(::toInboundSupplyState),
-            stockReservations = loadStockReservations(orderIds).map(::toStockReservationChange),
-            inboundReservations = loadInboundReservations(orderIds).map(::toInboundReservationChange),
+            stockReservations = loadStockReservations(lineIds).map(::toStockReservationChange),
+            inboundReservations = loadInboundReservations(lineIds).map(::toInboundReservationChange),
             registerBackorders = false
         )
-        val backordersByOrderId = pendingBackorders.associateBy { it.orderId }
+        val backordersByLineId = pendingBackorders.associateBy { it.orderLineId }
         val allocations = calculation.allocations.map { allocation ->
-            val backorder = backordersByOrderId.getValue(allocation.orderId)
+            val backorder = backordersByLineId.getValue(allocation.orderLineId)
             val allocated = allocation.allocatedFromInventory + allocation.allocatedFromInbound
             if (allocation.backorderedQuantity == 0) {
                 backorderRepository.delete(backorder)
@@ -171,7 +186,7 @@ class AllocationSkuWorker(
     }
 
     private fun lockSku(sku: String) {
-        stockProjectionLockService.acquireAllocationReadLock()
+        stockProjectionLockRepository.acquireAllocationReadLock()
         skuLockRepository.insertIfMissing(sku)
         check(skuLockRepository.lockBySku(sku) != null) {
             "Could not acquire allocation lock for SKU '$sku'."
@@ -204,7 +219,7 @@ class AllocationSkuWorker(
     }
 
     private fun lockUnreceivedSupply(sku: String): Map<String, InboundSupplyEntity> =
-        inboundSupplyRepository.lockAllUnreceivedBySku(sku).associateBy { it.shipmentId }
+        inboundSupplyRepository.lockAllUnreceivedBySku(sku).associateBy { it.shipmentLineId }
 
     private fun lockStock(sku: String, asOfDate: LocalDate): Map<String, List<StockEntity>> =
         stockRepository.lockAllBySkuIn(listOf(sku))
@@ -215,11 +230,11 @@ class AllocationSkuWorker(
                     .thenBy { it.warehouseCode })
             }
 
-    private fun loadStockReservations(orderIds: Collection<String>): List<StockReservationEntity> =
-        if (orderIds.isEmpty()) emptyList() else stockReservationRepository.lockAllByOrderIdIn(orderIds)
+    private fun loadStockReservations(lineIds: Collection<String>): List<StockReservationEntity> =
+        if (lineIds.isEmpty()) emptyList() else stockReservationRepository.lockAllByOrderLineIdIn(lineIds)
 
-    private fun loadInboundReservations(orderIds: Collection<String>): List<InboundReservationEntity> =
-        if (orderIds.isEmpty()) emptyList() else inboundReservationRepository.lockAllByOrderIdIn(orderIds)
+    private fun loadInboundReservations(lineIds: Collection<String>): List<InboundReservationEntity> =
+        if (lineIds.isEmpty()) emptyList() else inboundReservationRepository.lockAllByOrderLineIdIn(lineIds)
 
     private fun saveCalculationChanges(
         calculation: AllocationCalculationResult,
@@ -231,13 +246,14 @@ class AllocationSkuWorker(
             stocks.getValue(lot.stockId).quantityReserved = lot.quantityReserved
         }
         calculation.inboundSupplies.forEach { supply ->
-            inboundSupplyById.getValue(supply.shipmentId).quantityReserved = supply.quantityReserved
+            inboundSupplyById.getValue(supply.shipmentLineId).quantityReserved = supply.quantityReserved
         }
         stockReservationRepository.saveAll(
             calculation.stockReservations.map { reservation ->
                 StockReservationEntity(
                     id = reservation.id ?: UUID.randomUUID(),
                     orderId = reservation.orderId,
+                    orderLineId = reservation.orderLineId,
                     stockId = reservation.stockId,
                     quantity = reservation.quantity,
                     requiredDeliveryDate = reservation.requiredDeliveryDate,
@@ -246,14 +262,16 @@ class AllocationSkuWorker(
             }
         )
         inboundSupplyRepository.saveAll(
-            calculation.inboundSupplies.map { inboundSupplyById.getValue(it.shipmentId) }
+            calculation.inboundSupplies.map { inboundSupplyById.getValue(it.shipmentLineId) }
         )
         inboundReservationRepository.saveAll(
             calculation.inboundReservations.map { reservation ->
                 InboundReservationEntity(
                     id = reservation.id ?: UUID.randomUUID(),
                     orderId = reservation.orderId,
+                    orderLineId = reservation.orderLineId,
                     shipmentId = reservation.shipmentId,
+                    shipmentLineId = reservation.shipmentLineId,
                     quantity = reservation.quantity,
                     requiredDeliveryDate = reservation.requiredDeliveryDate,
                     createdAt = reservation.createdAt ?: Instant.now()
@@ -264,6 +282,7 @@ class AllocationSkuWorker(
             calculation.backordersToRegister.map { backorder ->
                 OpenBackorderEntity(
                     orderId = backorder.orderId,
+                    orderLineId = backorder.orderLineId,
                     customer = backorder.customer,
                     sku = backorder.sku,
                     priority = backorder.priority,

@@ -6,7 +6,9 @@ import java.util.UUID
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.DemandOrder
+import nl.stockio.allocation.domain.api.data.DemandOrderLine
 import nl.stockio.allocation.domain.api.data.InboundShipment
+import nl.stockio.allocation.domain.api.data.InboundShipmentLine
 import nl.stockio.product.infra.ProductRepository
 import org.springframework.amqp.rabbit.core.RabbitTemplate
 import org.springframework.beans.factory.annotation.Value
@@ -38,27 +40,39 @@ class AllocationRequestPublisher(
         val requestId = UUID.randomUUID()
         val products = productRepository.findAll().toList()
         val demandOrders = mutableListOf<DemandOrder>()
-        val inboundShipments = mutableListOf<InboundShipment>() // Placeholder for inbound shipments if needed
+        val inboundShipments = mutableListOf<InboundShipment>()
         for (i in 1..5) {
             val product = products.randomOrNull() ?: error("No products found in the repository.")
+            val quantity = listOf(1, 2, 3, 5, 8, 13, 21).random()
+            val arrivalDate = today.plusDays(listOf(1L, 2L, 3L).random())
             demandOrders.add(
                 DemandOrder(
-                    orderId = "rabbit-demo-$requestId",
+                    orderId = "rabbit-demo-$requestId-$i",
                     customer = "RabbitMQ Demo",
-                    sku = product.sku,
-                    requestedQuantity = listOf(1, 2, 3, 5, 8, 13, 21).random(),
                     priority = 1,
                     placedDate = today,
-                    requiredDeliveryDate = today
+                    lines = listOf(
+                        DemandOrderLine(
+                            orderLineId = "rabbit-order-line-$requestId-$i",
+                            sku = product.sku,
+                            requestedQuantity = quantity,
+                            requiredDeliveryDate = today.plusDays(3)
+                        )
+                    )
                 )
             )
             inboundShipments.add(
                 InboundShipment(
-                    shipmentId = "rabbit-demo-$requestId",
-                    sku = product.sku,
-                    expectedArrivalDate = today.plusDays(listOf(1L, 2L, 3L).random()),
-                    expectedQuantity = listOf(1, 2, 3, 5, 8, 13, 21).random(),
-                    warehouseCode = "MAIN"
+                    shipmentId = "rabbit-demo-$requestId-$i",
+                    lines = listOf(
+                        InboundShipmentLine(
+                            shipmentLineId = "rabbit-shipment-line-$requestId-$i",
+                            sku = product.sku,
+                            expectedArrivalDate = arrivalDate,
+                            expectedQuantity = quantity,
+                            warehouseCode = "MAIN"
+                        )
+                    )
                 )
             )
         }
@@ -76,7 +90,4 @@ class AllocationRequestPublisher(
         logger.info { "Published sample allocation request '$requestId' to RabbitMQ." }
     }
 
-    private companion object {
-        const val SAMPLE_SKU = "MAKI-ZALM"
-    }
 }

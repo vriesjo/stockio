@@ -2,10 +2,12 @@ package nl.stockio.product.domain.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.security.MessageDigest
+import java.util.UUID
 import kotlin.math.sqrt
 import nl.stockio.allocation.domain.api.data.AllocationRequest
 import nl.stockio.allocation.domain.api.data.AllocationRunType
 import nl.stockio.allocation.domain.api.data.DemandOrder
+import nl.stockio.allocation.domain.api.data.DemandOrderLine
 import nl.stockio.allocation.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.domain.service.AllocationService
 import nl.stockio.product.domain.model.ProductAllocationRequest
@@ -20,6 +22,13 @@ import nl.stockio.product.infra.ProductRepository
 import nl.stockio.product.infra.ProductVectorRepository
 import org.springframework.stereotype.Service
 
+/**
+ * Service responsible for allocating products based on a product query.
+ *
+ * This service handles the allocation of products by first checking for exact matches in the product catalog.
+ * If no exact match is found, it uses embeddings to find similar products and may fall back to Tavily search results.
+ * The service also manages the persistence of knowledge embeddings for future allocations.
+ */
 @Service
 class ProductAllocationService(
     private val tavilySearchClient: TavilySearchClient,
@@ -189,11 +198,18 @@ class ProductAllocationService(
                 DemandOrder(
                     orderId = request.orderId,
                     customer = request.customer,
-                    sku = selected.sku,
-                    requestedQuantity = request.quantity,
                     priority = request.priority,
                     placedDate = request.placedDate,
-                    requiredDeliveryDate = request.requiredDeliveryDate
+                    lines = listOf(
+                        DemandOrderLine(
+                            orderLineId = UUID.nameUUIDFromBytes(
+                                "stockio:product-order-line:${request.orderId}".toByteArray(Charsets.UTF_8)
+                            ).toString(),
+                            sku = selected.sku,
+                            requestedQuantity = request.quantity,
+                            requiredDeliveryDate = request.requiredDeliveryDate
+                        )
+                    )
                 )
             )
         )
