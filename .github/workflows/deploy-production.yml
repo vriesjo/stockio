@@ -52,6 +52,7 @@ jobs:
       url: https://itzitzo-auth-gateway.example.com
     permissions:
       contents: read
+      actions: read
       security-events: write  # For uploading SARIF results
       id-token: write  # For AWS OIDC (if using)
     
@@ -149,7 +150,7 @@ jobs:
           exit-code: '1'  # Fail on critical/high vulnerabilities
           
       - name: Upload service scan results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: 'trivy-service-results.sarif'
@@ -165,7 +166,7 @@ jobs:
           exit-code: '1'  # Fail on critical/high vulnerabilities
           
       - name: Upload UI scan results
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: 'trivy-ui-results.sarif'
