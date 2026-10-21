@@ -140,7 +140,7 @@ jobs:
           docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_UI }}:production-latest
           
       - name: Scan service image for vulnerabilities
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.image-tags.outputs.service-image }}
           format: 'sarif'
@@ -156,7 +156,7 @@ jobs:
           category: 'service-image'
           
       - name: Scan UI image for vulnerabilities
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.image-tags.outputs.ui-image }}
           format: 'sarif'
