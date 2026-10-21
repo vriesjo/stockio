@@ -1,10 +1,33 @@
-# Stockio Architecture
+# Stockio Software Architecture
+
+## Stack
+- **Backend:** Spring Boot (Kotlin)
+- **Frontend:** React, NextJs
+- **Database:** PostgreSQL (Spring Data JPA, Flyway, pgvector)
+- **Testing:** JUnit, Testcontainers, Mockk
+- **Build:** Gradle
 
 ## Overview
 
-Stockio is a Kotlin/Spring application for allocating demand against live inventory and expected inbound supply. It persists allocation results and reservations in PostgreSQL, maintains daily aggregate and lot-level stock projections, synchronizes today's projection to live stock, and generates Excel reports. The same core services are exposed through Spring AI MCP tools and a local HTTP API.
+Stockio is a Kotlin/Spring application for allocating demand against live inventory and expected inbound supply.
+It persists allocation results and reservations in PostgreSQL, maintains daily aggregate and lot-level stock projections,
+synchronizes today's projection to live stock, and generates Excel reports.
+The same core services are exposed through Spring AI MCP tools and a local HTTP API.
 
-PostgreSQL is the system of record. Flyway manages the schema; JPA repositories handle operational data and projection locking, while `StockSnapshotRepository` uses `JdbcTemplate` to read and replace snapshots in the same transaction. Snapshots are not JPA-managed entities, so repeated rebuilds do not require clearing the persistence context. Daily snapshots are derived projections from live stock and persisted reservations, not an independent source of inventory truth.
+- PostgreSQL is the system of record.
+- Flyway manages the schema;
+- JPA repositories handle operational data and projection locking, while `StockSnapshotRepository` uses `JdbcTemplate`
+to read and replace snapshots in the same transaction. Snapshots are not JPA-managed entities, so repeated rebuilds do not require clearing the persistence context.
+- Daily snapshots are derived projections from live stock and persisted reservations, not an independent source of inventory truth.
+
+### Design Patterns
+
+- **Hexagonal Architecture (Api, Ports, Infra):** Clear separation of concerns between the HTTP layer, business logic, and persistence.
+- **Dependency Injection:** Spring's @Service, @Repository, and constructor injection for loose coupling and testability.
+- **DTOs (Data Transfer Objects):** Used for request and response payloads to decouple API and domain models.
+- **Singleton:** Spring beans are singletons by default, ensuring one instance per application context.
+- **Ports and adapters:** Application code depends on repository and external-service ports; Spring/JPA, JDBC, HTTP, RabbitMQ, JobRunr, and filesystem implementations sit behind those ports.
+- **Configuration/Properties:** Externalized configuration using YAML and @ConfigurationProperties for environment flexibility.
 
 ## Modules and technology
 
@@ -37,9 +60,149 @@ The service runs as a servlet application and exposes MCP tools through Spring A
 ## C4 - level 3 component diagram
 
 This C4 level-3 view opens the `stockio-service` container into its application
-components. Related classes are grouped for readability; the arrows represent
-dependencies, not execution order. JobRunr is an embedded scheduler/worker library,
-not a separate external service. PostgreSQL stores both application and JobRunr data.
+components and separates the hexagonal boundaries:
+
+- **Inbound adapters** translate HTTP, MCP, messaging, and scheduled triggers.
+- **Application services** orchestrate use cases and transaction boundaries.
+- **Domain services and policies** contain allocation and projection rules.
+- **Outbound ports** define persistence and external-service contracts.
+- **Outbound adapters** implement those ports using JPA, JDBC, HTTP, RabbitMQ,
+  JobRunr, and the filesystem.
+
+The core depends on ports rather than PostgreSQL, RabbitMQ, Tavily, Ollama, or
+file formats directly. JobRunr is embedded infrastructure; PostgreSQL stores both
+operational data and JobRunr data.
+
+```mermaid
+flowchart LR
+    Rest["REST clients"] --> RestAdapters
+    Mcp["MCP clients"] --> McpAdapters
+    Rabbit["RabbitMQ"] --> MessageAdapter
+    Scheduler["Cron / JobRunr"] --> ScheduledAdapter
+    Csv["Configured CSV"] --> FileAdapter
+    FileAdapter -->|"Writes"| Reports["Report directory"]
+    SearchAdapter -->|"Queries"| Tavily["Tavily Search API"]
+    SearchAdapter -->|"Embeds"| Ollama["Ollama Embedding API"]
+    PersistenceAdapters -->|"Reads and writes"| Database[("PostgreSQL + pgvector<br/>operational data + JobRunr")]
+
+    subgraph Core["stockio-service - Kotlin / Spring Boot"]
+        subgraph Inbound["Inbound adapters"]
+            RestAdapters["AllocationController<br/>Spring MVC<br/>Async jobs, status, reservations"]
+            ProductAdapter["ProductAllocationController<br/>Spring MVC<br/>Product-by-name allocation"]
+            AdminAdapter["AllocationAdminController<br/>Spring MVC<br/>CSV, reports, retry cleanup"]
+            McpAdapters["AllocationTools / ProductAllocationTools<br/>Spring AI @Tool<br/>MCP use cases"]
+            MessageAdapter["AllocationRabbitListener<br/>Spring AMQP<br/>Queue intake and retry handoff"]
+            ScheduledAdapter["ReservationExpiryJob / StockLedgerSyncJob<br/>JobRunr + scheduling<br/>Recurring triggers"]
+        end
+
+        subgraph UseCases["Application use cases"]
+            AllocationJob["AllocationJob / AllocationJobService<br/>Executes jobs, status, cleanup"]
+            ProductFlow["ProductAllocationService<br/>Resolves product, starts allocation"]
+            AllocationFlow["AllocationProcessingService<br/>Allocates, then refreshes forecast"]
+            LedgerFlow["StockLedgerProcessor<br/>Applies today's forecast to live stock"]
+            ReservationFlow["ReservationExpiryService / CleanupService<br/>Expires overdue holds"]
+            QueryFlow["OrderReservationService / LedgerSyncStatusService<br/>Read-only lifecycle and freshness"]
+            FileFlow["AllocationExcelService / ExcelReportProcessor<br/>CSV import and Excel output"]
+        end
+
+        subgraph Domain["Domain services and policies"]
+            RunDomain["AllocationService / AllocationRunService<br/>Validation, idempotency, run state"]
+            DocumentDomain["AllocationDocumentService / InboundSupplyService<br/>Order, shipment, and supply ownership"]
+            SkuDomain["AllocationSkuWorker<br/>Per-SKU transactional allocation"]
+            PolicyDomain["AllocationPolicyCalculator<br/>Priority, FIFO, eligibility, backorders"]
+            ProjectionDomain["StockProjectionProcessor<br/>Aggregate and lot-level forecasts"]
+        end
+
+        subgraph OutPorts["Outbound ports"]
+            AllocationPort["Allocation repository ports<br/>Runs, records, sources, locks, claims, backorders"]
+            ReservationPort["Reservation repository ports<br/>Shipments, supply, reservations"]
+            StockPort["Stock repository ports<br/>Live stock, locks, snapshots, sync status"]
+            ProductPort["ProductRepository / ProductVectorRepository<br/>Catalog and similarity search"]
+            RuntimePort["Job result / runtime ports<br/>Completion persistence and coordination"]
+            SearchPort["TavilySearchClient / OllamaEmbeddingClient<br/>Search and embeddings"]
+            FilePort["CSV / report file ports<br/>Configured input and output"]
+        end
+
+        subgraph OutAdapters["Outbound adapters"]
+            PersistenceAdapters["Spring Data JPA + JdbcTemplate<br/>PostgreSQL entities, locks, snapshots, pgvector"]
+            SearchAdapter["Tavily / Ollama HTTP clients<br/>Timeouts and response validation"]
+            JobAdapter["JobRunr integration<br/>Execution, retries, job storage"]
+            AmqpAdapter["AllocationEventPublisher / Rabbit configuration<br/>Event publication and fallback"]
+            FileAdapter["CSV reader / Apache POI<br/>Filesystem import and .xlsx reports"]
+        end
+    end
+
+    RestAdapters -->|"Calls"| AllocationJob
+    RestAdapters -->|"Reads"| QueryFlow
+    ProductAdapter -->|"Calls"| ProductFlow
+    AdminAdapter -->|"Calls"| FileFlow
+    AdminAdapter -->|"Calls"| AllocationJob
+    McpAdapters -->|"Calls"| ProductFlow
+    McpAdapters -->|"Calls"| AllocationFlow
+    McpAdapters -->|"Calls"| LedgerFlow
+    McpAdapters -->|"Reads"| QueryFlow
+    McpAdapters -->|"Calls"| FileFlow
+    MessageAdapter -->|"Calls"| AllocationJob
+    ScheduledAdapter -->|"Triggers"| ReservationFlow
+    ScheduledAdapter -->|"Triggers"| LedgerFlow
+
+    AllocationJob -->|"Executes"| AllocationFlow
+    AllocationJob -->|"Persists completion"| RuntimePort
+    ProductFlow -->|"Starts NEW_DEMAND"| AllocationFlow
+    AllocationFlow -->|"Coordinates"| RunDomain
+    AllocationFlow -->|"Refreshes"| ProjectionDomain
+    LedgerFlow -->|"Uses"| ReservationFlow
+    LedgerFlow -->|"Rebuilds and applies"| ProjectionDomain
+    ReservationFlow -->|"Refreshes"| ProjectionDomain
+    QueryFlow --> ReservationPort
+    QueryFlow --> StockPort
+    FileFlow --> FilePort
+    FileFlow --> RuntimePort
+
+    RunDomain --> DocumentDomain
+    RunDomain --> SkuDomain
+    SkuDomain --> PolicyDomain
+    SkuDomain --> AllocationPort
+    SkuDomain --> ReservationPort
+    SkuDomain --> StockPort
+    DocumentDomain --> AllocationPort
+    DocumentDomain --> ReservationPort
+    ProjectionDomain --> StockPort
+    ProjectionDomain --> ReservationPort
+    ProductFlow --> ProductPort
+    ProductFlow --> SearchPort
+
+    AllocationPort --> PersistenceAdapters
+    ReservationPort --> PersistenceAdapters
+    StockPort --> PersistenceAdapters
+    ProductPort --> PersistenceAdapters
+    RuntimePort --> PersistenceAdapters
+    RuntimePort --> JobAdapter
+    SearchPort --> SearchAdapter
+    FilePort --> FileAdapter
+    MessageAdapter -->|"Failure fallback"| AmqpAdapter
+    AllocationJob -->|"Schedules fallback"| JobAdapter
+    AllocationJob -->|"Uses"| RuntimePort
+    AmqpAdapter --> Rabbit
+    JobAdapter --> Database
+    PersistenceAdapters --> Database
+
+    classDef inbound fill:#e3f2fd,stroke:#1565c0
+    classDef usecase fill:#e8f5e9,stroke:#2e7d32
+    classDef domain fill:#fff3e0,stroke:#ef6c00
+    classDef port fill:#f3e5f5,stroke:#7b1fa2
+    classDef adapter fill:#fce4ec,stroke:#ad1457
+    classDef external fill:#eeeeee,stroke:#616161
+    class RestAdapters,ProductAdapter,AdminAdapter,McpAdapters,MessageAdapter,ScheduledAdapter inbound
+    class AllocationJob,ProductFlow,AllocationFlow,LedgerFlow,ReservationFlow,QueryFlow,FileFlow usecase
+    class RunDomain,DocumentDomain,SkuDomain,PolicyDomain,ProjectionDomain domain
+    class AllocationPort,ReservationPort,StockPort,ProductPort,RuntimePort,SearchPort,FilePort port
+    class PersistenceAdapters,SearchAdapter,JobAdapter,AmqpAdapter,FileAdapter adapter
+    class Rest,Mcp,Rabbit,Scheduler,Csv,Reports,Tavily,Ollama,Database external
+```
+
+The following runtime collaboration view keeps the more detailed event and job
+relationships. It is complementary to the hexagonal dependency view above:
 
 ```mermaid
 flowchart TB
@@ -126,7 +289,7 @@ behavior is described in the [RabbitMQ flow](#rabbitmq-intake-and-retry-flow).
 These components run within one Spring Boot application, not as separately
 deployed services.
 
-### Component responsibilities
+### Component responsibilities (hexagonal mapping)
 
 | Component | Responsibility |
 | --- | --- |
@@ -153,6 +316,13 @@ deployed services.
 | `AllocationExcelService` | Parses the configured CSV and creates a validated allocation request. |
 | `ExcelReportProcessor` | Writes allocation details, sources, pivot tables, and formula summaries to an `.xlsx` workbook. |
 | Repositories and `JdbcTemplate` | Persist operational state, enforce locks, and read/write snapshot data. |
+
+The repository interfaces in `allocation/domain/port`, `reservation/domain/port`,
+and `stock/domain/port` are the outbound ports shown in the diagram. Their
+implementations in `allocation/infra`, `reservation/infra`, `product/infra`, and
+`stock/infra` are outbound adapters. Some current port signatures still expose
+infra entity types; replacing those with domain persistence models would make the
+hexagonal boundary stricter without changing the use-case components.
 
 ## Interfaces
 

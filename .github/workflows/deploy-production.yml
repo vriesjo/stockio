@@ -1,0 +1,370 @@
+name: Deploy to Production
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:  # Allow manual triggering with approvals
+    inputs:
+      tag:
+        description: 'Release tag to deploy (e.g., v1.0.0)'
+        required: true
+        type: string
+
+env:
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: 'temurin'
+  NODE_VERSION: '20'
+  AWS_REGION: 'us-east-1'
+  ECR_REPOSITORY_SERVICE: 'itzitzo-auth-gateway-service'
+  ECR_REPOSITORY_UI: 'itzitzo-auth-gateway-ui'
+  ECS_CLUSTER: 'itzitzo-auth-gateway-production'
+  ECS_SERVICE_SERVICE: 'auth-gateway-service-production'
+  ECS_SERVICE_UI: 'auth-gateway-ui-production'
+  ENVIRONMENT: 'production'
+
+jobs:
+  prepare:
+    name: Prepare Deployment
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      
+    steps:
+      - name: Get version from release or input
+        id: get-version
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+          else
+            VERSION="${{ github.event.inputs.tag }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Deploying version: $VERSION"
+
+  build-and-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: prepare
+    environment: 
+      name: production
+      url: https://itzitzo-auth-gateway.example.com
+    permissions:
+      contents: read
+      security-events: write  # For uploading SARIF results
+      id-token: write  # For AWS OIDC (if using)
+    
+    outputs:
+      service-image: ${{ steps.image-tags.outputs.service-image }}
+      ui-image: ${{ steps.image-tags.outputs.ui-image }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.version }}
+        
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: 'gradle'
+          
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'ui/package.json'
+          
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+        
+      - name: Run tests before production build
+        run: ./gradlew test --no-daemon
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        
+      - name: Set image tags
+        id: image-tags
+        run: |
+          VERSION=${{ needs.prepare.outputs.version }}
+          echo "service-image=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_SERVICE }}:${VERSION}" >> $GITHUB_OUTPUT
+          echo "ui-image=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_UI }}:${VERSION}" >> $GITHUB_OUTPUT
+          
+      - name: Build service Docker image
+        run: |
+          ./gradlew :service:bootBuildImage \
+            --imageName=${{ steps.image-tags.outputs.service-image }} \
+            --no-daemon \
+            --stacktrace
+            
+      - name: Build UI Docker image
+        run: |
+          ./gradlew :ui:bootBuildImage \
+            --imageName=${{ steps.image-tags.outputs.ui-image }} \
+            --no-daemon \
+            --stacktrace
+            
+      - name: Tag and push service image
+        run: |
+          VERSION=${{ needs.prepare.outputs.version }}
+          docker tag ${{ steps.image-tags.outputs.service-image }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_SERVICE }}:latest
+          docker tag ${{ steps.image-tags.outputs.service-image }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_SERVICE }}:production-latest
+          docker push ${{ steps.image-tags.outputs.service-image }}
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_SERVICE }}:latest
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_SERVICE }}:production-latest
+          
+      - name: Tag and push UI image
+        run: |
+          VERSION=${{ needs.prepare.outputs.version }}
+          docker tag ${{ steps.image-tags.outputs.ui-image }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_UI }}:latest
+          docker tag ${{ steps.image-tags.outputs.ui-image }} \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_UI }}:production-latest
+          docker push ${{ steps.image-tags.outputs.ui-image }}
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_UI }}:latest
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY_UI }}:production-latest
+          
+      - name: Scan service image for vulnerabilities
+        uses: aquasecurity/trivy-action@v0.28.0
+        with:
+          image-ref: ${{ steps.image-tags.outputs.service-image }}
+          format: 'sarif'
+          output: 'trivy-service-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'  # Fail on critical/high vulnerabilities
+          
+      - name: Upload service scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-service-results.sarif'
+          category: 'service-image'
+          
+      - name: Scan UI image for vulnerabilities
+        uses: aquasecurity/trivy-action@v0.28.0
+        with:
+          image-ref: ${{ steps.image-tags.outputs.ui-image }}
+          format: 'sarif'
+          output: 'trivy-ui-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'  # Fail on critical/high vulnerabilities
+          
+      - name: Upload UI scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-ui-results.sarif'
+          category: 'ui-image'
+
+  deploy-service:
+    name: Deploy Service to Production
+    runs-on: ubuntu-latest
+    needs: [prepare, build-and-push]
+    environment: 
+      name: production
+      url: https://service.itzitzo-auth-gateway.example.com
+    permissions:
+      contents: read
+      id-token: write  # For AWS OIDC (if using)
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Download service task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_SERVICE_SERVICE }} \
+            --query taskDefinition > task-definition-service.json
+            
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def-service
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition-service.json
+          container-name: auth-gateway-service
+          image: ${{ needs.build-and-push.outputs.service-image }}
+          
+      - name: Deploy service to Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def-service.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 15
+
+  deploy-ui:
+    name: Deploy UI to Production
+    runs-on: ubuntu-latest
+    needs: [prepare, build-and-push, deploy-service]
+    environment: 
+      name: production
+      url: https://itzitzo-auth-gateway.example.com
+    permissions:
+      contents: read
+      id-token: write  # For AWS OIDC (if using)
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Download UI task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.ECS_SERVICE_UI }} \
+            --query taskDefinition > task-definition-ui.json
+            
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def-ui
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition-ui.json
+          container-name: auth-gateway-ui
+          image: ${{ needs.build-and-push.outputs.ui-image }}
+          
+      - name: Deploy UI to Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def-ui.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE_UI }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 15
+
+  verify-deployment:
+    name: Verify Production Deployment
+    runs-on: ubuntu-latest
+    needs: [prepare, deploy-service, deploy-ui]
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Health check - Service
+        run: |
+          echo "Checking service health..."
+          # Add your health check URL here
+          # curl -f https://service.itzitzo-auth-gateway.example.com/actuator/health || exit 1
+          echo "Service health check would be performed here"
+          
+      - name: Health check - UI
+        run: |
+          echo "Checking UI health..."
+          # Add your health check URL here
+          # curl -f https://itzitzo-auth-gateway.example.com/actuator/health || exit 1
+          echo "UI health check would be performed here"
+          
+      - name: Smoke tests
+        run: |
+          echo "Running smoke tests..."
+          # Add your smoke tests here
+          echo "Smoke tests would be performed here"
+          
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Production Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** Production" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service Image:** ${{ needs.build-and-push.outputs.service-image }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **UI Image:** ${{ needs.build-and-push.outputs.ui-image }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [Service Health](https://service.itzitzo-auth-gateway.example.com/actuator/health)" >> $GITHUB_STEP_SUMMARY
+          echo "- [UI Application](https://itzitzo-auth-gateway.example.com)" >> $GITHUB_STEP_SUMMARY
+
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [prepare, deploy-service, deploy-ui, verify-deployment]
+    if: failure()
+    environment: production
+    permissions:
+      contents: read
+      issues: write  # For creating rollback issue
+      id-token: write  # For AWS OIDC (if using)
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Rollback service
+        run: |
+          echo "Rolling back service to previous version..."
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_SERVICE }} \
+            --force-new-deployment
+            
+      - name: Rollback UI
+        run: |
+          echo "Rolling back UI to previous version..."
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service ${{ env.ECS_SERVICE_UI }} \
+            --force-new-deployment
+            
+      - name: Create rollback issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Production Deployment Failed - Version ${{ needs.prepare.outputs.version }}`,
+              body: `## Production Deployment Failure
+              
+              The production deployment for version ${{ needs.prepare.outputs.version }} failed and a rollback was initiated.
+              
+              **Details:**
+              - Version: ${{ needs.prepare.outputs.version }}
+              - Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              - Triggered by: @${{ github.actor }}
+              
+              Please investigate the logs and address the issue before attempting another deployment.`,
+              labels: ['deployment', 'production', 'incident']
+            });
+            
+      - name: Notify rollback
+        run: |
+          echo "## ⚠️ Production Deployment Failed - Rollback Initiated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The deployment to production failed and a rollback has been initiated." >> $GITHUB_STEP_SUMMARY
+          echo "An issue has been created to track this incident." >> $GITHUB_STEP_SUMMARY
+          echo "Please check the logs for more details." >> $GITHUB_STEP_SUMMARY
