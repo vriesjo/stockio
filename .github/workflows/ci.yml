@@ -2,275 +2,152 @@ name: CI
 
 on:
   push:
-    branches: [ '**' ]
+    branches:
+      - '**'
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   JAVA_VERSION: '21'
-  JAVA_DISTRIBUTION: 'temurin'
-  NODE_VERSION: '20'
+  NODE_VERSION: '22.18.0'
+  UI_DIRECTORY: stockio-api/src/main/kotlin/nl/stockio/ui
 
 jobs:
-  lint:
-    name: Code Quality Checks
+  gradle:
+    name: Gradle checks
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-          cache: 'gradle'
-          
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-        
-      - name: Run ktlint checks
-        run: ./gradlew ktlintCheck --no-daemon --stacktrace
-        
-      - name: Upload ktlint reports
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ktlint-reports
-          path: |
-            **/build/reports/ktlint/
-          retention-days: 7
 
-  build:
-    name: Build Application
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    
     steps:
-      - name: Checkout code
+      - name: Check out repository
         uses: actions/checkout@v4
-        
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-          cache: 'gradle'
-          
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: 'ui/package.json'
-          
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-        
-      - name: Build with Gradle
-        run: ./gradlew build -x test --no-daemon --stacktrace
-        
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-artifacts
-          path: |
-            service/build/libs/*.jar
-            ui/build/libs/*.jar
-          retention-days: 7
 
-  test:
-    name: Run Tests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write  # For publishing test results
-      pull-requests: read  # For resolving the pull request associated with the test commit
-    
-    services:
-      postgres:
-        image: postgres:17.0
-        env:
-          POSTGRES_PASSWORD: authgateway
-          POSTGRES_USER: authgateway
-          POSTGRES_DB: authgateway
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Set up JDK
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-          cache: 'gradle'
-          
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: 'ui/package.json'
-          
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-        
-      - name: Run unit tests
-        run: ./gradlew test --no-daemon --stacktrace
-        env:
-          DB_URL: jdbc:postgresql://localhost:5432/authgateway
-          DB_USERNAME: authgateway
-          DB_PASSWORD: authgateway
-          
-      - name: Upload test reports
+          cache: gradle
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Run service and API checks
+        run: ./gradlew :stockio-service:check :stockio-api:check --no-daemon --stacktrace
+
+      - name: Upload Gradle test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports
-          path: |
-            **/build/test-results/test/**/*.xml
-            **/build/reports/tests/test/
+          name: gradle-test-reports
+          if-no-files-found: ignore
           retention-days: 7
-          
-      - name: Publish test results
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: EnricoMi/publish-unit-test-result-action@v2
+          path: |
+            stockio-service/build/test-results/**
+            stockio-service/build/reports/tests/**
+            stockio-api/build/test-results/**
+            stockio-api/build/reports/tests/**
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: stockio-api/src/main/kotlin/nl/stockio/ui
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          files: |
-            **/build/test-results/test/**/*.xml
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: stockio-api/src/main/kotlin/nl/stockio/ui/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Type-check frontend
+        run: npm run typecheck
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Upload frontend build output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          if-no-files-found: ignore
+          retention-days: 7
+          path: stockio-api/src/main/kotlin/nl/stockio/ui/.next
 
   security:
-    name: Security Checks
+    name: Filesystem security scan
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+
     permissions:
       contents: read
-      security-events: write  # For uploading SARIF results
-    
+      security-events: write
+
     steps:
-      - name: Checkout code
+      - name: Check out repository
         uses: actions/checkout@v4
-        
-      - name: Set up JDK
-        uses: actions/setup-java@v4
+
+      - name: Scan repository with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
         with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-          cache: 'gradle'
-          
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-        
-      - name: Run OWASP Dependency Check
-        run: |
-          # Add dependency-check plugin if not already present
-          # For now, we'll use GitHub's built-in security scanning
-          echo "Using GitHub security scanning"
-          
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Upload Trivy results
         if: always()
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: 'trivy-results.sarif'
+          sarif_file: trivy-results.sarif
 
-  build-docker:
-    name: Build Docker Images
+  summary:
+    name: CI summary
     runs-on: ubuntu-latest
-    needs: [lint, build, test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-          cache: 'gradle'
-          
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: 'ui/package.json'
-          
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-        
-      - name: Build service Docker image
-        run: ./gradlew :service:bootBuildImage --imageName=itzitzo-auth-gateway-service:${{ github.sha }} --no-daemon
-        
-      - name: Build UI Docker image
-        run: ./gradlew :ui:bootBuildImage --imageName=itzitzo-auth-gateway-ui:${{ github.sha }} --no-daemon
-        
-      - name: Save Docker images as artifacts
-        run: |
-          docker save itzitzo-auth-gateway-service:${{ github.sha }} | gzip > service-image.tar.gz
-          docker save itzitzo-auth-gateway-ui:${{ github.sha }} | gzip > ui-image.tar.gz
-          
-      - name: Upload Docker images
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-images
-          path: |
-            service-image.tar.gz
-            ui-image.tar.gz
-          retention-days: 7
+    needs: [gradle, frontend, security]
+    if: always()
 
-  report:
-    name: Build Summary
-    runs-on: ubuntu-latest
-    needs: [lint, build, test, security]
-    if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
-    permissions:
-      contents: read
-    
     steps:
-      - name: Check job statuses
+      - name: Write summary
+        env:
+          GRADLE_RESULT: ${{ needs.gradle.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
         run: |
-          echo "## CI Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Lint | ${{ needs.lint.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Test | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Security | ${{ needs.security.result }} |" >> $GITHUB_STEP_SUMMARY
-          
-          if [[ "${{ needs.lint.result }}" != "success" ]] || \
-             [[ "${{ needs.build.result }}" != "success" ]] || \
-             [[ "${{ needs.test.result }}" != "success" ]] || \
-             [[ "${{ needs.security.result }}" != "success" ]]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ **Some jobs failed. Please review the logs above.**" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## CI summary"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Gradle | ${GRADLE_RESULT} |"
+            echo "| Frontend | ${FRONTEND_RESULT} |"
+            echo "| Security | ${SECURITY_RESULT} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$GRADLE_RESULT" != "success" ] ||
+             [ "$FRONTEND_RESULT" != "success" ] ||
+             [ "$SECURITY_RESULT" != "success" ]; then
             exit 1
-          else
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **All checks passed successfully!**" >> $GITHUB_STEP_SUMMARY
           fi
