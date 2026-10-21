@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '21'
+  NODE_VERSION: '22.18.0'
+  UI_DIRECTORY: stockio-api/src/main/kotlin/nl/stockio/ui
+
+jobs:
+  gradle:
+    name: Gradle checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Run service and API checks
+        run: ./gradlew :stockio-service:check :stockio-api:check --no-daemon --stacktrace
+
+      - name: Upload Gradle test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-test-reports
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            stockio-service/build/test-results/**
+            stockio-service/build/reports/tests/**
+            stockio-api/build/test-results/**
+            stockio-api/build/reports/tests/**
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: stockio-api/src/main/kotlin/nl/stockio/ui
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: stockio-api/src/main/kotlin/nl/stockio/ui/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Type-check frontend
+        run: npm run typecheck
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Upload frontend build output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          if-no-files-found: ignore
+          retention-days: 7
+          path: stockio-api/src/main/kotlin/nl/stockio/ui/.next
+
+  security:
+    name: Filesystem security scan
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Scan repository with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      - name: Upload Trivy results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
+  summary:
+    name: CI summary
+    runs-on: ubuntu-latest
+    needs: [gradle, frontend, security]
+    if: always()
+
+    steps:
+      - name: Write summary
+        env:
+          GRADLE_RESULT: ${{ needs.gradle.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: |
+          {
+            echo "## CI summary"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Gradle | ${GRADLE_RESULT} |"
+            echo "| Frontend | ${FRONTEND_RESULT} |"
+            echo "| Security | ${SECURITY_RESULT} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$GRADLE_RESULT" != "success" ] ||
+             [ "$FRONTEND_RESULT" != "success" ] ||
+             [ "$SECURITY_RESULT" != "success" ]; then
+            exit 1
+          fi
