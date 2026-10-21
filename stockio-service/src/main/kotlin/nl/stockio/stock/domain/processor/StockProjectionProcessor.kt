@@ -2,7 +2,7 @@ package nl.stockio.stock.domain.processor
 
 import java.time.Clock
 import java.time.LocalDate
-import nl.stockio.allocation.domain.api.data.ReservationStatus
+import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
 import nl.stockio.reservation.infra.InboundReservationJpaRepository
@@ -253,10 +253,10 @@ class StockProjectionProcessor(
         val claim = checkNotNull(claims[orderId]) {
             "Active reservation or backorder '$orderId' has no allocation order claim."
         }
-        check(claim.reservationStatus != ReservationStatus.EXPIRED) {
+        check(claim.orderReservationStatus != OrderReservationStatus.EXPIRED) {
             "Expired order '$orderId' still has active reservations or backorders."
         }
-        return claim.reservationStatus == ReservationStatus.CONFIRMED
+        return claim.orderReservationStatus == OrderReservationStatus.CONFIRMED
     }
 
     private fun <K> addQuantity(values: MutableMap<K, Int>, key: K, quantity: Int) {

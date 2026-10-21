@@ -126,17 +126,32 @@ function number(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function localDate(value: unknown): string | null {
+  if (text(value)) return value;
+  if (!Array.isArray(value) || value.length !== 3 || !value.every(number)) return null;
+  const [year, month, day] = value;
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 function candidate(value: unknown): value is ProductCandidate {
   return record(value) && text(value.sku) && text(value.title) && number(value.similarity);
 }
 
 function allocationSource(value: unknown): value is AllocationSource {
-  return record(value) && text(value.sourceId) &&
-    (value.sourceType === "INVENTORY" || value.sourceType === "INBOUND") &&
-    number(value.quantity) && text(value.sourceDate) &&
-    (value.warehouseLocation === null || text(value.warehouseLocation)) &&
-    (value.shipmentId === null || text(value.shipmentId)) &&
-    (value.shipmentLineId === null || text(value.shipmentLineId));
+  if (!record(value) || !text(value.sourceId) ||
+      (value.sourceType !== "INVENTORY" && value.sourceType !== "INBOUND") ||
+      !number(value.quantity) ||
+      (value.warehouseLocation !== null && !text(value.warehouseLocation)) ||
+      (value.shipmentId !== null && !text(value.shipmentId)) ||
+      (value.shipmentLineId !== null && !text(value.shipmentLineId))) {
+    return false;
+  }
+  const normalizedDate = localDate(value.sourceDate);
+  if (!normalizedDate) return false;
+  value.sourceDate = normalizedDate;
+  return true;
 }
 
 function allocationResult(value: unknown): value is AllocationResult {

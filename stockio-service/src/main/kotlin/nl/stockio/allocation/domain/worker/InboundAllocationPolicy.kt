@@ -1,9 +1,9 @@
-package nl.stockio.allocation.domain.policy
+package nl.stockio.allocation.domain.worker
 
-import nl.stockio.allocation.domain.api.data.AllocationSource
-import nl.stockio.allocation.domain.api.data.AllocationSourceType
 import java.time.LocalDate
 import kotlin.math.min
+import nl.stockio.allocation.domain.model.AllocationSource
+import nl.stockio.allocation.domain.model.AllocationSourceType
 import nl.stockio.allocation.domain.model.InboundReservationChange
 import nl.stockio.allocation.domain.model.InboundSupplyState
 

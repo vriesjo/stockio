@@ -1,24 +1,21 @@
-package nl.stockio.allocation.domain.service
+package nl.stockio.allocation.domain.worker
 
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
-import java.time.Instant
 import java.time.Clock
+import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationRecord
-import nl.stockio.allocation.domain.api.data.AllocationStatus
-import nl.stockio.allocation.domain.api.data.AllocationProcessingOutcome
 import nl.stockio.allocation.domain.converter.toInboundReservationChange
 import nl.stockio.allocation.domain.converter.toInboundSupplyState
 import nl.stockio.allocation.domain.converter.toInventoryLotState
 import nl.stockio.allocation.domain.converter.toStockReservationChange
 import nl.stockio.allocation.domain.model.AllocationCalculationResult
 import nl.stockio.allocation.domain.model.AllocationOrder
-import nl.stockio.allocation.domain.policy.AllocationPolicyCalculator
-import nl.stockio.allocation.domain.policy.InboundAllocationPolicy
-import nl.stockio.allocation.domain.policy.InventoryAllocationPolicy
-import nl.stockio.stock.infra.StockProjectionLockJpaRepository
+import nl.stockio.allocation.domain.model.AllocationProcessingOutcome
+import nl.stockio.allocation.domain.model.AllocationRecord
+import nl.stockio.allocation.domain.model.AllocationStatus
+import nl.stockio.allocation.domain.service.AllocationRunService
 import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
 import nl.stockio.allocation.infra.AllocationSkuLockJpaRepository
 import nl.stockio.allocation.infra.AllocationSkuOperationEntity
@@ -27,13 +24,14 @@ import nl.stockio.allocation.infra.DemandOrderLineJpaRepository
 import nl.stockio.allocation.infra.OpenBackorderEntity
 import nl.stockio.allocation.infra.OpenBackorderJpaRepository
 import nl.stockio.reservation.infra.InboundReservationEntity
-import nl.stockio.stock.infra.StockEntity
-import nl.stockio.stock.infra.StockJpaRepository
-import nl.stockio.stock.infra.StockReservationEntity
-import nl.stockio.stock.infra.StockReservationJpaRepository
 import nl.stockio.reservation.infra.InboundReservationJpaRepository
 import nl.stockio.reservation.infra.InboundSupplyEntity
 import nl.stockio.reservation.infra.InboundSupplyJpaRepository
+import nl.stockio.stock.infra.StockEntity
+import nl.stockio.stock.infra.StockJpaRepository
+import nl.stockio.stock.infra.StockProjectionLockJpaRepository
+import nl.stockio.stock.infra.StockReservationEntity
+import nl.stockio.stock.infra.StockReservationJpaRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -54,7 +52,7 @@ class AllocationSkuWorker(
     private val objectMapper: ObjectMapper
 ) {
 
-    private val allocationPolicyCalculator = AllocationPolicyCalculator(
+    private val allocationCalculator = AllocationCalculator(
         InventoryAllocationPolicy(),
         InboundAllocationPolicy()
     )
@@ -93,7 +91,7 @@ class AllocationSkuWorker(
 
         val inboundSupplyById = lockUnreceivedSupply(sku)
         val stockById = lockStock(sku, asOfDate)
-        val calculation = allocationPolicyCalculator.calculate(
+        val calculation = allocationCalculator.calculate(
             orders = eligible,
             asOfDate = asOfDate,
             inventory = stockById.values.flatten().map(::toInventoryLotState),
@@ -117,7 +115,7 @@ class AllocationSkuWorker(
     }
 
     @Transactional
-    fun fulfillBackorders(
+    fun allocateBackorders(
         runId: UUID,
         requestHash: String,
         sku: String,
@@ -142,7 +140,7 @@ class AllocationSkuWorker(
         val stockById = lockStock(sku, asOfDate)
         val eligibleSupply = inboundSupplyById.values.filter { it.expectedArrivalDate <= asOfDate }
         val lineIds = pendingBackorders.map { it.orderLineId }
-        val calculation = allocationPolicyCalculator.calculate(
+        val calculation = allocationCalculator.calculate(
             orders = pendingBackorders.map {
                 AllocationOrder(
                     orderId = it.orderId,

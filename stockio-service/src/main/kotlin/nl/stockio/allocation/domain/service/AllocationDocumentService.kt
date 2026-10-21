@@ -3,9 +3,9 @@ package nl.stockio.allocation.domain.service
 import java.time.Clock
 import java.time.Instant
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.domain.api.data.DemandOrder
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.api.dto.DemandOrder
 import nl.stockio.allocation.domain.model.AllocationOrder
 import nl.stockio.stock.infra.StockProjectionLockJpaRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
@@ -61,7 +61,7 @@ class AllocationDocumentService(
 
         // Register new-demand orders and lines, claiming them for this run and creating a reservation deadline.
         if (request.runType == AllocationRunType.NEW_DEMAND) {
-            request.demandOrders.forEach { order -> handleClaim(order, runId) }
+            request.demandOrders.forEach { order -> handleOrderClaim(order, runId) }
         }
         inboundSupplyService.registerInboundSupply(request.inboundShipments)
 
@@ -69,13 +69,13 @@ class AllocationDocumentService(
     }
 
     // Validate and claim a new-demand order, or verify that an existing claim matches the submitted document.
-    private fun handleClaim(
+    private fun handleOrderClaim(
         order: DemandOrder,
         runId: UUID,
     ) {
         val existing = orderClaimRepository.findById(order.orderId).orElse(null)
         if (existing != null) {
-            handleAlreadyExistingClaim(existing, runId, order)
+            handleAlreadyExistingOrderClaim(existing, runId, order)
         } else {
             val now = clock.instant()
             handleNewClaim(order, runId, now)
@@ -83,7 +83,7 @@ class AllocationDocumentService(
     }
 
     // Verify that an existing claim belongs to the same run and matches the submitted header and ordered lines.
-    private fun handleAlreadyExistingClaim(
+    private fun handleAlreadyExistingOrderClaim(
         existing: AllocationOrderClaimEntity,
         runId: UUID,
         order: DemandOrder

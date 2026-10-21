@@ -96,6 +96,24 @@ test("supports MCP structured content and domain non-allocation statuses", () =>
   assert.deepEqual(readAllocationResult({ structuredContent: noMatch }), noMatch);
 });
 
+test("accepts LocalDate arrays from MCP and normalizes source dates", () => {
+  const arrayDatePayload = {
+    ...allocation,
+    allocationRun: {
+      ...allocation.allocationRun,
+      allocations: [{
+        ...allocation.allocationRun.allocations[0],
+        sources: [{
+          ...allocation.allocationRun.allocations[0].sources[0],
+          sourceDate: [2026, 10, 21],
+        }],
+      }],
+    },
+  };
+  const result = readAllocationResult({ structuredContent: arrayDatePayload });
+  assert.equal(result.allocationRun?.allocations[0].sources[0].sourceDate, "2026-10-21");
+});
+
 test("preserves repeated order and SKU lines and a skipped expiry outcome", () => {
   const processed = allocation.allocationRun.allocations[0];
   const multiLine = {

@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.job
+package nl.stockio.stock.domain.job
 
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
 import nl.stockio.stock.domain.service.StockLedgerSyncProperties

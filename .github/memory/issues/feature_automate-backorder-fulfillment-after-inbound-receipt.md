@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-- **Status:** Draft
+- **Status:** In-progress
 - **Priority:** P1
 - **Bounded Context:** Inventory & Allocation
 - **Specification:** [`../specifications.md`](../specifications.md#feature-automate-backorder-fulfillment-after-physical-inbound-receipt)

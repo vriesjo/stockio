@@ -1,10 +1,11 @@
-package nl.stockio.allocation.domain.job
+package nl.stockio.allocation.domain.job.publisher
 
 import java.time.LocalDate
 import java.time.Clock
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationJobAccepted
-import nl.stockio.allocation.domain.api.data.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRequestEvent
+import nl.stockio.allocation.domain.model.AllocationJobAccepted
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional

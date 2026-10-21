@@ -1,5 +1,7 @@
-package nl.stockio.allocation.domain.job
+package nl.stockio.allocation.domain.job.listener
 
+import nl.stockio.allocation.domain.job.AllocationJob
+import nl.stockio.allocation.domain.api.dto.AllocationRequestEvent
 import org.jobrunr.scheduling.JobScheduler
 import org.springframework.stereotype.Component
 import org.springframework.transaction.event.TransactionPhase

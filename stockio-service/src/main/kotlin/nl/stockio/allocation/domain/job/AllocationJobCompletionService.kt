@@ -2,8 +2,8 @@ package nl.stockio.allocation.domain.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationCompletionResult
-import nl.stockio.allocation.domain.api.data.AllocationRunResult
+import nl.stockio.allocation.domain.model.AllocationCompletionResult
+import nl.stockio.allocation.domain.model.AllocationRunResult
 import nl.stockio.stock.infra.AllocationJobResultEntity
 import nl.stockio.stock.infra.AllocationJobResultJpaRepository
 import org.springframework.stereotype.Service

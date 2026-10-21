@@ -4,9 +4,9 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.product.domain.model.ProductAllocationRequest
-import nl.stockio.product.domain.model.ProductAllocationResponse
-import nl.stockio.product.domain.model.ProductAllocationStatus
+import nl.stockio.product.domain.api.dto.ProductAllocationRequest
+import nl.stockio.product.domain.api.dto.ProductAllocationResponse
+import nl.stockio.product.domain.api.dto.ProductAllocationStatus
 import nl.stockio.product.domain.service.ProductAllocationService
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test

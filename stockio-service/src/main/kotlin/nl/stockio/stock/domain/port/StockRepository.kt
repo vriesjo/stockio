@@ -1,7 +1,7 @@
 package nl.stockio.stock.domain.port
 
 import java.time.LocalDate
-import nl.stockio.allocation.domain.api.data.StockSyncResult
+import nl.stockio.allocation.domain.model.StockSyncResult
 import nl.stockio.stock.infra.StockDailyLotSnapshot
 import nl.stockio.stock.infra.StockDailySnapshot
 import nl.stockio.stock.infra.StockEntity
@@ -20,7 +20,7 @@ interface StockProjectionLockRepository {
 
 interface StockLedgerSyncStatusRepository {
 
-    fun get(): StockLedgerSyncState
+    fun getSyncStatus(): StockLedgerSyncState
     fun recordSuccess(result: StockSyncResult)
 }
 

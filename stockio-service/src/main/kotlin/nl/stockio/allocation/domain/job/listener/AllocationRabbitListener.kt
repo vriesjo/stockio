@@ -1,6 +1,12 @@
-package nl.stockio.allocation.domain.job
+package nl.stockio.allocation.domain.job.listener
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.github.oshai.kotlinlogging.KotlinLogging
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.job.AllocationJob
+import nl.stockio.allocation.domain.api.dto.AllocationRequestEvent
+import org.jobrunr.storage.JobNotFoundException
+import org.jobrunr.storage.StorageProvider
 import org.springframework.amqp.core.Binding
 import org.springframework.amqp.core.BindingBuilder
 import org.springframework.amqp.core.DirectExchange
@@ -8,12 +14,52 @@ import org.springframework.amqp.core.Queue
 import org.springframework.amqp.core.QueueBuilder
 import org.springframework.amqp.core.TopicExchange
 import org.springframework.amqp.rabbit.annotation.EnableRabbit
+import org.springframework.amqp.rabbit.annotation.RabbitListener
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter
 import org.springframework.amqp.support.converter.MessageConverter
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.scheduling.annotation.EnableScheduling
+import org.springframework.stereotype.Component
+
+private val logger = KotlinLogging.logger {}
+
+@Component
+class AllocationRabbitListener(
+    private val allocationJob: AllocationJob,
+    private val allocationEventListener: AllocationEventListener,
+    private val storageProvider: StorageProvider
+) {
+
+    @RabbitListener(queues = ["\${stockio.allocation.rabbitmq.request-queue}"])
+    fun receive(request: AllocationRequest) {
+        val jobId = request.requestId
+        try {
+            allocationJob.execute(jobId, request)
+            logger.info { "Processed allocation request '${request.requestId}' synchronously." }
+        } catch (exception: IllegalArgumentException) {
+            logger.error(exception) {
+                "Allocation request '${request.requestId}' is invalid; rejecting it to the dead-letter queue."
+            }
+            throw exception
+        } catch (exception: Exception) {
+            logger.error(exception) {
+                "Synchronous processing of allocation request '${request.requestId}' failed; enqueueing JobRunr fallback."
+            }
+            val existingJob = try {
+                storageProvider.getJobById(jobId)
+            } catch (_: JobNotFoundException) {
+                null
+            }
+            if (existingJob != null) {
+                logger.info { "JobRunr job '${jobId}' already exists; skipping enqueue." }
+                return
+            }
+            allocationEventListener.enqueue(AllocationRequestEvent(jobId, request))
+        }
+    }
+}
 
 @EnableRabbit
 @EnableScheduling

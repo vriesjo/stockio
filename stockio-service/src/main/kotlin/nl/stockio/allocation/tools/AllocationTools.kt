@@ -1,15 +1,17 @@
 package nl.stockio.allocation.tools
 
 import java.nio.file.Path
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunResult
-import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.domain.api.data.ExcelReportRequest
-import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.api.dto.ExcelReportRequest
+import nl.stockio.allocation.domain.api.dto.ProcessDailyStockRequest
+import nl.stockio.allocation.domain.model.AllocationRunResult
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
 import nl.stockio.allocation.domain.service.AllocationRunService
-import nl.stockio.allocation.domain.service.AllocationProcessingService
+import nl.stockio.allocation.domain.processor.AllocationProcessor
+import nl.stockio.allocation.domain.model.BackorderAllocationRequest
+import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
 import nl.stockio.reservation.domain.service.OrderReservationService
 import org.springframework.ai.tool.annotation.Tool
 import org.springframework.beans.factory.annotation.Value
@@ -17,7 +19,7 @@ import org.springframework.stereotype.Component
 
 @Component
 class AllocationTools(
-    private val processingService: AllocationProcessingService,
+    private val processingService: AllocationProcessor,
     private val allocationRunService: AllocationRunService,
     private val stockLedgerProcessor: StockLedgerProcessor,
     private val excelReportProcessor: ExcelReportProcessor,
@@ -50,7 +52,14 @@ class AllocationTools(
         require(request.runType == AllocationRunType.BACKORDER_FULFILLMENT) {
             "Run type must be BACKORDER_FULFILLMENT for backorder allocation."
         }
-        return processingService.process(request)
+        return processingService.process(
+            BackorderAllocationRequest(
+                requestId = request.requestId,
+                asOfDate = request.asOfDate,
+                trigger = BackorderAllocationTrigger.MANUAL,
+                inboundShipments = request.inboundShipments
+            )
+        )
     }
 
     @Tool(
@@ -67,7 +76,7 @@ class AllocationTools(
             "Saved allocation runs are historical and do not indicate whether a reservation is still active."
     )
     fun getOrderReservationStatus(orderId: String) =
-        requireNotNull(orderReservationService.getStatus(orderId)) {
+        requireNotNull(orderReservationService.getOrderReservationStatus(orderId)) {
             "Order '$orderId' has no allocation reservation."
         }
 

@@ -6,13 +6,15 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
-import nl.stockio.allocation.domain.api.data.AllocationRecord
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunResult
-import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.infra.OpenBackorderJpaRepository
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
 import nl.stockio.util.requestHash
 import nl.stockio.allocation.domain.api.validator.AllocationRequestValidator
+import nl.stockio.allocation.domain.model.AllocationRecord
+import nl.stockio.allocation.domain.model.AllocationRunResult
+import nl.stockio.allocation.domain.model.BackorderAllocationRequest
+import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
+import nl.stockio.allocation.domain.worker.AllocationSkuWorker
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
@@ -22,17 +24,17 @@ class AllocationService(
     private val allocationRunService: AllocationRunService,
     private val allocationSkuWorker: AllocationSkuWorker,
     private val allocationDocumentService: AllocationDocumentService,
-    private val backorderRepository: OpenBackorderJpaRepository,
+    private val backorderAllocationService: BackorderAllocationService,
     @Value("\${stockio.allocation.max-concurrent-skus:4}")
     maxConcurrentSkus: Int
 ) {
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private val allocationDispatcher = Dispatchers.IO.limitedParallelism(maxConcurrentSkus)
-
     init {
         require(maxConcurrentSkus > 0) { "The maximum concurrent SKU allocation count must be positive." }
     }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val allocationDispatcher = Dispatchers.IO.limitedParallelism(maxConcurrentSkus)
 
     fun allocation(request: AllocationRequest): AllocationRunResult {
         require(request.runType == AllocationRunType.NEW_DEMAND) {
@@ -68,32 +70,15 @@ class AllocationService(
         require(request.runType == AllocationRunType.BACKORDER_FULFILLMENT) {
             "Run type must be BACKORDER_FULFILLMENT for backorder allocation."
         }
-        existingCompletedRun(request, AllocationRunType.BACKORDER_FULFILLMENT)?.let { return it }
         allocationRequestValidator.validate(request)
-
-        val requestHash = requestHash(request)
-        val run = allocationRunService.beginOrResume(request, requestHash)
-        if (run.completed) {
-            return requireNotNull(existingCompletedRun(request, AllocationRunType.BACKORDER_FULFILLMENT))
-        }
-
-        allocationDocumentService.initialize(run.id, request)
-        val shipmentsBySku = request.inboundShipments.flatMap { it.lines }.groupBy { it.sku }
-        val priorOperationSkus = allocationRunService.getOperationSkus(run.id)
-        val skus = (backorderRepository.findDistinctSkus() + shipmentsBySku.keys + priorOperationSkus)
-            .distinct()
-            .sorted()
-        val allocationsBySku = runSkuWorkers(skus) { sku ->
-            allocationSkuWorker.fulfillBackorders(
-                runId = run.id,
-                requestHash = requestHash,
-                sku = sku,
-                asOfDate = request.asOfDate
+        return backorderAllocationService.allocate(
+            BackorderAllocationRequest(
+                requestId = request.requestId,
+                asOfDate = request.asOfDate,
+                trigger = BackorderAllocationTrigger.MANUAL,
+                inboundShipments = request.inboundShipments
             )
-        }
-        val allocations = allocationsBySku.flatten()
-            .sortedWith(compareBy<AllocationRecord> { it.priority }.thenBy { it.placedDate })
-        return allocationRunService.completeRun(run.id, skus.toSet(), allocations)
+        )
     }
 
     private fun existingCompletedRun(

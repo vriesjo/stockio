@@ -1,11 +1,15 @@
 package nl.stockio.stock.domain.processor
 
+import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.Clock
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
-import nl.stockio.allocation.domain.api.data.ReservationStatus
-import nl.stockio.allocation.domain.api.data.StockSyncResult
+import nl.stockio.allocation.domain.job.BackorderAllocationJob
+import nl.stockio.allocation.domain.model.BackorderAllocationRequest
+import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
+import nl.stockio.allocation.domain.api.dto.ProcessDailyStockRequest
+import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
+import nl.stockio.allocation.domain.model.StockSyncResult
 import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
 import nl.stockio.reservation.infra.InboundReservationJpaRepository
 import nl.stockio.reservation.infra.InboundSupplyJpaRepository
@@ -17,7 +21,7 @@ import nl.stockio.stock.infra.StockReservationJpaRepository
 import nl.stockio.stock.domain.port.StockSnapshotRepository
 import nl.stockio.reservation.domain.service.ReservationCleanupService
 import nl.stockio.stock.infra.StockProjectionLockJpaRepository
-import org.slf4j.LoggerFactory
+import org.jobrunr.scheduling.JobScheduler
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
@@ -55,7 +59,9 @@ class StockLedgerProcessor(
     private val stockProjectionProcessor: StockProjectionProcessor,
     private val claimRepository: AllocationOrderClaimJpaRepository,
     private val syncStatusRepository: StockLedgerSyncStatusJdbcTemplateRepository,
-    private val clock: Clock
+    private val clock: Clock,
+    private val jobScheduler: JobScheduler,
+    private val backorderAllocationJob: BackorderAllocationJob
 ) {
 
     /**
@@ -92,7 +98,7 @@ class StockLedgerProcessor(
         }
         stockProjectionProcessor.process(snapshotDate)
         val confirmedOrderIds = claimRepository.findAll()
-            .filter { it.reservationStatus == ReservationStatus.CONFIRMED }
+            .filter { it.orderReservationStatus == OrderReservationStatus.CONFIRMED }
             .mapTo(mutableSetOf()) { it.orderId }
         val snapshots = snapshotRepository.findDailyByDate(snapshotDate)
             .map {
@@ -171,6 +177,7 @@ class StockLedgerProcessor(
         }
 
         val receivedShipmentIds = arrivedSupplies.map { it.shipmentLineId }
+        val receivedSkus = arrivedSupplies.map { it.sku }.toSet()
         val inboundReservations = if (receivedShipmentIds.isEmpty()) {
             emptyList()
         } else {
@@ -229,13 +236,28 @@ class StockLedgerProcessor(
         syncStatusRepository.recordSuccess(result)
         TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
             override fun afterCommit() {
-                logger.atInfo()
-                    .addKeyValue("syncId", syncId)
-                    .addKeyValue("snapshotDate", result.snapshotDate)
-                    .addKeyValue("skuCount", result.skuCount)
-                    .addKeyValue("lotSnapshotCount", result.lotCount)
-                    .addKeyValue("durationMs", (System.nanoTime() - startedAt) / 1_000_000)
-                    .log("Synchronized live stock ledger.")
+                if (receivedSkus.isNotEmpty()) {
+                    val command = BackorderAllocationRequest(
+                        requestId = UUID.nameUUIDFromBytes(
+                            "stock-ledger-backorder-fulfillment:$snapshotDate:${
+                                receivedShipmentIds.sorted().joinToString(",")
+                            }"
+                                .toByteArray()
+                        ),
+                        asOfDate = snapshotDate,
+                        trigger = BackorderAllocationTrigger.STOCK_LEDGER_RECEIPT,
+                        skuScope = receivedSkus
+                    )
+                    val jobId = UUID.nameUUIDFromBytes(
+                        "stock-ledger-backorder-job:${command.requestId}".toByteArray()
+                    )
+                    jobScheduler.enqueue(jobId) {
+                        backorderAllocationJob.execute(command)
+                    }
+                }
+                logger.info {
+                    "Stock ledger synchronization completed with syncId $syncId on $snapshotDate: ${result.skuCount} SKUs, ${result.lotCount} lots."
+                }
             }
         })
         return result
@@ -253,6 +275,6 @@ class StockLedgerProcessor(
     )
 
     companion object {
-        private val logger = LoggerFactory.getLogger(StockLedgerProcessor::class.java)
+        private val logger = KotlinLogging.logger {}
     }
 }

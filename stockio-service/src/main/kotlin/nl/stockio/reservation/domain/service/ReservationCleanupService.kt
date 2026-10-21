@@ -4,7 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.Clock
 import java.time.Instant
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.ReservationStatus
+import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
 import nl.stockio.stock.infra.StockProjectionLockJpaRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
@@ -34,7 +34,7 @@ private val logger = KotlinLogging.logger {}
  *
  * For each selected order, decreases the reserved counters on its current stock lots and
  * unreceived inbound shipments, deletes its reservation rows and remaining open backorder,
- * and marks its claim [ReservationStatus.EXPIRED]. Physical stock quantities, expected inbound
+ * and marks its claim [OrderReservationStatus.EXPIRED]. Physical stock quantities, expected inbound
  * quantities, allocation history, and order claims are retained. Reservations already converted
  * on inbound receipt are released from stock rather than from the received shipment.
  *
@@ -103,7 +103,7 @@ class ReservationCleanupService(
         inboundReservationRepository.deleteAll(inboundReservations)
         backorderRepository.deleteAllByOrderIdIn(orderIds)
         claims.forEach {
-            it.reservationStatus = ReservationStatus.EXPIRED
+            it.orderReservationStatus = OrderReservationStatus.EXPIRED
             it.expiredAt = now
         }
         claimRepository.flush()
@@ -149,7 +149,7 @@ class ReservationCleanupService(
         now: Instant
     ) {
         check(claims.all {
-            it.reservationStatus == ReservationStatus.PENDING_CONFIRMATION && !it.canAllocate(now)
+            it.orderReservationStatus == OrderReservationStatus.PENDING_CONFIRMATION && !it.canAllocate(now)
         }) { "Expiry selected an order that is not overdue and pending." }
     }
 

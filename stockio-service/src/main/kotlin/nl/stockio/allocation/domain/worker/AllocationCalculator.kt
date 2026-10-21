@@ -1,18 +1,18 @@
-package nl.stockio.allocation.domain.policy
+package nl.stockio.allocation.domain.worker
 
 import java.time.LocalDate
-import nl.stockio.allocation.domain.api.data.AllocationRecord
-import nl.stockio.allocation.domain.api.data.AllocationSource
-import nl.stockio.allocation.domain.api.data.AllocationStatus
 import nl.stockio.allocation.domain.model.AllocationCalculationResult
 import nl.stockio.allocation.domain.model.AllocationOrder
+import nl.stockio.allocation.domain.model.AllocationRecord
+import nl.stockio.allocation.domain.model.AllocationSource
+import nl.stockio.allocation.domain.model.AllocationStatus
 import nl.stockio.allocation.domain.model.BackorderRegistration
 import nl.stockio.allocation.domain.model.InboundReservationChange
 import nl.stockio.allocation.domain.model.InboundSupplyState
 import nl.stockio.allocation.domain.model.InventoryLotState
 import nl.stockio.allocation.domain.model.StockReservationChange
 
-class AllocationPolicyCalculator(
+class AllocationCalculator(
     private val inventoryAllocationPolicy: InventoryAllocationPolicy,
     private val inboundAllocationPolicy: InboundAllocationPolicy
 ) {

@@ -1,15 +1,15 @@
-package nl.stockio.allocation.domain.job
+package nl.stockio.allocation.domain.job.publisher
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.LocalDate
 import java.time.Clock
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.domain.api.data.DemandOrder
-import nl.stockio.allocation.domain.api.data.DemandOrderLine
-import nl.stockio.allocation.domain.api.data.InboundShipment
-import nl.stockio.allocation.domain.api.data.InboundShipmentLine
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.api.dto.DemandOrder
+import nl.stockio.allocation.domain.api.dto.DemandOrderLine
+import nl.stockio.allocation.domain.api.dto.InboundShipment
+import nl.stockio.allocation.domain.api.dto.InboundShipmentLine
 import nl.stockio.product.infra.ProductJpaRepository
 import org.springframework.amqp.rabbit.core.RabbitTemplate
 import org.springframework.beans.factory.annotation.Value

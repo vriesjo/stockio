@@ -1,8 +1,8 @@
 package nl.stockio.product.domain.api
 
 import jakarta.validation.Valid
-import nl.stockio.product.domain.model.ProductAllocationRequest
-import nl.stockio.product.domain.model.ProductAllocationResponse
+import nl.stockio.product.domain.api.dto.ProductAllocationRequest
+import nl.stockio.product.domain.api.dto.ProductAllocationResponse
 import nl.stockio.product.domain.service.ProductAllocationService
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.ExceptionHandler

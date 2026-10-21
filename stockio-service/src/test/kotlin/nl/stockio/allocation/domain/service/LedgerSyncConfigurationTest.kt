@@ -22,7 +22,7 @@ class LedgerSyncConfigurationTest {
     fun `invalid ledger settings fail application startup`(setting: String) {
         ApplicationContextRunner()
             .withUserConfiguration(StockLedgerSyncConfiguration::class.java)
-            .withPropertyValues("stockio.allocation.ledger-sync.$setting")
+            .withPropertyValues("stockio.stock.ledger-sync.$setting")
             .run { context -> assertNotNull(context.startupFailure) }
     }
 
@@ -30,7 +30,7 @@ class LedgerSyncConfigurationTest {
     fun `business clock and twice daily schedule use the same configured zone`() {
         ApplicationContextRunner()
             .withUserConfiguration(StockLedgerSyncConfiguration::class.java)
-            .withPropertyValues("stockio.allocation.ledger-sync.zone=Europe/Amsterdam")
+            .withPropertyValues("stockio.stock.ledger-sync.zone=Europe/Amsterdam")
             .run { context ->
                 assertNull(context.startupFailure)
                 val properties = context.getBean(StockLedgerSyncProperties::class.java)

@@ -4,16 +4,17 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunResult
-import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.domain.api.data.DemandOrder
-import nl.stockio.allocation.domain.api.data.DemandOrderLine
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.api.dto.DemandOrder
+import nl.stockio.allocation.domain.api.dto.DemandOrderLine
+import nl.stockio.allocation.domain.model.AllocationRunResult
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.domain.service.AllocationService
-import nl.stockio.allocation.domain.service.AllocationProcessingService
-import nl.stockio.product.domain.model.ProductAllocationRequest
-import nl.stockio.product.domain.model.ProductAllocationStatus
+import nl.stockio.allocation.domain.processor.AllocationProcessor
+import nl.stockio.allocation.domain.service.BackorderAllocationService
+import nl.stockio.product.domain.api.dto.ProductAllocationRequest
+import nl.stockio.product.domain.api.dto.ProductAllocationStatus
 import nl.stockio.product.domain.service.OllamaEmbeddingClient
 import nl.stockio.product.domain.service.EmbeddingClientException
 import nl.stockio.product.domain.service.ProductAllocationService
@@ -409,8 +410,10 @@ class ProductAllocationServiceTest {
             embeddingClient = embeddingClient,
             productRepository = productRepository,
             productVectorRepository = productVectorRepository,
-            processingService = AllocationProcessingService(
-                allocationService, mock(StockProjectionProcessor::class.java)
+            processingService = AllocationProcessor(
+                allocationService,
+                mock(StockProjectionProcessor::class.java),
+                mock(BackorderAllocationService::class.java)
             ),
             properties = ProductResolutionProperties()
         )

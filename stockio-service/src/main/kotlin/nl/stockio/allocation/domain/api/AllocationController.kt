@@ -3,15 +3,15 @@ package nl.stockio.allocation.domain.api
 import jakarta.validation.Valid
 import java.net.URI
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationJobAccepted
-import nl.stockio.allocation.domain.api.data.AllocationJobStatus
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.OrderReservationStatusResponse
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.OrderReservationResponse
 import nl.stockio.reservation.domain.service.OrderReservationService
-import nl.stockio.allocation.domain.job.AllocationJobService
-import nl.stockio.allocation.domain.job.AllocationEventPublisher
-import nl.stockio.stock.domain.service.LedgerSyncStatus
-import nl.stockio.stock.domain.service.LedgerSyncStatusService
+import nl.stockio.allocation.domain.service.AllocationJobRunrService
+import nl.stockio.allocation.domain.job.publisher.AllocationEventPublisher
+import nl.stockio.allocation.domain.model.AllocationJobAccepted
+import nl.stockio.allocation.domain.model.AllocationJobStatus
+import nl.stockio.stock.domain.service.StockLedgerSyncStatus
+import nl.stockio.stock.domain.service.StockLedgerService
 import org.jobrunr.storage.JobNotFoundException
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
@@ -25,12 +25,12 @@ import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 
 @RestController
-@RequestMapping("/api/logistics")
+@RequestMapping("/api")
 class AllocationController(
     private val allocationEventPublisher: AllocationEventPublisher,
-    private val allocationJobService: AllocationJobService,
+    private val allocationJobRunrService: AllocationJobRunrService,
     private val orderReservationService: OrderReservationService,
-    private val ledgerSyncStatusService: LedgerSyncStatusService
+    private val ledgerSyncStatusService: StockLedgerService
 ) {
 
     @PostMapping("/allocation-jobs")
@@ -45,15 +45,17 @@ class AllocationController(
 
     @GetMapping("/allocation-jobs/{jobId}")
     fun allocationJobStatus(@PathVariable jobId: UUID): AllocationJobStatus =
-        allocationJobService.getStatus(jobId)
+        allocationJobRunrService.getStatusById(jobId)
 
     @GetMapping("/stock-ledger/status")
-    fun stockLedgerStatus(): LedgerSyncStatus = ledgerSyncStatusService.getStatus()
+    fun stockLedgerStatus(): StockLedgerSyncStatus = ledgerSyncStatusService.getStatusLastSyncRun()
 
-    @GetMapping("/orders/{orderId}/reservation")
-    fun orderReservationStatus(@PathVariable orderId: String): ResponseEntity<OrderReservationStatusResponse> =
-        orderReservationService.getStatus(orderId)?.let { ResponseEntity.ok(it) }
+    @GetMapping("/order-reservation/{orderId}/status")
+    fun orderReservationStatus(@PathVariable orderId: String): ResponseEntity<OrderReservationResponse> =
+        orderReservationService.getOrderReservationStatus(orderId)?.let { ResponseEntity.ok(it) }
             ?: ResponseEntity.notFound().build()
+
+    // Exception handlers for the controller
 
     @ExceptionHandler(IllegalArgumentException::class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)

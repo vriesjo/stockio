@@ -2,9 +2,9 @@ package nl.stockio.allocation.domain.api
 
 import jakarta.validation.Valid
 import java.nio.file.Path
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.ExcelReportRequest
-import nl.stockio.allocation.domain.job.AllocationJobService
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.ExcelReportRequest
+import nl.stockio.allocation.domain.service.AllocationJobRunrService
 import nl.stockio.allocation.tools.AllocationTools
 import nl.stockio.allocation.domain.service.AllocationExcelService
 import org.springframework.beans.factory.annotation.Value
@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController
 class AllocationAdminController(
     private val allocationExcelService: AllocationExcelService,
     private val allocationTools: AllocationTools,
-    private val allocationJobService: AllocationJobService,
+    private val allocationJobRunrService: AllocationJobRunrService,
     @Value("\${stockio.allocation.csv-path}")
     private val csvPath: String
 ) {
@@ -40,7 +40,7 @@ class AllocationAdminController(
 
     @DeleteMapping("/allocations/delete-jobs-with-excessive-retries")
     fun deleteJobsWithExcessiveRetries(): String {
-        allocationJobService.deleteJobsWithRetries()
+        allocationJobRunrService.deleteJobsWithRetriesByStatus()
         return "Jobs with excessive retries deleted."
     }
 
