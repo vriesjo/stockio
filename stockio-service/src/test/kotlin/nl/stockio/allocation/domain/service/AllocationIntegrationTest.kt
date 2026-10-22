@@ -11,8 +11,10 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import nl.stockio.allocation.domain.api.dto.AllocationRequest
 import nl.stockio.allocation.domain.api.dto.AllocationRunType
 import nl.stockio.allocation.domain.api.dto.DemandOrder
@@ -63,7 +65,6 @@ import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import org.mockito.Mockito
 import org.jobrunr.jobs.states.StateName
 import org.jobrunr.scheduling.JobScheduler
 import org.jobrunr.storage.StorageProvider
@@ -79,7 +80,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource
 import org.springframework.test.annotation.DirtiesContext
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
-import org.springframework.test.context.bean.override.mockito.MockitoBean
+import org.springframework.test.context.bean.override.convention.TestBean
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers
@@ -105,8 +106,11 @@ import org.testcontainers.junit.jupiter.Testcontainers
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class AllocationIntegrationTest {
 
-    @MockitoBean
+    @TestBean(methodName = "createClock", enforceOverride = true)
     private lateinit var clock: Clock
+
+    private val adjustableClock: AdjustableClock
+        get() = clock as AdjustableClock
 
     @Autowired
     private lateinit var claimRepository: AllocationOrderClaimJpaRepository
@@ -212,7 +216,7 @@ class AllocationIntegrationTest {
 
     @BeforeEach
     fun clearDatabase() {
-        Mockito.`when`(clock.zone).thenReturn(ZoneId.systemDefault())
+        adjustableClock.setZone(ZoneId.systemDefault())
         setNow(Instant.now().truncatedTo(ChronoUnit.MICROS))
         jdbcTemplate.update(
             """UPDATE stock_ledger_sync_status SET last_success_at = NULL, snapshot_date = NULL,
@@ -234,6 +238,33 @@ class AllocationIntegrationTest {
         jdbcTemplate.update("DELETE FROM product_knowledge_chunks")
         jdbcTemplate.update("DELETE FROM product_embeddings")
         runRepository.deleteAll()
+    }
+
+    @Test
+    fun `business clock can be adjusted while background threads read it`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val started = CountDownLatch(1)
+        val now = Instant.parse("2026-10-20T12:30:00Z")
+        val zone = ZoneId.of("Pacific/Kiritimati")
+        try {
+            val reader = executor.submit {
+                started.countDown()
+                repeat(10_000) {
+                    LocalDate.now(clock)
+                }
+            }
+            Assertions.assertTrue(started.await(10, TimeUnit.SECONDS))
+            repeat(10_000) {
+                setNow(now)
+                adjustableClock.setZone(zone)
+            }
+            reader.get(10, TimeUnit.SECONDS)
+            Assertions.assertEquals(now, clock.instant())
+            Assertions.assertEquals(zone, clock.zone)
+            Assertions.assertEquals(LocalDate.of(2026, 10, 21), LocalDate.now(clock))
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     @Test
@@ -597,7 +628,7 @@ class AllocationIntegrationTest {
 
     @Test
     fun `scheduled sync chooses today's business date again after midnight without new demand`() {
-        Mockito.`when`(clock.zone).thenReturn(ZoneId.of("UTC"))
+        adjustableClock.setZone(ZoneId.of("UTC"))
         val firstDate = LocalDate.of(2026, 10, 20)
         setNow(Instant.parse("2026-10-20T23:59:00Z"))
         allocationService.allocation(
@@ -662,7 +693,7 @@ class AllocationIntegrationTest {
 
     @Test
     fun `manual sync with omitted date uses the business clock instead of the JVM date`() {
-        Mockito.`when`(clock.zone).thenReturn(ZoneId.of("Pacific/Kiritimati"))
+        adjustableClock.setZone(ZoneId.of("Pacific/Kiritimati"))
         setNow(Instant.parse("2026-10-20T12:30:00Z"))
         val result = stockLedgerProcessor.process(ProcessDailyStockRequest())
         Assertions.assertEquals(LocalDate.of(2026, 10, 21), result.snapshotDate)
@@ -1933,10 +1964,31 @@ class AllocationIntegrationTest {
     }
 
     private fun setNow(instant: Instant) {
-        Mockito.`when`(clock.instant()).thenReturn(instant)
+        adjustableClock.setInstant(instant)
+    }
+
+    class AdjustableClock : Clock() {
+        private val delegate = AtomicReference<Clock>(Clock.systemDefaultZone())
+
+        override fun instant(): Instant = delegate.get().instant()
+
+        override fun getZone(): ZoneId = delegate.get().zone
+
+        override fun withZone(zone: ZoneId): Clock = delegate.get().withZone(zone)
+
+        fun setInstant(instant: Instant) {
+            delegate.updateAndGet { Clock.fixed(instant, it.zone) }
+        }
+
+        fun setZone(zone: ZoneId) {
+            delegate.updateAndGet { it.withZone(zone) }
+        }
     }
 
     companion object {
+        @JvmStatic
+        fun createClock(): AdjustableClock = AdjustableClock()
+
         @Container
         @JvmField
         val postgres = PostgreSQLContainer<Nothing>("pgvector/pgvector:pg16")
