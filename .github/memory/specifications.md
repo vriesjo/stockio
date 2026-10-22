@@ -30,7 +30,7 @@ The goal is to ensure that stock-ledger updates are performed independently,allo
 
 ## Feature: Automate backorder fulfillment after physical inbound receipt
 
-- **Status:** Draft
+- **Status:** In-progress
 - **Priority:** P1
 - **Parent Specs:** [`./architecture.md`](./architecture.md)
 - **Bounded Context:** Inventory & Allocation

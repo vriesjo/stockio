@@ -1,9 +1,12 @@
-package nl.stockio.allocation.domain.service
+package nl.stockio.allocation.domain.processor
 
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunResult
-import nl.stockio.allocation.domain.api.data.AllocationRunType
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.model.AllocationRunResult
+import nl.stockio.allocation.domain.model.BackorderAllocationRequest
+import nl.stockio.allocation.domain.service.AllocationService
+import nl.stockio.allocation.domain.service.BackorderAllocationService
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import org.springframework.stereotype.Service
 
@@ -13,10 +16,21 @@ import org.springframework.stereotype.Service
  * A projection failure is retryable: the allocation service reuses its committed run.
  */
 @Service
-class AllocationProcessingService(
+class AllocationProcessor(
     private val allocationService: AllocationService,
-    private val projectionProcessor: StockProjectionProcessor
+    private val projectionProcessor: StockProjectionProcessor,
+    private val backorderAllocationService: BackorderAllocationService
 ) {
+    fun process(command: BackorderAllocationRequest): AllocationRunResult {
+        val run = backorderAllocationService.allocate(command)
+        try {
+            projectionProcessor.process(command.asOfDate)
+        } catch (exception: IllegalArgumentException) {
+            throw AllocationProjectionException(run.runId, exception)
+        }
+        return run
+    }
+
     fun process(request: AllocationRequest): AllocationRunResult {
         val run = when (request.runType) {
             AllocationRunType.NEW_DEMAND -> allocationService.allocation(request)

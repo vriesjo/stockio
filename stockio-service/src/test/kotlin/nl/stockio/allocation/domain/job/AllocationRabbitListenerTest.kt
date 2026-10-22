@@ -2,9 +2,12 @@ package nl.stockio.allocation.domain.job
 
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.domain.service.AllocationProjectionException
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.job.listener.AllocationEventListener
+import nl.stockio.allocation.domain.job.listener.AllocationRabbitListener
+import nl.stockio.allocation.domain.api.dto.AllocationRequestEvent
+import nl.stockio.allocation.domain.processor.AllocationProjectionException
 import org.jobrunr.jobs.Job
 import org.jobrunr.storage.JobNotFoundException
 import org.jobrunr.storage.StorageProvider

@@ -98,7 +98,7 @@ interface AllocationOrderClaimJpaRepository : AllocationOrderClaimRepository, Jp
 
     @Query(
         "select min(c.reservationExpiresAt) from AllocationOrderClaimEntity c " +
-            "where c.reservationStatus = nl.stockio.allocation.domain.api.data.ReservationStatus.PENDING_CONFIRMATION " +
+            "where c.orderReservationStatus = nl.stockio.allocation.domain.api.dto.OrderReservationStatus.PENDING_CONFIRMATION " +
             "and c.reservationExpiresAt <= :now"
     )
     override fun findOldestOverdueDeadline(@Param("now") now: Instant): Instant?

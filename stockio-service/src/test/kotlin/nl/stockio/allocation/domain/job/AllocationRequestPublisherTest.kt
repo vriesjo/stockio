@@ -2,12 +2,13 @@ package nl.stockio.allocation.domain.job
 
 import java.time.LocalDate
 import java.time.Clock
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunType
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.job.publisher.AllocationRequestPublisher
 import nl.stockio.allocation.domain.model.InboundSupplyState
-import nl.stockio.allocation.domain.policy.AllocationPolicyCalculator
-import nl.stockio.allocation.domain.policy.InboundAllocationPolicy
-import nl.stockio.allocation.domain.policy.InventoryAllocationPolicy
+import nl.stockio.allocation.domain.worker.AllocationCalculator
+import nl.stockio.allocation.domain.worker.InboundAllocationPolicy
+import nl.stockio.allocation.domain.worker.InventoryAllocationPolicy
 import nl.stockio.allocation.domain.service.allocationLines
 import nl.stockio.product.infra.ProductEntity
 import nl.stockio.product.infra.ProductJpaRepository
@@ -75,7 +76,7 @@ class AllocationRequestPublisherTest {
             assertTrue(shipment.lines.single().expectedArrivalDate <= order.lines.single().requiredDeliveryDate)
         }
 
-        val calculation = AllocationPolicyCalculator(InventoryAllocationPolicy(), InboundAllocationPolicy()).calculate(
+        val calculation = AllocationCalculator(InventoryAllocationPolicy(), InboundAllocationPolicy()).calculate(
             orders = request.allocationLines(),
             asOfDate = request.asOfDate,
             inventory = emptyList(),

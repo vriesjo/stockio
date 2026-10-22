@@ -1,5 +1,6 @@
 package nl.stockio.allocation.domain.job
 
+import nl.stockio.stock.domain.job.StockLedgerSyncJob
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
 import nl.stockio.stock.domain.service.StockLedgerSyncProperties
 import org.jobrunr.jobs.lambdas.JobLambda

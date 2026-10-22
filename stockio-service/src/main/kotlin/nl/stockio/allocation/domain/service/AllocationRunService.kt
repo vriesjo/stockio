@@ -2,10 +2,7 @@ package nl.stockio.allocation.domain.service
 
 import java.time.Instant
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunResult
-import nl.stockio.allocation.domain.api.data.AllocationSource
-import nl.stockio.allocation.domain.api.data.AllocationRecord
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
 import nl.stockio.allocation.infra.AllocationRecordEntity
 import nl.stockio.allocation.infra.AllocationRecordJpaRepository
 import nl.stockio.allocation.infra.AllocationRunEntity
@@ -14,6 +11,9 @@ import nl.stockio.allocation.infra.AllocationSkuOperationJpaRepository
 import nl.stockio.allocation.infra.AllocationSourceEntity
 import nl.stockio.allocation.infra.AllocationSourceJpaRepository
 import nl.stockio.allocation.infra.OpenBackorderJpaRepository
+import nl.stockio.allocation.domain.model.AllocationRecord
+import nl.stockio.allocation.domain.model.AllocationRunResult
+import nl.stockio.allocation.domain.model.AllocationSource
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 

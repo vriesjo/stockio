@@ -7,11 +7,11 @@ import jakarta.persistence.Enumerated
 import jakarta.persistence.Id
 import jakarta.persistence.Table
 import jakarta.persistence.UniqueConstraint
-import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.domain.api.data.AllocationSourceType
-import nl.stockio.allocation.domain.api.data.AllocationStatus
-import nl.stockio.allocation.domain.api.data.ReservationStatus
-import nl.stockio.allocation.domain.api.data.AllocationProcessingOutcome
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
+import nl.stockio.allocation.domain.model.AllocationProcessingOutcome
+import nl.stockio.allocation.domain.model.AllocationSourceType
+import nl.stockio.allocation.domain.model.AllocationStatus
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
@@ -89,7 +89,7 @@ class AllocationOrderClaimEntity(
     var placedDate: LocalDate = LocalDate.now(),
     @Enumerated(EnumType.STRING)
     @Column(name = "reservation_status", nullable = false, length = 40)
-    var reservationStatus: ReservationStatus = ReservationStatus.PENDING_CONFIRMATION,
+    var orderReservationStatus: OrderReservationStatus = OrderReservationStatus.PENDING_CONFIRMATION,
     @Column(name = "reservation_created_at", nullable = false)
     var reservationCreatedAt: Instant = Instant.now(),
     @Column(name = "reservation_expires_at")
@@ -99,12 +99,12 @@ class AllocationOrderClaimEntity(
     @Column(name = "expired_at")
     var expiredAt: Instant? = null
 ) {
-    fun canAllocate(now: Instant): Boolean = when (reservationStatus) {
-        ReservationStatus.PENDING_CONFIRMATION -> requireNotNull(reservationExpiresAt) {
+    fun canAllocate(now: Instant): Boolean = when (orderReservationStatus) {
+        OrderReservationStatus.PENDING_CONFIRMATION -> requireNotNull(reservationExpiresAt) {
             "Pending order '$orderId' has no reservation deadline."
         } > now
-        ReservationStatus.CONFIRMED -> true
-        ReservationStatus.EXPIRED -> false
+        OrderReservationStatus.CONFIRMED -> true
+        OrderReservationStatus.EXPIRED -> false
     }
 }
 

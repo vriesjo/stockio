@@ -1,10 +1,10 @@
-package nl.stockio.product.domain.model
+package nl.stockio.product.domain.api.dto
 
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationRunResult
+import nl.stockio.allocation.domain.model.AllocationRunResult
 
 data class ProductAllocationRequest(
     val requestId: UUID,

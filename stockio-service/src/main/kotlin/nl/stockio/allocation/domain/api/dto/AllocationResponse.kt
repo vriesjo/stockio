@@ -1,18 +1,18 @@
-package nl.stockio.allocation.domain.api.data
+package nl.stockio.allocation.domain.api.dto
 
 import java.time.Instant
 import java.time.LocalDate
 
-enum class ReservationStatus {
+enum class OrderReservationStatus {
     PENDING_CONFIRMATION,
     CONFIRMED,
     EXPIRED
 }
 
-data class OrderReservationStatusResponse(
+data class OrderReservationResponse(
     val orderId: String,
     val lines: List<OrderReservationLine>,
-    val status: ReservationStatus,
+    val status: OrderReservationStatus,
     val createdAt: Instant,
     val expiresAt: Instant?,
     val confirmedAt: Instant?,

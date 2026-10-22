@@ -1,9 +1,9 @@
 package nl.stockio.reservation.domain.service
 
 import java.time.Clock
-import nl.stockio.allocation.domain.api.data.OrderReservationStatusResponse
-import nl.stockio.allocation.domain.api.data.OrderReservationLine
-import nl.stockio.allocation.domain.api.data.ReservationStatus
+import nl.stockio.allocation.domain.api.dto.OrderReservationResponse
+import nl.stockio.allocation.domain.api.dto.OrderReservationLine
+import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
 import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
 import nl.stockio.allocation.infra.DemandOrderLineJpaRepository
 import org.springframework.stereotype.Service
@@ -22,16 +22,16 @@ class OrderReservationService(
     private val clock: Clock
 ) {
     @Transactional(readOnly = true)
-    fun getStatus(orderId: String): OrderReservationStatusResponse? {
+    fun getOrderReservationStatus(orderId: String): OrderReservationResponse? {
         val claim = claimRepository.findById(orderId).orElse(null) ?: return null
-        val cleanupPending = claim.reservationStatus == ReservationStatus.PENDING_CONFIRMATION &&
+        val cleanupPending = claim.orderReservationStatus == OrderReservationStatus.PENDING_CONFIRMATION &&
             !claim.canAllocate(clock.instant())
-        return OrderReservationStatusResponse(
+        return OrderReservationResponse(
             orderId = claim.orderId,
             lines = lineRepository.findAllByOrderIdInOrderByOrderIdAscSequenceNumberAsc(listOf(orderId)).map {
                 OrderReservationLine(it.orderLineId, it.sku, it.requestedQuantity, it.requiredDeliveryDate)
             },
-            status = if (cleanupPending) ReservationStatus.EXPIRED else claim.reservationStatus,
+            status = if (cleanupPending) OrderReservationStatus.EXPIRED else claim.orderReservationStatus,
             createdAt = claim.reservationCreatedAt,
             expiresAt = claim.reservationExpiresAt,
             confirmedAt = claim.confirmedAt,

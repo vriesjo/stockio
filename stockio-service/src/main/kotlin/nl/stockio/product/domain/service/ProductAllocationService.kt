@@ -4,17 +4,17 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import java.security.MessageDigest
 import java.util.UUID
 import kotlin.math.sqrt
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.domain.api.data.DemandOrder
-import nl.stockio.allocation.domain.api.data.DemandOrderLine
-import nl.stockio.allocation.domain.service.AllocationProcessingService
-import nl.stockio.product.domain.model.ProductAllocationRequest
-import nl.stockio.product.domain.model.ProductAllocationResponse
-import nl.stockio.product.domain.model.ProductAllocationStatus
-import nl.stockio.product.domain.model.ProductCandidate
-import nl.stockio.product.domain.model.ProductSource
-import nl.stockio.product.domain.model.ResolvedProduct
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.api.dto.DemandOrder
+import nl.stockio.allocation.domain.api.dto.DemandOrderLine
+import nl.stockio.allocation.domain.processor.AllocationProcessor
+import nl.stockio.product.domain.api.dto.ProductAllocationRequest
+import nl.stockio.product.domain.api.dto.ProductAllocationResponse
+import nl.stockio.product.domain.api.dto.ProductAllocationStatus
+import nl.stockio.product.domain.api.dto.ProductCandidate
+import nl.stockio.product.domain.api.dto.ProductSource
+import nl.stockio.product.domain.api.dto.ResolvedProduct
 import nl.stockio.product.infra.ProductEntity
 import nl.stockio.product.infra.ProductKnowledgeChunk
 import nl.stockio.product.infra.ProductJpaRepository
@@ -34,7 +34,7 @@ class ProductAllocationService(
     private val embeddingClient: OllamaEmbeddingClient,
     private val productRepository: ProductJpaRepository,
     private val productVectorRepository: ProductVectorJdbcTemplateRepository,
-    private val processingService: AllocationProcessingService,
+    private val processingService: AllocationProcessor,
     private val properties: ProductResolutionProperties
 ) {
 

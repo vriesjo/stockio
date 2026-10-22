@@ -1,9 +1,9 @@
-package nl.stockio.allocation.domain.job
+package nl.stockio.allocation.domain.service
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.AllocationJobStatus
-import nl.stockio.allocation.domain.api.data.AllocationCompletionResult
+import nl.stockio.allocation.domain.model.AllocationCompletionResult
+import nl.stockio.allocation.domain.model.AllocationJobStatus
 import nl.stockio.stock.infra.AllocationJobResultJpaRepository
 import org.jobrunr.jobs.states.StateName
 import org.jobrunr.storage.StorageProvider
@@ -11,13 +11,13 @@ import org.jobrunr.storage.navigation.AmountRequest
 import org.springframework.stereotype.Service
 
 @Service
-class AllocationJobService(
+class AllocationJobRunrService(
     private val storageProvider: StorageProvider,
     private val resultRepository: AllocationJobResultJpaRepository,
     private val objectMapper: ObjectMapper
 ) {
 
-    fun getStatus(jobId: UUID): AllocationJobStatus {
+    fun getStatusById(jobId: UUID): AllocationJobStatus {
         val job = storageProvider.getJobById(jobId)
         val result = if (job.state == StateName.SUCCEEDED) {
             val saved = resultRepository.findById(jobId).orElseThrow {
@@ -34,7 +34,7 @@ class AllocationJobService(
         )
     }
 
-    fun deleteJobsWithRetries() {
+    fun deleteJobsWithRetriesByStatus() {
         val failedJobs = storageProvider.getJobList(StateName.PROCESSING, AmountRequest("updatedAt:ASC", 100)) +
             storageProvider.getJobList(StateName.SCHEDULED, AmountRequest("updatedAt:ASC", 100))
         for (job in failedJobs) {

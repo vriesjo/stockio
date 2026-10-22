@@ -11,11 +11,8 @@ import org.springframework.data.repository.query.Param
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import java.util.UUID
-import nl.stockio.allocation.domain.api.data.StockSyncResult
+import nl.stockio.allocation.domain.model.StockSyncResult
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
-import nl.stockio.reservation.domain.port.InboundReservationRepository
-import nl.stockio.reservation.domain.port.InboundShipmentRepository
-import nl.stockio.reservation.domain.port.InboundSupplyRepository
 import nl.stockio.stock.domain.port.StockLedgerSyncStatusRepository
 import nl.stockio.stock.domain.port.StockProjectionLockRepository
 import nl.stockio.stock.domain.port.StockRepository
@@ -78,7 +75,7 @@ data class StockLedgerSyncState(
 @Repository
 class StockLedgerSyncStatusJdbcTemplateRepository(private val jdbcTemplate: JdbcTemplate):
     StockLedgerSyncStatusRepository {
-    override fun get(): StockLedgerSyncState = checkNotNull(jdbcTemplate.queryForObject(
+    override fun getSyncStatus(): StockLedgerSyncState = checkNotNull(jdbcTemplate.queryForObject(
         "SELECT * FROM stock_ledger_sync_status WHERE id = 1",
         { resultSet, _ ->
             StockLedgerSyncState(

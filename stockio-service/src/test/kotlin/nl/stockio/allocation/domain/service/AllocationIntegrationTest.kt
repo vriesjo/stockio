@@ -11,28 +11,33 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import nl.stockio.allocation.domain.api.data.AllocationJobAccepted
-import nl.stockio.allocation.domain.api.data.AllocationRequest
-import nl.stockio.allocation.domain.api.data.AllocationRecord
-import nl.stockio.allocation.domain.api.data.AllocationRunType
-import nl.stockio.allocation.domain.api.data.AllocationStatus
-import nl.stockio.allocation.domain.api.data.DemandOrder
-import nl.stockio.allocation.domain.api.data.DemandOrderLine
-import nl.stockio.allocation.domain.api.data.InboundShipment
-import nl.stockio.allocation.domain.api.data.InboundShipmentLine
-import nl.stockio.allocation.domain.api.data.AllocationProcessingOutcome
-import nl.stockio.allocation.domain.api.data.ProcessDailyStockRequest
-import nl.stockio.allocation.domain.api.data.ReservationStatus
-import nl.stockio.allocation.domain.api.data.AllocationCompletionResult
+import java.util.concurrent.atomic.AtomicReference
+import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.allocation.domain.api.dto.DemandOrder
+import nl.stockio.allocation.domain.api.dto.DemandOrderLine
+import nl.stockio.allocation.domain.api.dto.InboundShipment
+import nl.stockio.allocation.domain.api.dto.InboundShipmentLine
+import nl.stockio.allocation.domain.api.dto.ProcessDailyStockRequest
+import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.job.AllocationJob
-import nl.stockio.allocation.domain.job.StockLedgerSyncJob
+import nl.stockio.allocation.domain.model.AllocationCompletionResult
+import nl.stockio.allocation.domain.model.AllocationJobAccepted
+import nl.stockio.allocation.domain.model.AllocationProcessingOutcome
+import nl.stockio.allocation.domain.model.AllocationRecord
+import nl.stockio.allocation.domain.model.AllocationStatus
+import nl.stockio.allocation.domain.processor.AllocationProcessor
+import nl.stockio.allocation.domain.processor.AllocationProjectionException
+import nl.stockio.stock.domain.job.StockLedgerSyncJob
 import nl.stockio.stock.infra.AllocationJobResultEntity
 import nl.stockio.stock.infra.AllocationJobResultJpaRepository
 import nl.stockio.stock.infra.StockLedgerSyncStatusJdbcTemplateRepository
 import nl.stockio.reservation.domain.job.ReservationExpiryJob
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
+import nl.stockio.allocation.domain.worker.AllocationSkuWorker
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.infra.AllocationRecordJpaRepository
@@ -60,7 +65,6 @@ import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import org.mockito.Mockito
 import org.jobrunr.jobs.states.StateName
 import org.jobrunr.scheduling.JobScheduler
 import org.jobrunr.storage.StorageProvider
@@ -76,7 +80,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource
 import org.springframework.test.annotation.DirtiesContext
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
-import org.springframework.test.context.bean.override.mockito.MockitoBean
+import org.springframework.test.context.bean.override.convention.TestBean
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers
@@ -102,8 +106,11 @@ import org.testcontainers.junit.jupiter.Testcontainers
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class AllocationIntegrationTest {
 
-    @MockitoBean
+    @TestBean(methodName = "createClock", enforceOverride = true)
     private lateinit var clock: Clock
+
+    private val adjustableClock: AdjustableClock
+        get() = clock as AdjustableClock
 
     @Autowired
     private lateinit var claimRepository: AllocationOrderClaimJpaRepository
@@ -130,7 +137,7 @@ class AllocationIntegrationTest {
     private lateinit var allocationJob: AllocationJob
 
     @Autowired
-    private lateinit var processingService: AllocationProcessingService
+    private lateinit var processingService: AllocationProcessor
 
     @Autowired
     private lateinit var ledgerSyncJob: StockLedgerSyncJob
@@ -209,7 +216,7 @@ class AllocationIntegrationTest {
 
     @BeforeEach
     fun clearDatabase() {
-        Mockito.`when`(clock.zone).thenReturn(ZoneId.systemDefault())
+        adjustableClock.setZone(ZoneId.systemDefault())
         setNow(Instant.now().truncatedTo(ChronoUnit.MICROS))
         jdbcTemplate.update(
             """UPDATE stock_ledger_sync_status SET last_success_at = NULL, snapshot_date = NULL,
@@ -231,6 +238,33 @@ class AllocationIntegrationTest {
         jdbcTemplate.update("DELETE FROM product_knowledge_chunks")
         jdbcTemplate.update("DELETE FROM product_embeddings")
         runRepository.deleteAll()
+    }
+
+    @Test
+    fun `business clock can be adjusted while background threads read it`() {
+        val executor = Executors.newSingleThreadExecutor()
+        val started = CountDownLatch(1)
+        val now = Instant.parse("2026-10-20T12:30:00Z")
+        val zone = ZoneId.of("Pacific/Kiritimati")
+        try {
+            val reader = executor.submit {
+                started.countDown()
+                repeat(10_000) {
+                    LocalDate.now(clock)
+                }
+            }
+            Assertions.assertTrue(started.await(10, TimeUnit.SECONDS))
+            repeat(10_000) {
+                setNow(now)
+                adjustableClock.setZone(zone)
+            }
+            reader.get(10, TimeUnit.SECONDS)
+            Assertions.assertEquals(now, clock.instant())
+            Assertions.assertEquals(zone, clock.zone)
+            Assertions.assertEquals(LocalDate.of(2026, 10, 21), LocalDate.now(clock))
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     @Test
@@ -424,7 +458,7 @@ class AllocationIntegrationTest {
         )
 
         val acceptedResponse = mockMvc.perform(
-            MockMvcRequestBuilders.post("/api/logistics/allocation-jobs")
+            MockMvcRequestBuilders.post("/api/allocation-jobs")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
@@ -464,7 +498,7 @@ class AllocationIntegrationTest {
         Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted {
             mockMvc.perform(
                 MockMvcRequestBuilders
-                    .get("/api/logistics/allocation-jobs/$jobId")
+                    .get("/api/allocation-jobs/$jobId")
             )
                 .andExpect(MockMvcResultMatchers.status().isOk)
                 .andExpect(MockMvcResultMatchers.jsonPath("$.status").value("SUCCEEDED"))
@@ -477,9 +511,9 @@ class AllocationIntegrationTest {
         val updatedStock = stockRepository.findAll().single()
         Assertions.assertEquals(5, updatedStock.quantityOnHand)
         Assertions.assertEquals(2, updatedStock.quantityReserved)
-        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
         Assertions.assertEquals(2, snapshotRepository.findLotsByDate(today).single().quantityReserved)
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/logistics/orders/API-ORDER/reservation"))
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/order-reservation/API-ORDER/status"))
             .andExpect(MockMvcResultMatchers.status().isOk)
             .andExpect(MockMvcResultMatchers.jsonPath("$.status").value("PENDING_CONFIRMATION"))
             .andExpect(MockMvcResultMatchers.jsonPath("$.cleanupPending").value(false))
@@ -490,7 +524,7 @@ class AllocationIntegrationTest {
         val today = LocalDate.now()
 
         mockMvc.perform(
-            MockMvcRequestBuilders.post("/api/logistics/allocation-jobs")
+            MockMvcRequestBuilders.post("/api/allocation-jobs")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
@@ -533,7 +567,7 @@ class AllocationIntegrationTest {
         Assertions.assertTrue(stockRepository.findAll().isEmpty())
         Assertions.assertFalse(inboundSupplyRepository.findAll().single().received)
         Assertions.assertEquals(5, snapshotRepository.findDailyByDate(today).single().closingStock)
-        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
         Assertions.assertEquals(result, allocationJob.execute(request.requestId, request))
         Assertions.assertEquals(3, inboundSupplyRepository.findAll().single().quantityReserved)
 
@@ -542,7 +576,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(5, stockRepository.findAll().single().quantityOnHand)
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/logistics/stock-ledger/status"))
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/stock-ledger/status"))
             .andExpect(MockMvcResultMatchers.status().isOk)
             .andExpect(MockMvcResultMatchers.jsonPath("$.snapshotDate").value(today.toString()))
             .andExpect(MockMvcResultMatchers.jsonPath("$.lastSuccessAt").exists())
@@ -577,7 +611,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(3, snapshotRepository.findLotsByDate(today).single().quantityReserved)
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
-        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
     }
 
     @Test
@@ -589,12 +623,12 @@ class AllocationIntegrationTest {
         jobResultRepository.save(AllocationJobResultEntity(jobId = request.requestId, resultJson = resultJson))
         Assertions.assertEquals(completion, allocationJob.execute(request.requestId, request))
         Assertions.assertEquals(resultJson, jobResultRepository.findById(request.requestId).orElseThrow().resultJson)
-        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
     }
 
     @Test
     fun `scheduled sync chooses today's business date again after midnight without new demand`() {
-        Mockito.`when`(clock.zone).thenReturn(ZoneId.of("UTC"))
+        adjustableClock.setZone(ZoneId.of("UTC"))
         val firstDate = LocalDate.of(2026, 10, 20)
         setNow(Instant.parse("2026-10-20T23:59:00Z"))
         allocationService.allocation(
@@ -607,13 +641,13 @@ class AllocationIntegrationTest {
             )
         )
         ledgerSyncJob.execute()
-        Assertions.assertEquals(firstDate, stockLedgerSyncStatusRepository.get().snapshotDate)
+        Assertions.assertEquals(firstDate, stockLedgerSyncStatusRepository.getSyncStatus().snapshotDate)
         Assertions.assertEquals(2, stockRepository.findAll().sumOf { it.quantityOnHand })
 
         setNow(Instant.parse("2026-10-21T00:01:00Z"))
         ledgerSyncJob.execute()
         ledgerSyncJob.execute()
-        Assertions.assertEquals(firstDate.plusDays(1), stockLedgerSyncStatusRepository.get().snapshotDate)
+        Assertions.assertEquals(firstDate.plusDays(1), stockLedgerSyncStatusRepository.getSyncStatus().snapshotDate)
         Assertions.assertEquals(5, stockRepository.findAll().sumOf { it.quantityOnHand })
         Assertions.assertTrue(inboundSupplyRepository.findAll().all { it.received })
     }
@@ -628,14 +662,14 @@ class AllocationIntegrationTest {
             registration.register()
             Assertions.assertEquals(1, jobStorage.recurringJobs.count { it.id == StockLedgerSyncJob.RECURRING_ID })
             ledgerSyncJob.register()
-            Assertions.assertTrue(jobStorage.recurringJobs.none { it.id == StockLedgerSyncJob.RECURRING_ID })
+            Assertions.assertEquals(1, jobStorage.recurringJobs.count { it.id == StockLedgerSyncJob.RECURRING_ID })
 
             val jobId = jobScheduler.enqueue { ledgerSyncJob.execute() }
             Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted {
                 Assertions.assertEquals(StateName.SUCCEEDED, jobStorage.getJobById(jobId).state)
             }
-            Assertions.assertEquals(LocalDate.now(clock), stockLedgerSyncStatusRepository.get().snapshotDate)
-            Assertions.assertNotNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
+            Assertions.assertEquals(LocalDate.now(clock), stockLedgerSyncStatusRepository.getSyncStatus().snapshotDate)
+            Assertions.assertNotNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
         } finally {
             jobScheduler.deleteRecurringJob(StockLedgerSyncJob.RECURRING_ID)
         }
@@ -654,16 +688,16 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(3, run.allocations.single().allocatedFromInventory)
         Assertions.assertEquals(3, snapshotRepository.findLotsByDate(today).single().quantityReserved)
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityOnHand)
-        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
     }
 
     @Test
     fun `manual sync with omitted date uses the business clock instead of the JVM date`() {
-        Mockito.`when`(clock.zone).thenReturn(ZoneId.of("Pacific/Kiritimati"))
+        adjustableClock.setZone(ZoneId.of("Pacific/Kiritimati"))
         setNow(Instant.parse("2026-10-20T12:30:00Z"))
         val result = stockLedgerProcessor.process(ProcessDailyStockRequest())
         Assertions.assertEquals(LocalDate.of(2026, 10, 21), result.snapshotDate)
-        Assertions.assertEquals(result.snapshotDate, stockLedgerSyncStatusRepository.get().snapshotDate)
+        Assertions.assertEquals(result.snapshotDate, stockLedgerSyncStatusRepository.getSyncStatus().snapshotDate)
     }
 
     @Test
@@ -684,7 +718,7 @@ class AllocationIntegrationTest {
         }
         Assertions.assertEquals(5, stockRepository.findAll().single().quantityOnHand)
         Assertions.assertTrue(inboundSupplyRepository.findAll().single().received)
-        Assertions.assertNotNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNotNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
     }
 
     @Test
@@ -704,7 +738,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(snapshots, snapshotRepository.findDailyByDate(today))
         Assertions.assertFalse(inboundSupplyRepository.findAll().single().received)
         Assertions.assertTrue(stockRepository.findAll().isEmpty())
-        Assertions.assertNull(stockLedgerSyncStatusRepository.get().lastSuccessAt)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
     }
 
     @Test
@@ -1349,7 +1383,7 @@ class AllocationIntegrationTest {
         setNow(deadline.minusMillis(1))
         Assertions.assertEquals(0, expiryService.expireBatch())
         setNow(deadline)
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/logistics/orders/EXPIRE-MIXED/reservation"))
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/order-reservation/EXPIRE-MIXED/status"))
             .andExpect(MockMvcResultMatchers.status().isOk)
             .andExpect(MockMvcResultMatchers.jsonPath("$.status").value("EXPIRED"))
             .andExpect(MockMvcResultMatchers.jsonPath("$.cleanupPending").value(true))
@@ -1365,16 +1399,16 @@ class AllocationIntegrationTest {
         Assertions.assertFalse(supply.received)
         Assertions.assertFalse(backorderRepository.existsById("EXPIRE-MIXED"))
         Assertions.assertEquals(listOf("KEEP-STOCK"), stockReservationRepository.findAll().map { it.orderId })
-        Assertions.assertEquals(ReservationStatus.EXPIRED,
-            claimRepository.findById("EXPIRE-MIXED").orElseThrow().reservationStatus)
+        Assertions.assertEquals(OrderReservationStatus.EXPIRED,
+            claimRepository.findById("EXPIRE-MIXED").orElseThrow().orderReservationStatus)
         Assertions.assertEquals(run, allocationService.allocation(request))
         Assertions.assertEquals(deadline,
             claimRepository.findById("EXPIRE-MIXED").orElseThrow().reservationExpiresAt)
         Assertions.assertEquals(2, stockRepository.findAll().single().quantityReserved)
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/logistics/orders/EXPIRE-MIXED/reservation"))
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/order-reservation/EXPIRE-MIXED/status"))
             .andExpect(MockMvcResultMatchers.jsonPath("$.cleanupPending").value(false))
             .andExpect(MockMvcResultMatchers.jsonPath("$.expiredAt").value(deadline.toString()))
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/logistics/orders/UNKNOWN/reservation"))
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/order-reservation/UNKNOWN/status"))
             .andExpect(MockMvcResultMatchers.status().isNotFound)
     }
 
@@ -1476,7 +1510,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(0, sync.skuCount)
         Assertions.assertEquals(0, sync.lotCount)
         Assertions.assertEquals(0, backorderRepository.count())
-        Assertions.assertTrue(claimRepository.findAll().all { it.reservationStatus == ReservationStatus.EXPIRED })
+        Assertions.assertTrue(claimRepository.findAll().all { it.orderReservationStatus == OrderReservationStatus.EXPIRED })
         Assertions.assertTrue(snapshotRepository.findDailyByDate(today).isEmpty())
     }
 
@@ -1491,7 +1525,7 @@ class AllocationIntegrationTest {
         }
         Assertions.assertEquals(0, backorderRepository.count())
         Assertions.assertEquals(3, claimRepository.count())
-        Assertions.assertTrue(claimRepository.findAll().all { it.reservationStatus == ReservationStatus.EXPIRED })
+        Assertions.assertTrue(claimRepository.findAll().all { it.orderReservationStatus == OrderReservationStatus.EXPIRED })
     }
 
     @Test
@@ -1513,8 +1547,8 @@ class AllocationIntegrationTest {
         setNow(requireNotNull(claimRepository.findById("ROLLBACK-ORDER").orElseThrow().reservationExpiresAt))
 
         Assertions.assertThrows(IllegalArgumentException::class.java) { expiryService.expireBatch() }
-        Assertions.assertEquals(ReservationStatus.PENDING_CONFIRMATION,
-            claimRepository.findById("ROLLBACK-ORDER").orElseThrow().reservationStatus)
+        Assertions.assertEquals(OrderReservationStatus.PENDING_CONFIRMATION,
+            claimRepository.findById("ROLLBACK-ORDER").orElseThrow().orderReservationStatus)
         Assertions.assertEquals(4, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
         Assertions.assertEquals(1, backorderRepository.count())
@@ -1522,8 +1556,8 @@ class AllocationIntegrationTest {
 
         jdbcTemplate.update("UPDATE stock SET quantity_reserved = 0")
         Assertions.assertThrows(IllegalStateException::class.java) { expiryService.expireBatch() }
-        Assertions.assertEquals(ReservationStatus.PENDING_CONFIRMATION,
-            claimRepository.findById("ROLLBACK-ORDER").orElseThrow().reservationStatus)
+        Assertions.assertEquals(OrderReservationStatus.PENDING_CONFIRMATION,
+            claimRepository.findById("ROLLBACK-ORDER").orElseThrow().orderReservationStatus)
         Assertions.assertEquals(1, stockReservationRepository.count())
         jdbcTemplate.update("UPDATE stock SET quantity_reserved = 4")
         Assertions.assertEquals(1, expiryService.expireBatch())
@@ -1550,8 +1584,8 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(5, stockRepository.findAll().single().quantityOnHand)
         Assertions.assertEquals(0, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(0, snapshotRepository.findLotsByDate(today).single().quantityReserved)
-        Assertions.assertEquals(ReservationStatus.EXPIRED,
-            claimRepository.findById("STALE-ORDER").orElseThrow().reservationStatus)
+        Assertions.assertEquals(OrderReservationStatus.EXPIRED,
+            claimRepository.findById("STALE-ORDER").orElseThrow().orderReservationStatus)
     }
 
     @Test
@@ -1579,8 +1613,8 @@ class AllocationIntegrationTest {
         val result = allocationService.allocation(request)
         Assertions.assertEquals(2, result.allocations.first().allocatedFromInventory)
         Assertions.assertEquals(0, stockRepository.findAll().single().quantityReserved)
-        Assertions.assertEquals(ReservationStatus.EXPIRED,
-            claimRepository.findById("PARTIAL-FIRST").orElseThrow().reservationStatus)
+        Assertions.assertEquals(OrderReservationStatus.EXPIRED,
+            claimRepository.findById("PARTIAL-FIRST").orElseThrow().orderReservationStatus)
         Assertions.assertEquals(AllocationProcessingOutcome.SKIPPED_ORDER_EXPIRED,
             result.allocations.last().processingOutcome)
         Assertions.assertNull(result.allocations.last().status)
@@ -1711,7 +1745,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(2, run.allocations.last().backorderedQuantity)
         Assertions.assertEquals(2, stockReservationRepository.count())
         Assertions.assertEquals(3, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM inbound_reservation", Int::class.java))
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/logistics/orders/MULTI-ORDER/reservation"))
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/order-reservation/MULTI-ORDER/status"))
             .andExpect(MockMvcResultMatchers.jsonPath("$.lines.length()").value(4))
             .andExpect(MockMvcResultMatchers.jsonPath("$.lines[1].orderLineId").value("MULTI-Z2"))
         stockLedgerProcessor.process(ProcessDailyStockRequest(today))
@@ -1923,17 +1957,38 @@ class AllocationIntegrationTest {
         val claims = claimRepository.findAllById(orderIds.toList())
         Assertions.assertEquals(orderIds.size, claims.size)
         claims.forEach {
-            it.reservationStatus = ReservationStatus.CONFIRMED
+            it.orderReservationStatus = OrderReservationStatus.CONFIRMED
             it.confirmedAt = clock.instant()
         }
         claimRepository.saveAll(claims)
     }
 
     private fun setNow(instant: Instant) {
-        Mockito.`when`(clock.instant()).thenReturn(instant)
+        adjustableClock.setInstant(instant)
+    }
+
+    class AdjustableClock : Clock() {
+        private val delegate = AtomicReference<Clock>(Clock.systemDefaultZone())
+
+        override fun instant(): Instant = delegate.get().instant()
+
+        override fun getZone(): ZoneId = delegate.get().zone
+
+        override fun withZone(zone: ZoneId): Clock = delegate.get().withZone(zone)
+
+        fun setInstant(instant: Instant) {
+            delegate.updateAndGet { Clock.fixed(instant, it.zone) }
+        }
+
+        fun setZone(zone: ZoneId) {
+            delegate.updateAndGet { it.withZone(zone) }
+        }
     }
 
     companion object {
+        @JvmStatic
+        fun createClock(): AdjustableClock = AdjustableClock()
+
         @Container
         @JvmField
         val postgres = PostgreSQLContainer<Nothing>("pgvector/pgvector:pg16")
