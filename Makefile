@@ -1,4 +1,4 @@
-.PHONY: build up down stop
+.PHONY: run-api run-service build test up up-rabbitmq up-postgres up-ollama down logs
 
 run-api:
 	./gradlew :stock-api:bootRun

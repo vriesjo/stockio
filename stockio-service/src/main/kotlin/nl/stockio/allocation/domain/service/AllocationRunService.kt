@@ -14,6 +14,8 @@ import nl.stockio.allocation.infra.OpenBackorderJpaRepository
 import nl.stockio.allocation.domain.model.AllocationRecord
 import nl.stockio.allocation.domain.model.AllocationRunResult
 import nl.stockio.allocation.domain.model.AllocationSource
+import nl.stockio.allocation.domain.port.AllocationRecordRepository
+import nl.stockio.allocation.domain.port.AllocationSourceRepository
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 
@@ -22,8 +24,8 @@ class AllocationRunService(
     private val runRepository: AllocationRunJpaRepository,
     private val skuOperationRepository: AllocationSkuOperationJpaRepository,
     private val backorderRepository: OpenBackorderJpaRepository,
-    private val recordRepository: AllocationRecordJpaRepository,
-    private val sourceRepository: AllocationSourceJpaRepository
+    private val recordRepository: AllocationRecordRepository,
+    private val sourceRepository: AllocationSourceRepository
 ) {
 
     @Transactional(readOnly = true)

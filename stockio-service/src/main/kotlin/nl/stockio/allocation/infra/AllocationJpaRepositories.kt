@@ -3,6 +3,7 @@ package nl.stockio.allocation.infra
 import jakarta.persistence.LockModeType
 import java.time.Instant
 import java.time.LocalDate
+import java.util.Optional
 import java.util.UUID
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationRecordRepository
@@ -102,6 +103,9 @@ interface AllocationOrderClaimJpaRepository : AllocationOrderClaimRepository, Jp
             "and c.reservationExpiresAt <= :now"
     )
     override fun findOldestOverdueDeadline(@Param("now") now: Instant): Instant?
+    @Query("select c from AllocationOrderClaimEntity c where c.orderId = :id")
+    override fun findById(@Param("id") id: String): Optional<AllocationOrderClaimEntity>
+    override fun <S : AllocationOrderClaimEntity> saveAndFlush(entity: S): S
 }
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
