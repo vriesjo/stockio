@@ -10,11 +10,11 @@ import nl.stockio.allocation.domain.model.AllocationOrder
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationRunRepository
 import nl.stockio.allocation.domain.port.DemandOrderLineRepository
-import nl.stockio.stock.infra.StockProjectionLockJpaRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.AllocationRunEntity
 import nl.stockio.allocation.infra.DemandOrderLineEntity
 import nl.stockio.reservation.domain.service.ReservationProperties
+import nl.stockio.stock.domain.port.StockProjectionLockRepository
 import nl.stockio.util.requestHash
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -42,7 +42,7 @@ import org.springframework.transaction.annotation.Transactional
  */
 @Service
 class AllocationDocumentService(
-    private val stockProjectionLockRepository: StockProjectionLockJpaRepository,
+    private val stockProjectionLockRepository: StockProjectionLockRepository,
     private val allocationRunRepository: AllocationRunRepository,
     private val orderClaimRepository: AllocationOrderClaimRepository,
     private val demandOrderLineRepository: DemandOrderLineRepository,

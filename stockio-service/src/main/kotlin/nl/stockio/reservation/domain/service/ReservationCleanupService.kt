@@ -5,18 +5,18 @@ import java.time.Clock
 import java.time.Instant
 import java.util.UUID
 import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
-import nl.stockio.stock.infra.StockProjectionLockJpaRepository
+import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
+import nl.stockio.allocation.domain.port.DemandOrderLineRepository
+import nl.stockio.allocation.domain.port.OpenBackorderRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
-import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
 import nl.stockio.allocation.infra.DemandOrderLineEntity
-import nl.stockio.allocation.infra.DemandOrderLineJpaRepository
-import nl.stockio.reservation.infra.InboundReservationJpaRepository
-import nl.stockio.reservation.infra.InboundSupplyJpaRepository
-import nl.stockio.allocation.infra.OpenBackorderJpaRepository
+import nl.stockio.reservation.domain.port.InboundReservationRepository
+import nl.stockio.reservation.domain.port.InboundSupplyRepository
+import nl.stockio.stock.domain.port.StockProjectionLockRepository
+import nl.stockio.stock.domain.port.StockRepository
+import nl.stockio.stock.domain.port.StockReservationRepository
 import nl.stockio.stock.infra.StockEntity
-import nl.stockio.stock.infra.StockJpaRepository
 import nl.stockio.stock.infra.StockReservationEntity
-import nl.stockio.stock.infra.StockReservationJpaRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
@@ -48,14 +48,14 @@ private val logger = KotlinLogging.logger {}
  */
 @Service
 class ReservationCleanupService(
-    private val stockProjectionLockRepository: StockProjectionLockJpaRepository,
-    private val claimRepository: AllocationOrderClaimJpaRepository,
-    private val lineRepository: DemandOrderLineJpaRepository,
-    private val stockRepository: StockJpaRepository,
-    private val stockReservationRepository: StockReservationJpaRepository,
-    private val inboundSupplyRepository: InboundSupplyJpaRepository,
-    private val inboundReservationRepository: InboundReservationJpaRepository,
-    private val backorderRepository: OpenBackorderJpaRepository,
+    private val stockProjectionLockRepository: StockProjectionLockRepository,
+    private val claimRepository: AllocationOrderClaimRepository,
+    private val lineRepository: DemandOrderLineRepository,
+    private val stockRepository: StockRepository,
+    private val stockReservationRepository: StockReservationRepository,
+    private val inboundSupplyRepository: InboundSupplyRepository,
+    private val inboundReservationRepository: InboundReservationRepository,
+    private val backorderRepository: OpenBackorderRepository,
     private val properties: ReservationProperties,
     private val clock: Clock
 ) {

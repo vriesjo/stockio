@@ -3,8 +3,8 @@ package nl.stockio.allocation.domain.job.listener
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import nl.stockio.allocation.domain.api.dto.AllocationRequest
-import nl.stockio.allocation.domain.job.AllocationJob
-import nl.stockio.allocation.domain.api.dto.AllocationRequestEvent
+import nl.stockio.allocation.domain.job.AllocationJobExecutor
+import org.jobrunr.scheduling.JobScheduler
 import org.jobrunr.storage.JobNotFoundException
 import org.jobrunr.storage.StorageProvider
 import org.springframework.amqp.core.Binding
@@ -27,8 +27,8 @@ private val logger = KotlinLogging.logger {}
 
 @Component
 class AllocationRabbitListener(
-    private val allocationJob: AllocationJob,
-    private val allocationEventListener: AllocationEventListener,
+    private val jobScheduler: JobScheduler,
+    private val allocationJobExecutor: AllocationJobExecutor,
     private val storageProvider: StorageProvider
 ) {
 
@@ -36,7 +36,7 @@ class AllocationRabbitListener(
     fun receive(request: AllocationRequest) {
         val jobId = request.requestId
         try {
-            allocationJob.execute(jobId, request)
+            allocationJobExecutor.executeSync(jobId, request)
             logger.info { "Processed allocation request '${request.requestId}' synchronously." }
         } catch (exception: IllegalArgumentException) {
             logger.error(exception) {
@@ -56,7 +56,11 @@ class AllocationRabbitListener(
                 logger.info { "JobRunr job '${jobId}' already exists; skipping enqueue." }
                 return
             }
-            allocationEventListener.enqueue(AllocationRequestEvent(jobId, request))
+            jobScheduler.enqueue(jobId) {
+                logger.info { "Async executing allocation job ${jobId} for request ${request.requestId}, " +
+                    "only when the synchronous processing fails." }
+                allocationJobExecutor.executeSync(jobId, request)
+            }
         }
     }
 }

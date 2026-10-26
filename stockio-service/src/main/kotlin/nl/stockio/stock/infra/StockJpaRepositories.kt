@@ -4,6 +4,7 @@ import jakarta.persistence.LockModeType
 import java.sql.Timestamp
 import java.time.Instant
 import java.time.LocalDate
+import java.util.Optional
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Lock
 import org.springframework.data.jpa.repository.Query
@@ -43,14 +44,24 @@ interface StockProjectionLockJpaRepository : StockProjectionLockRepository, JpaR
 }
 
 interface StockJpaRepository : StockRepository, JpaRepository<StockEntity, UUID> {
+    override fun findAll(): List<StockEntity>
+    override fun <S : StockEntity> saveAll(entities: Iterable<S>): List<S>
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select s from StockEntity s where s.sku in :skus order by s.receivedDate, s.lotId")
     override fun lockAllBySkuIn(@Param("skus") skus: Collection<String>): List<StockEntity>
 }
 
-interface AllocationJobResultJpaRepository : AllocationJobResultRepository, JpaRepository<AllocationJobResultEntity, UUID>
+interface AllocationJobResultJpaRepository : AllocationJobResultRepository, JpaRepository<AllocationJobResultEntity, UUID> {
+    override fun findById(jobId: UUID): Optional<AllocationJobResultEntity>
+    override fun <S : AllocationJobResultEntity> save(entity: S): S
+}
 
 interface StockReservationJpaRepository : StockReservationRepository, JpaRepository<StockReservationEntity, UUID> {
+    override fun findAll(): List<StockReservationEntity>
+    override fun deleteAll(entities: Iterable<StockReservationEntity>)
+    override fun <S : StockReservationEntity> saveAll(entities: Iterable<S>): List<S>
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select r from StockReservationEntity r where r.orderLineId in :lineIds")
     override fun lockAllByOrderLineIdIn(@Param("lineIds") lineIds: Collection<String>): List<StockReservationEntity>

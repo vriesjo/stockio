@@ -77,9 +77,7 @@ data class StockLedgerSyncProperties(
     val schedule: CronExpression = CronExpression(cron)
 
     init {
-        require(cron.trim().split(Regex("\\s+")).size == 5) {
-            "Ledger synchronization cron must have five fields."
-        }
+        require(cron.trim().split(Regex("\\s+")).size == 5) { "Ledger synchronization cron must have five fields." }
         require(!freshnessTolerance.isNegative) { "Ledger synchronization freshness tolerance must not be negative." }
     }
 }
@@ -88,5 +86,5 @@ data class StockLedgerSyncProperties(
 @EnableConfigurationProperties(StockLedgerSyncProperties::class)
 class StockLedgerSyncConfiguration {
     @Bean
-    fun businessClock(properties: StockLedgerSyncProperties): Clock = Clock.system(properties.zoneId)
+    fun systemClock(properties: StockLedgerSyncProperties): Clock = Clock.system(properties.zoneId)
 }

@@ -11,8 +11,8 @@ import nl.stockio.allocation.domain.api.dto.AllocationRunType
 import nl.stockio.allocation.domain.model.AllocationRecord
 import nl.stockio.allocation.domain.model.AllocationRunResult
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
+import nl.stockio.allocation.domain.port.OpenBackorderRepository
 import nl.stockio.allocation.domain.worker.AllocationSkuWorker
-import nl.stockio.allocation.infra.OpenBackorderJpaRepository
 import nl.stockio.util.requestHash
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
@@ -22,7 +22,7 @@ class BackorderAllocationService(
     private val allocationRunService: AllocationRunService,
     private val allocationSkuWorker: AllocationSkuWorker,
     private val allocationDocumentService: AllocationDocumentService,
-    private val backorderRepository: OpenBackorderJpaRepository,
+    private val backorderRepository: OpenBackorderRepository,
     @Value("\${stockio.allocation.max-concurrent-skus:4}")
     maxConcurrentSkus: Int
 ) {

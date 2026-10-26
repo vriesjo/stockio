@@ -10,7 +10,7 @@ import nl.stockio.allocation.domain.api.dto.DemandOrder
 import nl.stockio.allocation.domain.api.dto.DemandOrderLine
 import nl.stockio.allocation.domain.api.dto.InboundShipment
 import nl.stockio.allocation.domain.api.dto.InboundShipmentLine
-import nl.stockio.product.infra.ProductJpaRepository
+import nl.stockio.product.domain.port.ProductRepository
 import org.springframework.amqp.rabbit.core.RabbitTemplate
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
@@ -27,7 +27,7 @@ private val logger = KotlinLogging.logger {}
 )
 class AllocationRequestPublisher(
     private val rabbitTemplate: RabbitTemplate,
-    private val productRepository: ProductJpaRepository,
+    private val productRepository: ProductRepository,
     private val clock: Clock,
     @Value("\${stockio.allocation.rabbitmq.exchange}") private val exchange: String,
     @Value("\${stockio.allocation.rabbitmq.routing-key}") private val routingKey: String
@@ -40,7 +40,7 @@ class AllocationRequestPublisher(
     fun publishSampleRequest() {
         val today = LocalDate.now(clock)
         val requestId = UUID.randomUUID()
-        val products = productRepository.findAll().toList()
+        val products = productRepository.findAll()
         val demandOrders = mutableListOf<DemandOrder>()
         val inboundShipments = mutableListOf<InboundShipment>()
         for (i in 1..5) {

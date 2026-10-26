@@ -22,7 +22,8 @@ import org.springframework.data.repository.query.Param
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface AllocationRunJpaRepository : AllocationRunRepository, JpaRepository<AllocationRunEntity, UUID> {
-    fun findByRequestId(requestId: UUID): AllocationRunEntity?
+    override fun findByRequestId(requestId: UUID): AllocationRunEntity?
+    override fun findById(runId: UUID): Optional<AllocationRunEntity>
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select r from AllocationRunEntity r where r.id = :runId")
@@ -75,13 +76,16 @@ interface AllocationSkuLockJpaRepository : AllocationSkuLockRepository, JpaRepos
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface AllocationSkuOperationJpaRepository : AllocationSkuOperationRepository, JpaRepository<AllocationSkuOperationEntity, UUID> {
-    fun findByRunIdAndSku(runId: UUID, sku: String): AllocationSkuOperationEntity?
-    fun findAllByRunId(runId: UUID): List<AllocationSkuOperationEntity>
-    fun deleteAllByRunId(runId: UUID)
+    override fun findByRunIdAndSku(runId: UUID, sku: String): AllocationSkuOperationEntity?
+    override fun findAllByRunId(runId: UUID): List<AllocationSkuOperationEntity>
+    override fun <S : AllocationSkuOperationEntity> save(entity: S): S
+    override fun deleteAllByRunId(runId: UUID)
 }
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface AllocationOrderClaimJpaRepository : AllocationOrderClaimRepository, JpaRepository<AllocationOrderClaimEntity, String> {
+    override fun findAll(): List<AllocationOrderClaimEntity>
+
     @Query(
         value = """
             SELECT * FROM demand_order
@@ -105,16 +109,23 @@ interface AllocationOrderClaimJpaRepository : AllocationOrderClaimRepository, Jp
     override fun findOldestOverdueDeadline(@Param("now") now: Instant): Instant?
     @Query("select c from AllocationOrderClaimEntity c where c.orderId = :id")
     override fun findById(@Param("id") id: String): Optional<AllocationOrderClaimEntity>
+    override fun findAllById(ids: Iterable<String>): List<AllocationOrderClaimEntity>
     override fun <S : AllocationOrderClaimEntity> saveAndFlush(entity: S): S
+    override fun flush()
 }
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface DemandOrderLineJpaRepository : DemandOrderLineRepository, JpaRepository<DemandOrderLineEntity, String> {
+    override fun findAllById(ids: Iterable<String>): List<DemandOrderLineEntity>
     override fun findAllByOrderIdInOrderByOrderIdAscSequenceNumberAsc(orderIds: Collection<String>): List<DemandOrderLineEntity>
 }
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface OpenBackorderJpaRepository : OpenBackorderRepository, JpaRepository<OpenBackorderEntity, String> {
+    override fun findAll(): List<OpenBackorderEntity>
+    override fun <S : OpenBackorderEntity> save(entity: S): S
+    override fun <S : OpenBackorderEntity> saveAll(entities: Iterable<S>): List<S>
+    override fun delete(entity: OpenBackorderEntity)
     override fun findAllByOrderByPriorityAscPlacedDateAscCreatedAtAscOrderIdAsc(): List<OpenBackorderEntity>
 
     @Query("select distinct b.sku from OpenBackorderEntity b")

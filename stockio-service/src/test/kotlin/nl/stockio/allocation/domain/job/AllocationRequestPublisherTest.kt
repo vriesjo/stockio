@@ -11,7 +11,7 @@ import nl.stockio.allocation.domain.worker.InboundAllocationPolicy
 import nl.stockio.allocation.domain.worker.InventoryAllocationPolicy
 import nl.stockio.allocation.domain.service.allocationLines
 import nl.stockio.product.infra.ProductEntity
-import nl.stockio.product.infra.ProductJpaRepository
+import nl.stockio.product.domain.port.ProductRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -27,7 +27,7 @@ class AllocationRequestPublisherTest {
     @Test
     fun `publishes a sample allocation request to the configured exchange`() {
         val rabbitTemplate = mock(RabbitTemplate::class.java)
-        val productRepository = mock(ProductJpaRepository::class.java)
+        val productRepository = mock(ProductRepository::class.java)
         val product = ProductEntity(sku = "MAKI-KOMKOMMER", title = "Maki Komkommer")
         `when`(productRepository.findAll()).thenReturn(listOf(product))
         val publisher = AllocationRequestPublisher(

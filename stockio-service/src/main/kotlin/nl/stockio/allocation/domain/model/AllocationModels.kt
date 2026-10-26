@@ -27,12 +27,13 @@ data class StockSyncResult(
 )
 
 data class AllocationCompletionResult(
+    val jobId: UUID,
     val allocationRun: AllocationRunResult,
-    val version: Int = 2
 )
 
 data class AllocationJobAccepted(
-    val jobId: UUID
+    val jobId: UUID,
+    val requestId: UUID,
 )
 
 data class AllocationJobStatus(

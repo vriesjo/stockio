@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import java.util.UUID
 import nl.stockio.allocation.domain.model.AllocationCompletionResult
 import nl.stockio.allocation.domain.model.AllocationJobStatus
-import nl.stockio.stock.infra.AllocationJobResultJpaRepository
+import nl.stockio.stock.domain.port.AllocationJobResultRepository
 import org.jobrunr.jobs.states.StateName
 import org.jobrunr.storage.StorageProvider
 import org.jobrunr.storage.navigation.AmountRequest
@@ -13,7 +13,7 @@ import org.springframework.stereotype.Service
 @Service
 class AllocationJobRunrService(
     private val storageProvider: StorageProvider,
-    private val resultRepository: AllocationJobResultJpaRepository,
+    private val resultRepository: AllocationJobResultRepository,
     private val objectMapper: ObjectMapper
 ) {
 

@@ -19,15 +19,15 @@ import nl.stockio.allocation.domain.api.dto.DemandOrder
 import nl.stockio.allocation.domain.api.dto.DemandOrderLine
 import nl.stockio.allocation.domain.api.dto.InboundShipment
 import nl.stockio.allocation.domain.api.dto.InboundShipmentLine
-import nl.stockio.product.infra.ProductJpaRepository
 import io.github.oshai.kotlinlogging.KotlinLogging
+import nl.stockio.product.domain.port.ProductRepository
 import org.springframework.stereotype.Service
 
 private val logger = KotlinLogging.logger {}
 
 @Service
 class AllocationExcelService(
-    private val productRepository: ProductJpaRepository,
+    private val productRepository: ProductRepository,
     private val clock: Clock
 ) {
 

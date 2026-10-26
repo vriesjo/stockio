@@ -1,7 +1,10 @@
 package nl.stockio.stock.domain.port
 
 import java.time.LocalDate
+import java.util.Optional
+import java.util.UUID
 import nl.stockio.allocation.domain.model.StockSyncResult
+import nl.stockio.stock.infra.AllocationJobResultEntity
 import nl.stockio.stock.infra.StockDailyLotSnapshot
 import nl.stockio.stock.infra.StockDailySnapshot
 import nl.stockio.stock.infra.StockEntity
@@ -10,6 +13,8 @@ import nl.stockio.stock.infra.StockReservationEntity
 
 interface StockRepository {
 
+    fun findAll(): List<StockEntity>
+    fun <S : StockEntity> saveAll(entities: Iterable<S>): List<S>
     fun lockAllBySkuIn(skus: Collection<String>): List<StockEntity>
 }
 
@@ -25,6 +30,9 @@ interface StockLedgerSyncStatusRepository {
 }
 
 interface StockReservationRepository {
+    fun findAll(): List<StockReservationEntity>
+    fun deleteAll(entities: Iterable<StockReservationEntity>)
+    fun <S : StockReservationEntity> saveAll(entities: Iterable<S>): List<S>
     fun lockAllByOrderLineIdIn(lineIds: Collection<String>): List<StockReservationEntity>
     fun lockAllByOrderIdIn(orderIds: Collection<String>): List<StockReservationEntity>
     fun findAllByOrderIdIn(orderIds: Collection<String>): List<StockReservationEntity>
@@ -44,5 +52,6 @@ interface StockSnapshotRepository {
 }
 
 interface AllocationJobResultRepository {
-
+    fun findById(jobId: UUID): Optional<AllocationJobResultEntity>
+    fun <S : AllocationJobResultEntity> save(entity: S): S
 }

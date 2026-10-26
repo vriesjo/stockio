@@ -23,10 +23,10 @@ up-postgres:
 
 up-ollama:
 	docker compose -f infra/docker/docker-compose.yml up -d --wait ollama
+	docker compose -f infra/docker/docker-compose.yml run --rm ollama-pull-model
 
 down:
 	docker compose -f infra/docker/docker-compose.yml down
 
 logs:
 	docker compose -f infra/docker/docker-compose.yml ps -a postgres && docker compose -f infra/docker/docker-compose.yml logs --tail 100 postgres
-

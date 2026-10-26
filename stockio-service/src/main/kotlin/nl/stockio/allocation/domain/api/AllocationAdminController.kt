@@ -44,9 +44,4 @@ class AllocationAdminController(
         return "Jobs with excessive retries deleted."
     }
 
-    @ExceptionHandler(IllegalArgumentException::class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    fun handleInvalidRequest(exception: IllegalArgumentException): Map<String, String> =
-        mapOf("error" to (exception.message ?: "Invalid admin request."))
-
 }

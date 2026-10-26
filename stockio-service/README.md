@@ -18,6 +18,32 @@ java -jar stockio-service/build/libs/stock-service-0.0.1-SNAPSHOT.jar
 
 The server exposes both MCP STDIO and a local REST API. When using MCP, launch the JAR from an MCP client and keep protocol messages on stdout; application logs are sent to stderr. The REST API listens on `127.0.0.1:8080` by default and can also be used when the JAR is launched directly. Set `SERVER_ADDRESS` and `SERVER_PORT` to override the REST bind address and port.
 
+The `stockio-api` MCP client starts its own service subprocess with a random HTTP
+port and the JobRunr dashboard disabled, avoiding a conflict with another
+service's dashboard on port `8181`. After changing the client launch
+configuration, restart `stockio-api` so it starts a new subprocess.
+
+### Local embedding model
+
+From the repository root, `docker compose -f infra/docker/docker-compose.yml up -d`
+starts Ollama and a one-shot `ollama-pull-model` service. The initializer waits
+until Ollama is healthy, then pulls `nomic-embed-text` through its internal
+HTTP endpoint. The model is stored in the existing `ollama-data` volume, so
+container restarts do not require downloading the existing model files again.
+The initializer exiting with code `0` is expected; Ollama remains running.
+
+Use `make up-ollama` to start only Ollama and wait for the model pull to finish.
+To inspect the model list, run:
+
+```shell
+docker compose -f infra/docker/docker-compose.yml exec ollama ollama list
+```
+
+Ollama's health check reports server readiness, not completion of the model
+download. With a detached full-stack startup, check
+`docker compose -f infra/docker/docker-compose.yml logs ollama-pull-model`
+for the pull result before using equivalent-product matching.
+
 ## Tools
 
 | Tool | Purpose |

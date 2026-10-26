@@ -4,26 +4,24 @@ import java.time.Instant
 import java.util.UUID
 import nl.stockio.allocation.domain.api.dto.AllocationRequest
 import nl.stockio.allocation.infra.AllocationRecordEntity
-import nl.stockio.allocation.infra.AllocationRecordJpaRepository
 import nl.stockio.allocation.infra.AllocationRunEntity
-import nl.stockio.allocation.infra.AllocationRunJpaRepository
-import nl.stockio.allocation.infra.AllocationSkuOperationJpaRepository
 import nl.stockio.allocation.infra.AllocationSourceEntity
-import nl.stockio.allocation.infra.AllocationSourceJpaRepository
-import nl.stockio.allocation.infra.OpenBackorderJpaRepository
 import nl.stockio.allocation.domain.model.AllocationRecord
 import nl.stockio.allocation.domain.model.AllocationRunResult
 import nl.stockio.allocation.domain.model.AllocationSource
 import nl.stockio.allocation.domain.port.AllocationRecordRepository
+import nl.stockio.allocation.domain.port.AllocationRunRepository
+import nl.stockio.allocation.domain.port.AllocationSkuOperationRepository
 import nl.stockio.allocation.domain.port.AllocationSourceRepository
+import nl.stockio.allocation.domain.port.OpenBackorderRepository
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 
 @Component
 class AllocationRunService(
-    private val runRepository: AllocationRunJpaRepository,
-    private val skuOperationRepository: AllocationSkuOperationJpaRepository,
-    private val backorderRepository: OpenBackorderJpaRepository,
+    private val runRepository: AllocationRunRepository,
+    private val skuOperationRepository: AllocationSkuOperationRepository,
+    private val backorderRepository: OpenBackorderRepository,
     private val recordRepository: AllocationRecordRepository,
     private val sourceRepository: AllocationSourceRepository
 ) {

@@ -15,9 +15,9 @@ import nl.stockio.product.domain.api.dto.ProductAllocationStatus
 import nl.stockio.product.domain.api.dto.ProductCandidate
 import nl.stockio.product.domain.api.dto.ProductSource
 import nl.stockio.product.domain.api.dto.ResolvedProduct
+import nl.stockio.product.domain.port.ProductRepository
 import nl.stockio.product.infra.ProductEntity
 import nl.stockio.product.infra.ProductKnowledgeChunk
-import nl.stockio.product.infra.ProductJpaRepository
 import nl.stockio.product.infra.ProductVectorJdbcTemplateRepository
 import org.springframework.stereotype.Service
 
@@ -32,7 +32,7 @@ import org.springframework.stereotype.Service
 class ProductAllocationService(
     private val tavilySearchClient: TavilySearchClient,
     private val embeddingClient: OllamaEmbeddingClient,
-    private val productRepository: ProductJpaRepository,
+    private val productRepository: ProductRepository,
     private val productVectorRepository: ProductVectorJdbcTemplateRepository,
     private val processingService: AllocationProcessor,
     private val properties: ProductResolutionProperties

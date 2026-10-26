@@ -15,11 +15,17 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 
 @Transactional(propagation = Propagation.MANDATORY)
 @ConditionalOnProperty(prefix = "stockio.reservation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
-interface InboundShipmentJpaRepository : InboundShipmentRepository, JpaRepository<InboundShipmentEntity, String>
+interface InboundShipmentJpaRepository : InboundShipmentRepository, JpaRepository<InboundShipmentEntity, String> {
+    override fun existsById(shipmentId: String): Boolean
+    override fun <S : InboundShipmentEntity> saveAndFlush(entity: S): S
+}
 
 @ConditionalOnProperty(prefix = "stockio.reservation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface InboundSupplyJpaRepository : InboundSupplyRepository, JpaRepository<InboundSupplyEntity, String> {
-    fun findAllByShipmentId(shipmentId: String): List<InboundSupplyEntity>
+    override fun findAll(): List<InboundSupplyEntity>
+    override fun findAllByShipmentId(shipmentId: String): List<InboundSupplyEntity>
+    override fun findAllById(ids: Iterable<String>): List<InboundSupplyEntity>
+    override fun <S : InboundSupplyEntity> saveAll(entities: Iterable<S>): List<S>
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select s from InboundSupplyEntity s where s.shipmentLineId in :lineIds order by s.shipmentLineId")
@@ -43,6 +49,10 @@ interface InboundSupplyJpaRepository : InboundSupplyRepository, JpaRepository<In
 
 @ConditionalOnProperty(prefix = "stockio.reservation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface InboundReservationJpaRepository : InboundReservationRepository, JpaRepository<InboundReservationEntity, UUID> {
+    override fun findAll(): List<InboundReservationEntity>
+    override fun deleteAll(entities: Iterable<InboundReservationEntity>)
+    override fun <S : InboundReservationEntity> saveAll(entities: Iterable<S>): List<S>
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select r from InboundReservationEntity r where r.orderLineId in :lineIds")
     override fun lockAllByOrderLineIdIn(@Param("lineIds") lineIds: Collection<String>): List<InboundReservationEntity>

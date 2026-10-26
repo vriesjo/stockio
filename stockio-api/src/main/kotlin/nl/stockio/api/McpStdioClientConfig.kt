@@ -39,6 +39,7 @@ class McpStdioClientConfig {
             .addEnvVar("SERVER_PORT", "0")
             .addEnvVar("SPRING_AI_MCP_SERVER_STDIO", "true")
             .addEnvVar("SPRING_PROFILES_ACTIVE", "stdio")
+            .addEnvVar("JOBRUNR_DASHBOARD_ENABLED", "false")
             .build()
         val transport = StdioClientTransport(serverParameters, McpJsonMapper.getDefault())
         val client = McpClient.sync(transport)

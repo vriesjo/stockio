@@ -9,6 +9,8 @@ import org.springframework.data.repository.query.Param
 
 @ConditionalOnProperty(prefix = "stockio.product.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface ProductJpaRepository : ProductRepository, JpaRepository<ProductEntity, UUID> {
+    override fun findAll(): List<ProductEntity>
+
     @Query("select product.sku from ProductEntity product where lower(product.title) = lower(:title)")
     override fun findSkuByTitle(@Param("title") title: String): String?
 

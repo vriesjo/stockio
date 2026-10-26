@@ -4,8 +4,8 @@ import java.time.Clock
 import nl.stockio.allocation.domain.api.dto.OrderReservationResponse
 import nl.stockio.allocation.domain.api.dto.OrderReservationLine
 import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
-import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
-import nl.stockio.allocation.infra.DemandOrderLineJpaRepository
+import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
+import nl.stockio.allocation.domain.port.DemandOrderLineRepository
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -17,8 +17,8 @@ import org.springframework.transaction.annotation.Transactional
  */
 @Service
 class OrderReservationService(
-    private val claimRepository: AllocationOrderClaimJpaRepository,
-    private val lineRepository: DemandOrderLineJpaRepository,
+    private val claimRepository: AllocationOrderClaimRepository,
+    private val lineRepository: DemandOrderLineRepository,
     private val clock: Clock
 ) {
     @Transactional(readOnly = true)
