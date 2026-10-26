@@ -4,7 +4,7 @@
 - **Backend:** Spring Boot (Kotlin)
 - **Frontend:** React, NextJs
 - **Database:** PostgreSQL (Spring Data JPA, Flyway, pgvector)
-- **Testing:** JUnit, Testcontainers, Mockk
+- **Testing:** JUnit, Testcontainers, Mockito
 - **Build:** Gradle
 
 ## Overview
@@ -26,7 +26,7 @@ to read and replace snapshots in the same transaction. Snapshots are not JPA-man
 - **Dependency Injection:** Spring's @Service, @Repository, and constructor injection for loose coupling and testability.
 - **DTOs (Data Transfer Objects):** Used for request and response payloads to decouple API and domain models.
 - **Singleton:** Spring beans are singletons by default, ensuring one instance per application context.
-- **Ports and adapters:** Application code depends on repository and external-service ports; Spring/JPA, JDBC, HTTP, RabbitMQ, JobRunr, and filesystem implementations sit behind those ports.
+- **Ports and adapters:** Allocation, reservation cleanup, and stock processors depend on repository ports implemented by Spring Data JPA and JDBC adapters. The separation is partial: some services still inject concrete infrastructure classes, JobRunr APIs, and HTTP clients directly.
 - **Configuration/Properties:** Externalized configuration using YAML and @ConfigurationProperties for environment flexibility.
 
 ## Modules and technology
@@ -69,9 +69,11 @@ components and separates the hexagonal boundaries:
 - **Outbound adapters** implement those ports using JPA, JDBC, HTTP, RabbitMQ,
   JobRunr, and the filesystem.
 
-The core depends on ports rather than PostgreSQL, RabbitMQ, Tavily, Ollama, or
-file formats directly. JobRunr is embedded infrastructure; PostgreSQL stores both
-operational data and JobRunr data.
+The diagram groups logical responsibilities; it is not a claim that every
+integration has an explicit port interface. In particular, JobRunr, search
+clients, and filesystem operations still have direct application dependencies.
+Repository ports also expose infrastructure entity types. JobRunr is embedded
+infrastructure; PostgreSQL stores both operational data and JobRunr data.
 
 ```mermaid
 flowchart LR
@@ -87,21 +89,22 @@ flowchart LR
 
     subgraph Core["stockio-service - Kotlin / Spring Boot"]
         subgraph Inbound["Inbound adapters"]
-            RestAdapters["AllocationController<br/>Spring MVC<br/>Async jobs, status, reservations"]
+            RestAdapters["AllocationController / ReservationController / StockController<br/>Spring MVC<br/>Jobs, lifecycle and freshness"]
             ProductAdapter["ProductAllocationController<br/>Spring MVC<br/>Product-by-name allocation"]
             AdminAdapter["AllocationAdminController<br/>Spring MVC<br/>CSV, reports, retry cleanup"]
             McpAdapters["AllocationTools / ProductAllocationTools<br/>Spring AI @Tool<br/>MCP use cases"]
             MessageAdapter["AllocationRabbitListener<br/>Spring AMQP<br/>Queue intake and retry handoff"]
-            ScheduledAdapter["ReservationExpiryJob / StockLedgerSyncJob<br/>JobRunr + scheduling<br/>Recurring triggers"]
+            ScheduledAdapter["ReservationExpiryJob / StockLedgerSyncJob / BackorderAllocationJob<br/>JobRunr + scheduling<br/>Recurring and receipt triggers"]
         end
 
         subgraph UseCases["Application use cases"]
-            AllocationJob["AllocationJob / AllocationJobService<br/>Executes jobs, status, cleanup"]
+            AllocationJob["AllocationJobExecutor / AllocationJobRunrService<br/>Submission, execution, status and cleanup"]
             ProductFlow["ProductAllocationService<br/>Resolves product, starts allocation"]
-            AllocationFlow["AllocationProcessingService<br/>Allocates, then refreshes forecast"]
+            AllocationFlow["AllocationProcessor<br/>Allocates, then refreshes forecast"]
+            BackorderFlow["BackorderAllocationService<br/>Scoped fulfillment of persisted demand"]
             LedgerFlow["StockLedgerProcessor<br/>Applies today's forecast to live stock"]
             ReservationFlow["ReservationExpiryService / CleanupService<br/>Expires overdue holds"]
-            QueryFlow["OrderReservationService / LedgerSyncStatusService<br/>Read-only lifecycle and freshness"]
+            QueryFlow["OrderReservationService / StockLedgerService<br/>Read-only lifecycle and freshness"]
             FileFlow["AllocationExcelService / ExcelReportProcessor<br/>CSV import and Excel output"]
         end
 
@@ -118,16 +121,14 @@ flowchart LR
             ReservationPort["Reservation repository ports<br/>Shipments, supply, reservations"]
             StockPort["Stock repository ports<br/>Live stock, locks, snapshots, sync status"]
             ProductPort["ProductRepository / ProductVectorRepository<br/>Catalog and similarity search"]
-            RuntimePort["Job result / runtime ports<br/>Completion persistence and coordination"]
-            SearchPort["TavilySearchClient / OllamaEmbeddingClient<br/>Search and embeddings"]
-            FilePort["CSV / report file ports<br/>Configured input and output"]
+            RuntimePort["AllocationJobResultRepository<br/>Completion persistence"]
         end
 
         subgraph OutAdapters["Outbound adapters"]
             PersistenceAdapters["Spring Data JPA + JdbcTemplate<br/>PostgreSQL entities, locks, snapshots, pgvector"]
             SearchAdapter["Tavily / Ollama HTTP clients<br/>Timeouts and response validation"]
             JobAdapter["JobRunr integration<br/>Execution, retries, job storage"]
-            AmqpAdapter["AllocationEventPublisher / Rabbit configuration<br/>Event publication and fallback"]
+            AmqpAdapter["AllocationRequestPublisher / Rabbit configuration<br/>Demo requests and queue bindings"]
             FileAdapter["CSV reader / Apache POI<br/>Filesystem import and .xlsx reports"]
         end
     end
@@ -145,22 +146,29 @@ flowchart LR
     MessageAdapter -->|"Calls"| AllocationJob
     ScheduledAdapter -->|"Triggers"| ReservationFlow
     ScheduledAdapter -->|"Triggers"| LedgerFlow
+    ScheduledAdapter -->|"Backorder job"| AllocationFlow
 
     AllocationJob -->|"Executes"| AllocationFlow
     AllocationJob -->|"Persists completion"| RuntimePort
     ProductFlow -->|"Starts NEW_DEMAND"| AllocationFlow
     AllocationFlow -->|"Coordinates"| RunDomain
+    AllocationFlow -->|"Fulfillment commands"| BackorderFlow
     AllocationFlow -->|"Refreshes"| ProjectionDomain
     LedgerFlow -->|"Uses"| ReservationFlow
     LedgerFlow -->|"Rebuilds and applies"| ProjectionDomain
     ReservationFlow -->|"Refreshes"| ProjectionDomain
     QueryFlow --> ReservationPort
     QueryFlow --> StockPort
-    FileFlow --> FilePort
-    FileFlow --> RuntimePort
+    FileFlow --> FileAdapter
+    FileFlow --> AllocationPort
+    FileFlow --> ProductPort
+    LedgerFlow -->|"After receipt commit: enqueue"| JobAdapter
 
     RunDomain --> DocumentDomain
     RunDomain --> SkuDomain
+    BackorderFlow --> DocumentDomain
+    BackorderFlow --> SkuDomain
+    BackorderFlow --> AllocationPort
     SkuDomain --> PolicyDomain
     SkuDomain --> AllocationPort
     SkuDomain --> ReservationPort
@@ -169,19 +177,17 @@ flowchart LR
     DocumentDomain --> ReservationPort
     ProjectionDomain --> StockPort
     ProjectionDomain --> ReservationPort
+    ProjectionDomain --> AllocationPort
     ProductFlow --> ProductPort
-    ProductFlow --> SearchPort
+    ProductFlow --> SearchAdapter
 
     AllocationPort --> PersistenceAdapters
     ReservationPort --> PersistenceAdapters
     StockPort --> PersistenceAdapters
     ProductPort --> PersistenceAdapters
     RuntimePort --> PersistenceAdapters
-    RuntimePort --> JobAdapter
-    SearchPort --> SearchAdapter
-    FilePort --> FileAdapter
-    MessageAdapter -->|"Failure fallback"| AmqpAdapter
-    AllocationJob -->|"Schedules fallback"| JobAdapter
+    MessageAdapter -->|"Retry fallback"| JobAdapter
+    AllocationJob -->|"Direct enqueue and status"| JobAdapter
     AllocationJob -->|"Uses"| RuntimePort
     AmqpAdapter --> Rabbit
     JobAdapter --> Database
@@ -194,14 +200,14 @@ flowchart LR
     classDef adapter fill:#fce4ec,stroke:#ad1457
     classDef external fill:#eeeeee,stroke:#616161
     class RestAdapters,ProductAdapter,AdminAdapter,McpAdapters,MessageAdapter,ScheduledAdapter inbound
-    class AllocationJob,ProductFlow,AllocationFlow,LedgerFlow,ReservationFlow,QueryFlow,FileFlow usecase
+    class AllocationJob,ProductFlow,AllocationFlow,BackorderFlow,LedgerFlow,ReservationFlow,QueryFlow,FileFlow usecase
     class RunDomain,DocumentDomain,SkuDomain,PolicyDomain,ProjectionDomain domain
-    class AllocationPort,ReservationPort,StockPort,ProductPort,RuntimePort,SearchPort,FilePort port
+    class AllocationPort,ReservationPort,StockPort,ProductPort,RuntimePort port
     class PersistenceAdapters,SearchAdapter,JobAdapter,AmqpAdapter,FileAdapter adapter
     class Rest,Mcp,Rabbit,Scheduler,Csv,Reports,Tavily,Ollama,Database external
 ```
 
-The following runtime collaboration view keeps the more detailed event and job
+The following runtime collaboration view keeps the more detailed submission and job
 relationships. It is complementary to the hexagonal dependency view above:
 
 ```mermaid
@@ -215,36 +221,38 @@ flowchart TB
 
     subgraph Service["Stockio service container - Kotlin / Spring Boot"]
         Entry["REST controllers / MCP tools<br/>Inbound adapters"]
-        Events["AllocationEventPublisher / Listener<br/>After-commit job submission"]
+        Submission["AllocationJobExecutor.executeAsync<br/>Direct JobRunr submission"]
         Consumer["AllocationRabbitListener<br/>Synchronous attempt and retry handoff"]
         Runtime["JobRunr scheduler / workers<br/>Embedded infrastructure"]
-        Job["AllocationJob / CompletionService / JobService<br/>Execution, status and result persistence"]
-        Processing["AllocationProcessingService<br/>Allocate then refresh forecast"]
+        Job["AllocationJobExecutor / AllocationJobRunrService<br/>Execution, status and result persistence"]
+        Processing["AllocationProcessor<br/>Allocate then refresh forecast"]
         Allocation["AllocationService / AllocationRunService<br/>Validation, SKU dispatch and run state"]
         Documents["AllocationDocumentService / InboundSupplyService<br/>Document ownership, TTL and supply registration"]
         Worker["AllocationSkuWorker / policies<br/>Per-SKU reservations and backorders"]
         Product["ProductAllocationService / search clients<br/>Local-first product resolution"]
-        Scheduled["ReservationExpiryJob / StockLedgerSyncJob<br/>Independent recurring triggers"]
+        Scheduled["ReservationExpiryJob / StockLedgerSyncJob / BackorderAllocationJob<br/>Recurring and receipt-triggered work"]
         Expiry["ReservationExpiryService / CleanupService<br/>Release overdue holds"]
         Ledger["StockLedgerProcessor<br/>Apply due physical movements"]
         Projection["StockProjectionProcessor<br/>Calculate daily forecast"]
         Status["Reservation / ledger status services<br/>Read models and freshness health"]
         FileAdapters["AllocationExcelService / ExcelReportProcessor<br/>Import requests and generate reports"]
         JPA["Operational repositories<br/>Spring Data JPA, including database locks"]
-        Snapshots["StockSnapshotRepository / LedgerSyncStatusRepository<br/>JDBC snapshots and sync status"]
+        Snapshots["StockSnapshotRepository / StockLedgerSyncStatusRepository<br/>JDBC snapshots and sync status"]
         Vectors["ProductVectorRepository<br/>JDBC vector search and knowledge storage"]
     end
 
     Clients --> Entry
-    Entry --> Events
-    Events --> Runtime
+    Entry --> Submission
+    Submission --> Runtime
     Rabbit --> Consumer
     Consumer --> Job
-    Consumer -->|"Failure fallback"| Events
+    Consumer -->|"Direct retry enqueue"| Runtime
     Runtime --> Job
     Runtime --> Scheduled
     Scheduled --> Expiry
     Scheduled --> Ledger
+    Ledger -->|"After receipt commit: scoped fulfillment enqueue"| Runtime
+    Scheduled -->|"BackorderAllocationJob"| Processing
     Job --> Processing
     Job --> JPA
     Job -->|"Job state and administrative cleanup"| Runtime
@@ -294,14 +302,15 @@ deployed services.
 | Component | Responsibility |
 | --- | --- |
 | `AllocationTools` | MCP adapter for new-demand allocation and projection, backorder fulfillment, stock-ledger synchronization, and Excel report generation. |
-| `ProductAllocationTools` / `ProductAllocationService` | Resolves a product phrase through local catalog/vector matching with Tavily fallback, then delegates to `AllocationProcessingService`. |
+| `ProductAllocationTools` / `ProductAllocationService` | Resolves a product phrase through local catalog/vector matching with Tavily fallback, then delegates to `AllocationProcessor`. |
 | Tavily / Ollama clients | Perform external product search and local embedding requests with configured timeouts. |
 | `ProductVectorRepository` | Persists catalog embeddings and Tavily knowledge chunks and performs pgvector similarity searches. |
-| `AllocationController` | Accepts asynchronous allocation/projection requests and exposes job, reservation, and ledger-freshness status. |
+| `AllocationController` | Validates today's business date, submits allocation/projection work directly to JobRunr by default, and exposes job status plus reservation/freshness read aliases. Also supports `async=false` with the limitation described below. |
+| `ReservationController` / `StockController` | Expose dedicated reservation-lifecycle and ledger-freshness reads. |
 | `AllocationAdminController` | Creates allocation requests from CSV, generates reports, and removes jobs with excessive retries. |
 | `AllocationService` | Validates, groups work by SKU, coordinates SKU workers, and completes allocation runs. |
 | `AllocationRunService` | Owns allocation-run identity, request-hash validation, completion, and persisted historical results. |
-| `AllocationProcessingService` | Runs allocation or explicit backorder fulfillment, then refreshes projections after the SKU transactions commit. Never synchronizes the ledger. |
+| `AllocationProcessor` | Runs allocation or backorder fulfillment, then refreshes projections after the SKU transactions commit. Never synchronizes the ledger. |
 | `AllocationDocumentService` | Registers immutable order/shipment headers and lines before SKU work and assigns one reservation deadline per order. |
 | `AllocationSkuWorker` | Performs one SKU's transactional allocation or backorder fulfillment, reserves stock/supply, and persists resumable operation results. |
 | `AllocationPolicyCalculator` | Applies order priority, FIFO source selection, delivery-date eligibility, and backorder rules. |
@@ -309,8 +318,10 @@ deployed services.
 | `StockLedgerProcessor` | Expires overdue holds, rebuilds today's projection, and synchronizes it to live stock. |
 | `StockLedgerSyncJob` | Independently schedules ledger synchronization twice daily by default. |
 | `ReservationExpiryJob` / expiry services | Release overdue pending orders in transactional batches and rebuild projections. |
-| `AllocationJob` / completion service | Runs allocation and projection, then persists a versioned allocation-only completion result. |
-| `OrderReservationService` / `LedgerSyncStatusService` | Read current lifecycle and ledger freshness without changing stock. |
+| `AllocationJobExecutor` | Directly enqueues HTTP requests, executes allocation/projection, and persists or reuses `{jobId, allocationRun}` completion JSON. |
+| `AllocationJobRunrService` | Reads JobRunr status and saved completion, and performs administrative job-record cleanup. |
+| `BackorderAllocationJob` / `BackorderAllocationService` | Process receipt-triggered or manual fulfillment commands without creating new demand. |
+| `OrderReservationService` / `StockLedgerService` | Read current lifecycle and ledger freshness without changing stock. |
 | `StockProjectionLockRepository` | Acquires the shared/exclusive database coordination lock; the caller must already have a transaction. |
 | `StockSnapshotRepository` | Reads and replaces derived snapshots through JDBC in the caller's transaction. |
 | `AllocationExcelService` | Parses the configured CSV and creates a validated allocation request. |
@@ -318,7 +329,7 @@ deployed services.
 | Repositories and `JdbcTemplate` | Persist operational state, enforce locks, and read/write snapshot data. |
 
 The repository interfaces in `allocation/domain/port`, `reservation/domain/port`,
-and `stock/domain/port` are the outbound ports shown in the diagram. Their
+`stock/domain/port`, and `product/domain/port` are the outbound ports shown in the diagram. Their
 implementations in `allocation/infra`, `reservation/infra`, `product/infra`, and
 `stock/infra` are outbound adapters. Some current port signatures still expose
 infra entity types; replacing those with domain persistence models would make the
@@ -342,10 +353,12 @@ hexagonal boundary stricter without changing the use-case components.
 | Method and path | Behavior |
 | --- | --- |
 | `POST /api/products/allocate` | Synchronously performs the agentic product lookup and allocation for a `ProductAllocationRequest`; returns the product-resolution status and allocation result. |
-| `POST /api/logistics/allocation-jobs` | Validates today's business-date `asOfDate`, accepts allocation/projection work, and returns `202 Accepted` with a JobRunr `jobId` and status URL. Does not synchronize stock. |
-| `GET /api/logistics/allocation-jobs/{jobId}` | Returns JobRunr state and, when succeeded, `{version: 2, allocationRun: ...}` without a stock-sync result. |
-| `GET /api/logistics/stock-ledger/status` | Returns the last committed ledger success, snapshot date/counts, next expected execution, stale deadline, and freshness status. |
-| `GET /api/logistics/orders/{orderId}/reservation` | Returns current reservation lifecycle and deadline, or `404` for an unknown order. |
+| `POST /api/allocation/jobs` | Validates today's business-date `asOfDate`; by default (`async=true`) directly enqueues work and returns `202 Accepted`, `{jobId, requestId}`, and `Location: /api/allocation/jobs/{jobId}` after enqueue succeeds. Does not synchronize stock. |
+| `GET /api/allocation/jobs/{jobId}` | Returns JobRunr state and, when succeeded, `result: {jobId, allocationRun}` without a completion version or stock-sync result. An unknown job returns `404`. |
+| `GET /api/stock/ledger/status` | Returns the last committed ledger success, snapshot date/counts, next expected execution, stale deadline, and freshness status. |
+| `GET /api/reservations/orders/{orderId}/status` | Returns current reservation lifecycle and deadline, or `404` for an unknown order. |
+| `GET /api/allocation/stock-ledger/status` | Additional ledger-freshness read mapping on `AllocationController`. |
+| `GET /api/allocation/order-reservation/{orderId}/status` | Additional reservation-lifecycle read mapping on `AllocationController`. |
 | `GET /api/admin/allocations/generate-request-by-csv` | Parses the configured CSV and returns a generated `AllocationRequest`; it does not execute it. |
 | `POST /api/admin/allocations/generate-excel` | Generates an Excel report from a saved run. |
 | `DELETE /api/admin/allocations/delete-jobs-with-excessive-retries` | Removes qualifying JobRunr jobs with excessive retry transitions. |
@@ -354,6 +367,14 @@ hexagonal boundary stricter without changing the use-case components.
 
 Execution and failure behavior for these interfaces are described in
 [Supported flows](#supported-flows).
+
+`POST /api/allocation/jobs?async=false` executes inline but still returns `202`.
+Its current response uses the allocation `runId` as `jobId`, although completion
+is stored under a separate generated execution ID and no JobRunr job is created.
+The returned status URL is therefore not a working JobRunr polling contract for
+this branch. This is an implementation limitation, not an alternate durable
+submission flow. The old `/api/logistics/...` and `/api/allocation-jobs` mappings
+are not declared.
 
 ### Allocation request shape
 
@@ -379,7 +400,7 @@ synchronization applies due physical movements: these are separate operations.
 | Flow | Trigger | Outcome |
 | --- | --- | --- |
 | [Allocation](#allocation-flow) | Structured new demand through an adapter or job | Reservations, backorders, historical result, and refreshed forecast. |
-| [Backorder fulfillment](#backorder-fulfillment-flow) | Explicit MCP request | Additional reservations against existing demand and refreshed forecast. |
+| [Backorder fulfillment](#backorder-fulfillment-flow) | Receipt-triggered JobRunr job or explicit MCP request | Additional reservations against existing demand and refreshed forecast. |
 | [Product resolution and allocation](#product-resolution-and-allocation-flow) | Product REST endpoint or MCP tool | Resolved SKU and allocation, or an explicit non-allocation outcome. |
 | [Reservation expiry](#reservation-expiry-flow) | Recurring JobRunr sweep | Released holds, expired order headers, and refreshed forecast. |
 | [REST allocation submission](#rest-allocation-submission-and-completion-flow) | HTTP request and status polling | Asynchronous allocation/projection completion, not ledger sync. |
@@ -391,19 +412,20 @@ synchronization applies due physical movements: these are separate operations.
 | [Excel report](#excel-report-flow) | Admin HTTP request or MCP tool | Workbook generated from a saved allocation run. |
 | [Job-record cleanup](#job-record-cleanup-flow) | Admin HTTP request | Permanent removal of qualifying JobRunr records, without undoing allocation. |
 
-Order confirmation, explicit warehouse receipt/dispatch confirmation, and
-automatically triggered backorder fulfillment are not implemented flows.
+Order confirmation and explicit warehouse receipt/dispatch confirmation are not
+implemented flows. Receipt-triggered backorder fulfillment is implemented, but
+its post-commit enqueue is not durably coupled to the receipt transaction.
 
 ### Allocation flow
 
-`AllocationProcessingService` is the common entry point for allocation jobs, MCP
+`AllocationProcessor` is the common entry point for allocation jobs, MCP
 tools, and product allocation. It runs `NEW_DEMAND` allocation, waits for the SKU
 workers to finish, and then refreshes projections. It never invokes the ledger.
 
 ```mermaid
 sequenceDiagram
     participant Caller as Allocation adapter or job
-    participant Processing as AllocationProcessingService
+    participant Processing as AllocationProcessor
     participant Allocation as AllocationService
     participant Documents as AllocationDocumentService
     participant Worker as AllocationSkuWorker
@@ -469,15 +491,19 @@ failures are distinguished from invalid request input for RabbitMQ retry handlin
 
 ### Backorder fulfillment flow
 
-The MCP `allocate_open_backorders` tool submits a `BACKORDER_FULFILLMENT` request.
-It does not create replacement order headers or new TTL deadlines.
+The MCP `allocate_open_backorders` tool maps a `BACKORDER_FULFILLMENT` request to
+`BackorderAllocationRequest` with trigger `MANUAL`. After a ledger receipt
+commits, `BackorderAllocationJob` passes a command with trigger
+`STOCK_LEDGER_RECEIPT` and affected `skuScope` through the same processor and
+`BackorderAllocationService`. Neither path creates replacement order headers or
+new TTL deadlines.
 
 ```mermaid
 sequenceDiagram
     actor Caller
     participant Tool as AllocationTools
-    participant Processing as AllocationProcessingService
-    participant Allocation as AllocationService
+    participant Processing as AllocationProcessor
+    participant Allocation as BackorderAllocationService
     participant Documents as AllocationDocumentService
     participant Worker as AllocationSkuWorker
     participant Projection as StockProjectionProcessor
@@ -485,11 +511,11 @@ sequenceDiagram
 
     Caller->>Tool: allocate_open_backorders(request)
     Tool->>Processing: process(BACKORDER_FULFILLMENT request)
-    Processing->>Allocation: allocateOpenBackorders(request)
+    Processing->>Allocation: allocate(BackorderAllocationRequest)
     Allocation->>Documents: Initialize run and register submitted inbound supply
     Documents->>DB: Persist registration without creating new demand
-    Allocation->>DB: Find backorder, submitted-supply and prior-operation SKUs
-    Allocation->>Worker: fulfillBackorders for each selected SKU
+    Allocation->>DB: Select scoped or open-backorder SKUs plus prior-operation SKUs
+    Allocation->>Worker: allocateBackorders for each selected SKU
     Worker->>DB: Lock SKU, backorders, stock and unreceived supply
     Worker->>Worker: Exclude expired or overdue unconfirmed orders
     Worker->>Worker: Allocate current stock and eligible arrived supply
@@ -507,6 +533,8 @@ separate repeated-SKU lines. Inbound supply must have arrived by `asOfDate` and
 no later than the original required delivery date. Fulfillment keeps the
 original order deadline, may be partial, and does not synchronize physical stock.
 Repeated requests reuse saved run/SKU results rather than reserve twice.
+The current fingerprint hashes an internal `AllocationRequest`, excluding the
+command's `skuScope` and `trigger`; this is not full command-field validation.
 
 ### Product resolution and allocation flow
 
@@ -523,7 +551,7 @@ sequenceDiagram
     participant Ollama
     participant Tavily as Tavily Search API
     participant DB as PostgreSQL and pgvector
-    participant Processing as AllocationProcessingService
+    participant Processing as AllocationProcessor
 
     Caller->>Adapter: ProductAllocationRequest
     Adapter->>Product: allocate(request)
@@ -651,33 +679,32 @@ separately identifies the idempotent allocation run.
 sequenceDiagram
     actor Client
     participant REST as AllocationController
-    participant Events as AllocationEventPublisher and Listener
     participant Runtime as JobRunr
-    participant Job as AllocationJob
-    participant Processing as AllocationProcessingService
-    participant Completion as AllocationJobCompletionService
-    participant Status as AllocationJobService
+    participant Job as AllocationJobExecutor
+    participant Processing as AllocationProcessor
+    participant Status as AllocationJobRunrService
     participant DB as PostgreSQL
 
-    Client->>REST: POST /api/logistics/allocation-jobs
-    REST->>Events: Validate today's request and publish event transactionally
-    Note over Events: AFTER_COMMIT listener schedules the event UUID as job ID
-    Events->>Runtime: Enqueue AllocationJob
+    Client->>REST: POST /api/allocation/jobs (async=true by default)
+    REST->>REST: Validate today's business date
+    REST->>Job: executeAsync(request)
+    Job->>Runtime: Directly enqueue executeSync(new jobId, request)
     Runtime->>DB: Store job
+    Runtime-->>Job: Enqueue accepted
+    Job-->>REST: AllocationJobAccepted(jobId, requestId)
     REST-->>Client: 202 Accepted, job ID and Location
-    Runtime->>Job: execute(jobId, request)
+    Runtime->>Job: executeSync(jobId, request)
     Job->>DB: Read any saved completion for job ID
     alt Completion already persisted
         Job->>Job: Deserialize AllocationCompletionResult with ObjectMapper
     else No saved completion
         Job->>Processing: Run allocation and projection flow
         Processing-->>Job: AllocationRunResult
-        Job->>Completion: Save version-2 allocation-only completion
-        Completion->>DB: Persist allocation_job_result JSON
+        Job->>DB: Persist allocation_job_result JSON with jobId and allocationRun
     end
     Job-->>Runtime: Completion result
     Runtime->>DB: Record SUCCEEDED
-    Client->>REST: GET /api/logistics/allocation-jobs/{jobId}
+    Client->>REST: GET /api/allocation/jobs/{jobId}
     REST->>Status: Read execution status
     Status->>Runtime: Look up JobRunr state
     opt Job succeeded
@@ -696,24 +723,30 @@ A `SUCCEEDED` job without a saved completion is an explicit consistency error,
 not an empty successful response. Completed JSON and run results describe what
 was allocated at execution time; they do not prove those holds are still active.
 
+HTTP submission has no Spring event or after-commit listener and no surrounding
+application transaction. Enqueue errors propagate instead of returning `202`.
+If enqueue succeeds but the HTTP response is lost, the caller has an unknown
+outcome; resubmitting the same logical request may create another execution job,
+while allocation-run idempotency prevents extra reservations. This direct
+handoff is distinct from the ledger's post-commit scheduling gap.
+
 ### RabbitMQ intake and retry flow
 
 Rabbit intake does not initially queue a JobRunr job. The listener attempts the
-same `AllocationJob` synchronously, using `requestId` as the job ID.
+same `AllocationJobExecutor.executeSync` synchronously, using `requestId` as the job ID.
 
 ```mermaid
 sequenceDiagram
     participant Producer as External producer or demo publisher
     participant Rabbit as RabbitMQ
     participant Listener as AllocationRabbitListener
-    participant Job as AllocationJob
-    participant Processing as AllocationProcessingService
-    participant Fallback as AllocationEventListener
+    participant Job as AllocationJobExecutor
+    participant Processing as AllocationProcessor
     participant Runtime as JobRunr
 
     Producer->>Rabbit: AllocationRequest JSON
     Rabbit->>Listener: receive(request)
-    Listener->>Job: execute(requestId, request)
+    Listener->>Job: executeSync(requestId, request)
     Job->>Processing: Allocate and refresh forecast unless completion cached
     alt Successful processing
         Job-->>Listener: Saved completion
@@ -726,18 +759,24 @@ sequenceDiagram
         Job-->>Listener: Processing error
         Listener->>Runtime: Does a job with requestId already exist?
         opt No existing JobRunr job
-            Listener->>Fallback: Schedule failed request with same requestId
-            Fallback->>Runtime: Enqueue AllocationJob for background retry
+            Listener->>Runtime: Directly enqueue executeSync with same requestId
         end
         Listener-->>Rabbit: Return after successful retry handoff
     end
 ```
 
 Invalid requests are not retried by JobRunr. Other failures hand off only when a
-job with that ID does not already exist; this avoids duplicate fallback jobs.
+job with that ID does not already exist; the existence check skips already
+recorded jobs but is not itself an atomic business deduplication guarantee.
 The request queue has a dead-letter exchange/queue, with rejected messages not
 requeued by default. A failure while arranging fallback still propagates rather
 than masquerading as completed allocation.
+
+The current fallback lambda still contains logging in addition to the executor
+call. Unlike the corrected HTTP enqueue lambda, this has not been verified
+against JobRunr's actual lambda parser by the mocked listener tests and can fail
+during enqueue. A single executor invocation is the supported scheduling shape;
+successful unit tests alone do not prove durable fallback acceptance.
 
 The optional `AllocationRequestPublisher` emits sample requests at a fixed interval when enabled. In the current `application.yml`, it is enabled by default with a one-second interval; disable it in non-demo deployments with `ALLOCATION_RABBITMQ_PUBLISHER_ENABLED=false`.
 
@@ -755,7 +794,7 @@ call it within their existing transaction.
 sequenceDiagram
     participant Caller as Allocation, expiry or ledger processing
     participant Projection as StockProjectionProcessor
-    participant Operational as JPA repositories
+    participant Operational as Repository ports with JPA adapters
     participant Snapshots as StockSnapshotRepository
     participant DB as PostgreSQL
 
@@ -834,7 +873,9 @@ sequenceDiagram
     participant Cleanup as ReservationCleanupService
     participant Projection as StockProjectionProcessor
     participant Snapshots as StockSnapshotRepository
-    participant Status as LedgerSyncStatusRepository
+    participant Status as StockLedgerSyncStatusRepository
+    participant Runtime as JobRunr
+    participant Backorders as BackorderAllocationJob
     participant DB as PostgreSQL
 
     alt Scheduled invocation
@@ -862,6 +903,11 @@ sequenceDiagram
     Ledger->>Status: Record successful sync timestamp, date and counts
     Status->>DB: Update singleton sync status in the ledger transaction
     Note over Ledger,DB: Commit all changes together or roll everything back
+    opt Newly received shipment lines
+        Ledger->>Runtime: After commit: enqueue stable command/job IDs for received SKUs
+        Runtime->>Backorders: execute(BackorderAllocationRequest)
+        Backorders->>Backorders: Allocate existing backorders and refresh projection
+    end
     Ledger->>Ledger: Emit structured success log after commit
     alt Scheduled invocation
         Ledger-->>Job: Sync result
@@ -873,9 +919,17 @@ sequenceDiagram
 
 `process_stock_ledger` accepts only today's `snapshotDate`; when omitted, it selects today using the business clock after acquiring the lock. Under one exclusive lock and transaction, it drains overdue reservation cleanup, rebuilds today's projection, and validates aggregate balances against lot-level balances. A freshly calculated empty projection is valid. Synchronization updates live lot quantities/reservations, removes due confirmed stock reservations, marks arrived shipments as received, and converts remaining inbound holds to stock reservations. Pending reservations are retained even when their delivery date has passed.
 
-The sync does not recalculate allocations, accept explicit warehouse movements,
-or automatically fulfill backorders. Repeating it is safe because delivered
-reservations and received shipments are no longer projected as new movements.
+The sync transaction does not recalculate allocations or accept explicit
+warehouse movements. After committing newly received supply, it enqueues
+affected-SKU backorder fulfillment as separate work. Repeating sync is safe
+because delivered reservations and received shipments are no longer projected
+as new movements.
+
+The callback derives stable request and job UUIDs from the snapshot date and
+sorted received shipment-line IDs. It is not a durable outbox: a crash between
+receipt commit and enqueue can lose the trigger, and enqueue failure cannot
+roll back the receipt. A later ledger run sees those lines as already received
+and need not recreate the trigger. Manual fulfillment remains a recovery option.
 
 `StockLedgerSyncJob` registers the stable JobRunr recurring ID `sync-stock-ledger`. The default five-field cron `0 0,12 * * *` runs at midnight and noon UTC. The configured zone also supplies the shared business `Clock`, including REST date validation, sample publishing, CSV imports, expiry, and projection dates. Each scheduled invocation selects today after acquiring the ledger lock, so delayed retries do not reuse yesterday's allocation date.
 
@@ -924,19 +978,19 @@ sequenceDiagram
     actor Caller as Operator, MCP client or monitoring
     participant Adapter as REST, MCP or Actuator adapter
     participant Orders as OrderReservationService
-    participant Ledger as LedgerSyncStatusService
+    participant Ledger as StockLedgerService
     participant DB as PostgreSQL
 
     alt Reservation lifecycle request
         Caller->>Adapter: GET order reservation or get_order_reservation_status
-        Adapter->>Orders: getStatus(orderId)
+        Adapter->>Orders: getOrderReservationStatus(orderId)
         Orders->>DB: Load order header and lines
         Orders->>Orders: Compare persisted deadline with current instant
         Orders-->>Adapter: Logical status, deadline, cleanupPending and lines
         Adapter-->>Caller: Current reservation status, or not found
     else Ledger freshness request
         Caller->>Adapter: GET stock-ledger/status or Actuator health
-        Adapter->>Ledger: Read sync status and schedule
+        Adapter->>Ledger: getStatusLastSyncRun()
         Ledger->>DB: Load monitoring baseline and last committed success
         Ledger->>Ledger: Calculate next expected sync and stale deadline
         Ledger-->>Adapter: Timestamp, date, counts and freshness
@@ -1062,11 +1116,11 @@ it is not reservation expiry or an allocation rollback.
 sequenceDiagram
     actor Operator
     participant Admin as AllocationAdminController
-    participant Jobs as AllocationJobService
+    participant Jobs as AllocationJobRunrService
     participant Storage as JobRunr StorageProvider
 
     Operator->>Admin: DELETE /api/admin/allocations/delete-jobs-with-excessive-retries
-    Admin->>Jobs: deleteJobsWithRetries()
+    Admin->>Jobs: deleteJobsWithRetriesByStatus()
     Jobs->>Storage: Read up to 100 PROCESSING and 100 SCHEDULED jobs
     Storage-->>Jobs: Jobs ordered by updatedAt ascending
     loop Each selected job
@@ -1101,8 +1155,10 @@ row is an error. A worker never upgrades its shared lock to an exclusive one.
 
 SKU concurrency is limited by `stockio.allocation.max-concurrent-skus` (default
 `4`), configured through `ALLOCATION_MAX_CONCURRENT_SKUS`. The limit applies to
-the shared dispatcher, not independently per request. Each SKU uses its own
-transaction; forecast replacement begins after the allocation transactions finish.
+each service's dispatcher, not independently per request or globally across the
+separate new-demand and backorder services or application instances. Each SKU
+uses its own transaction; forecast replacement begins after the allocation
+transactions finish.
 
 Stable recurring IDs register one shared schedule definition across pods;
 database locks and lifecycle checks make overlapping executions/retries safe.
@@ -1117,10 +1173,14 @@ legacy runs before upgrading writers together.
 Deploy lifecycle-aware allocation, projection, ledger, and expiry together; old
 ledger code must not run concurrently with temporary holds.
 
-The REST routes were renamed from `allocate-project-and-sync` to
-`allocation-jobs`. The allocation-only job-result rollout assumes a recreated
+The current allocation routes use `/api/allocation/jobs`, and dedicated reads
+use `/api/reservations/orders/{orderId}/status` and `/api/stock/ledger/status`.
+Old `allocate-project-and-sync`, `allocation-jobs`, and `/api/logistics/...`
+routes are not compatibility aliases. The allocation-only job-result rollout assumes a recreated
 application database, including JobRunr storage, plus coordinated caller updates.
-Completion JSON uses the shared `ObjectMapper` directly; no adapter reads
+Completion JSON now contains `jobId` and `allocationRun`, not a top-level
+`version` or `stockSync`; the run's stored `contractVersion` is a separate schema
+concern. Completion JSON uses the shared `ObjectMapper` directly; no adapter reads
 historical combined allocation/sync job results.
 
 ## Persistence model
@@ -1147,7 +1207,7 @@ historical combined allocation/sync job results.
 | `stock_daily_lot_snapshots` | Lot-level daily balances and reservations used by the ledger sync. |
 | `stock_projection_lock` | Database row lock coordinating allocation, projection, and synchronization. |
 | `stock_ledger_sync_status` | Monitoring baseline and last committed manual/scheduled ledger success. |
-| `allocation_job_result` | Serialized result for completed asynchronous allocation jobs. |
+| `allocation_job_result` | Serialized `{jobId, allocationRun}` completion for executor calls, including synchronous RabbitMQ execution. |
 | `flyway_schema_history` | Flyway migration metadata. |
 
 Flyway migrations V1-V16 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, enable pgvector product-resolution storage, add order-reservation expiry, migrate single-line documents to header/line relationships, and persist ledger-sync freshness. V15 preserves lifecycle timestamps, legacy line mappings, and received lots, and rejects inconsistent legacy reservation data. Hibernate validates the migrated JPA schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
@@ -1195,6 +1255,17 @@ Flyway migrations V1-V16 create and evolve these tables, seed products, add dail
 | `ALLOCATION_RABBITMQ_PUBLISHER_ENABLED` | `true` | Enables the demo request publisher in the current application config. |
 | `ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL` | `1000` | Demo publisher interval in milliseconds. |
 | `JOBRUNR_DASHBOARD_PORT` | `8181` | JobRunr dashboard port. |
+| `JOBRUNR_DASHBOARD_ENABLED` | `true` for a standalone service | Overrides dashboard startup; the API's STDIO subprocess explicitly sets it to `false` to avoid port conflicts. |
+
+The sample API launches the service as an MCP STDIO subprocess on an ephemeral
+HTTP port with the dashboard disabled; background JobRunr execution remains
+enabled. An existing standalone dashboard on `8181` does not need to be stopped
+for that subprocess to initialize.
+
+Local Docker Compose includes a one-shot `ollama-pull-model` service. It waits
+for Ollama's healthcheck, pulls `nomic-embed-text` over the internal Ollama URL,
+and exits. Models persist in the `ollama-data` volume. Server health alone does
+not establish model readiness; wait for successful model initialization.
 
 Spring Boot Actuator exposes `health` and `metrics` on the application HTTP port. Useful Hikari metrics include:
 

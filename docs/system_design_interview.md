@@ -11,7 +11,8 @@ Inspired by Arvind Kumar's article,
 [System Design Interview: How Would You Prevent a Payment from Being Processed Twice?](https://medium.com/javarevisited/system-design-interview-how-would-you-prevent-a-payment-from-being-processed-twice-724aded39642).
 The initial version used the public introduction because the full-text link
 returned HTTP 403. This revision was checked against the supplied
-[full interview PDF](./systen_interview.pdf), particularly pages 2-10, which
+full interview PDF supplied in the conversation (`systen_interview.pdf`, not
+currently present in `docs/`), particularly pages 2-10, which
 contain the interview and its summary. The page references in Section 14 refer
 to PDF pages, not article section numbers. This remains an original
 Stockio-focused adaptation rather than a reproduction of the article.
@@ -125,12 +126,11 @@ another intake path.
 ```text
 HTTP allocation request
   -> AllocationController
-  -> AllocationEventPublisher
-  -> Spring AFTER_COMMIT listener
-  -> JobRunr -> AllocationJob
+  -> AllocationJobExecutor.executeAsync
+  -> direct JobRunr enqueue -> AllocationJobExecutor.executeSync
                          |
 RabbitMQ -> AllocationRabbitListener
-              -> AllocationJob directly
+              -> AllocationJobExecutor.executeSync directly
               -> JobRunr fallback on retryable execution failure
                          |
 MCP tools --------------> shared allocation processing
@@ -157,29 +157,41 @@ Independent ledger trigger
 Operational state, checkpoints, projections, and JobRunr storage -> PostgreSQL
 ```
 
-**Important:** the current HTTP path publishes an in-process Spring event; it
-does not publish the request to RabbitMQ. Do not draw every request as passing
-through a broker.
+**Important:** the default HTTP path directly enqueues JobRunr work. It uses
+neither an in-process Spring event nor RabbitMQ. Acceptance follows successful
+enqueue, without an application transaction or after-commit listener.
+The independent ledger-receipt path still uses an after-commit callback.
 
 ### API accuracy matters
 
-The current controller declares these paths:
+The current controllers declare these paths:
 
 | Operation | Current controller mapping |
 | --- | --- |
-| Submit asynchronous allocation | `POST /api/allocation-jobs` |
-| Poll a job | `GET /api/allocation-jobs/{jobId}` |
-| Read reservation lifecycle | `GET /api/order-reservation/{orderId}/status` |
-| Read ledger freshness | `GET /api/stock-ledger/status` |
+| Submit asynchronous allocation (default `async=true`) | `POST /api/allocation/jobs` |
+| Poll a job | `GET /api/allocation/jobs/{jobId}` |
+| Read reservation lifecycle | `GET /api/reservations/orders/{orderId}/status` |
+| Read ledger freshness | `GET /api/stock/ledger/status` |
+| Additional reservation read mapping | `GET /api/allocation/order-reservation/{orderId}/status` |
+| Additional ledger read mapping | `GET /api/allocation/stock-ledger/status` |
 
-The README and scenario notes describe some `/api/logistics/...` paths, and the
-allocation controller still constructs a `Location` using that prefix. Those
-references do not match its declared mappings. Treat this as a contract
-inconsistency to call out, not as evidence that both route families exist.
-This guide does not change the API.
+The asynchronous response is `202 Accepted` with `{jobId, requestId}` and
+`Location: /api/allocation/jobs/{jobId}`. Successful status polling returns
+`{jobId, status, result: {jobId, allocationRun}}`; completion no longer has a
+top-level `version` or `stockSync`. Stored allocation-run `contractVersion`
+remains a separate concern. Old `/api/logistics/...` and `/api/allocation-jobs`
+references are not additional supported mappings.
+
+**Current limitation:** `async=false` executes inline but still responds `202`,
+using the allocation `runId` as `jobId`. No JobRunr job is created, and completion
+is stored under a different generated execution ID. Do not present its returned
+status URL as a working polling contract. An interview improvement would return
+the synchronous completion directly, or explicitly create a durable execution
+record with a consistent identity; neither refinement is implemented here.
 
 An allocation request uses this shape; dates are illustrative, and the HTTP
-publisher requires `asOfDate` to equal today according to the business clock:
+controller requires `asOfDate` to equal today according to the business clock
+before either enqueueing or executing inline:
 
 ```json
 {
@@ -217,7 +229,7 @@ submitting it. It persists and reuses that ID and payload across timeouts,
 network retries, and redelivery. A fresh UUID on every retry defeats request
 deduplication."
 
-**Current:** `AllocationRequest` carries a UUID `requestId`. The HTTP publisher
+**Current:** `AllocationRequest` carries a UUID `requestId`. The HTTP executor
 generates a separate `jobId` for each submission. RabbitMQ execution uses
 `requestId` as its execution `jobId`.
 
@@ -447,6 +459,8 @@ Walk through the exact boundary rather than saying "retry it":
 
 | Failure point | Current recovery behavior or limitation |
 | --- | --- |
+| Before direct HTTP enqueue succeeds | No acceptance is returned; scheduling errors propagate. |
+| After HTTP enqueue succeeds, before acceptance reaches the caller | The job may already exist or execute. Retry the same logical request; a new execution job can still be created. |
 | Before a SKU transaction commits | Its mutations and checkpoint roll back together. |
 | After a SKU commits, before all SKUs finish | Retry reuses committed SKU checkpoints and processes unfinished work. |
 | After run completion, before projection succeeds | Retry reuses the completed allocation and retries the projection; it does not reserve again. |
@@ -469,7 +483,7 @@ number of projection rebuilds.
 "I design for at-least-once delivery and idempotent database effects.
 Acknowledgment is not atomically tied to every database commit."
 
-**Current:** `AllocationRabbitListener` executes `AllocationJob` directly.
+**Current:** `AllocationRabbitListener` calls `AllocationJobExecutor.executeSync` directly.
 It propagates `IllegalArgumentException` as invalid input and delegates other
 execution failures to a JobRunr fallback, checking whether the job already
 exists. It uses `requestId` as the job ID.
@@ -477,6 +491,14 @@ exists. It uses `requestId` as the job ID.
 The durable allocation run, SKU checkpoints, order ownership, and reservation
 constraints are the deeper protection. A job existence check alone is not the
 business correctness boundary.
+
+**Implementation caveat:** the RabbitMQ fallback still has a logging call inside
+its enqueue lambda, whereas the corrected HTTP path contains only the executor
+invocation. JobRunr parses the lambda rather than executing arbitrary closure
+code; the same logging shape caused an `Unknown INVOKEDYNAMIC` enqueue failure
+on the HTTP path. Mocked listener tests do not verify actual fallback lambda
+serialization. Treat fallback scheduling as a remaining integration risk, not
+as proven reliable delivery.
 
 Distinguish failure classes: malformed/conflicting commands should not consume
 infinite retries; transient infrastructure failures can be retried with limits
@@ -577,8 +599,16 @@ instead risks loss.
 
 JobRunr sharing PostgreSQL does not prove its enqueue joins the application's
 transaction. Verify actual integration/connection behavior before claiming
-atomicity. The existing HTTP `AFTER_COMMIT` scheduling path deserves the same
-durable-handoff analysis.
+atomicity.
+
+**Contrast with HTTP:** there is no HTTP `AFTER_COMMIT` scheduling path anymore.
+With no business mutation to commit during submission, direct enqueue before
+returning acceptance avoids the old event-to-enqueue handoff. It still leaves
+response-loss uncertainty: enqueue can succeed before the caller receives its
+job ID. Request idempotency protects the business effects, but does not provide
+a request-ID-to-job lookup. If submission must atomically accompany a business
+write, use an outbox or verify a genuinely shared transaction rather than
+assuming direct enqueue makes the two writes atomic.
 
 ### Q11. How do you avoid receiving or delivering stock twice?
 
@@ -757,7 +787,7 @@ the transactional allocation algorithm and locks, not uniqueness alone.
 
 **Proposed API refinement:** a conflicting idempotency key can be modeled as
 `409 Conflict`. Do not describe that as current behavior: the inspected
-allocation controller maps `IllegalArgumentException` to `400 Bad Request`,
+global `CustomerExceptionHandler` maps `IllegalArgumentException` to `400 Bad Request`,
 while asynchronous failures may surface through job status instead.
 
 ## 8. Reliability drills
@@ -886,8 +916,8 @@ eviction policy must not accidentally authorize old demand again.
 > qualify the after-commit enqueue gap: stable job IDs prevent neither a lost
 > callback nor a missing enqueue. A transactional outbox would durably record
 > the intent to fulfill backorders. I would also verify command fingerprint
-> coverage, completion-cache validation, and API consistency rather than claim
-> guarantees the code does not provide.
+> coverage, completion-cache validation, and the synchronous status-identity
+> mismatch rather than claim guarantees the code does not provide.
 >
 > For downstream integrations, each consumer needs its own transactional inbox.
 > A remote dispatch also needs a stable fulfillment reference and reconciliation
@@ -922,13 +952,13 @@ identity validation, and the state persisted before each return:
 | Topic | Source |
 | --- | --- |
 | Architecture and supported flows | [Architecture](../.github/memory/architecture.md), [scenarios](../.github/memory/scenarios.md), [specifications](../.github/memory/specifications.md), [active context](../.github/memory/active-context.md) |
-| HTTP contracts | [AllocationController](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/api/AllocationController.kt), [request DTOs](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/api/dto/AllocationRequest.kt) |
-| HTTP handoff | [AllocationEventPublisher](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/publisher/AllocationEventPublisher.kt), [AllocationEventListener](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/listener/AllocationEventListener.kt) |
+| HTTP contracts | [AllocationController](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/api/AllocationController.kt), [ReservationController](../stockio-service/src/main/kotlin/nl/stockio/reservation/domain/api/ReservationController.kt), [StockController](../stockio-service/src/main/kotlin/nl/stockio/stock/api/StockController.kt), [request DTOs](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/api/dto/AllocationRequest.kt) |
+| HTTP enqueue, completion, and status | [AllocationJobExecutor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt), [AllocationJobRunrService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationJobRunrService.kt), [completion models](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/model/AllocationModels.kt) |
 | Run identity and finalization | [AllocationService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationService.kt), [AllocationRunService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationRunService.kt), [Hasher](../stockio-service/src/main/kotlin/nl/stockio/util/Hasher.kt) |
 | Order ownership and unchanged deadlines | [AllocationDocumentService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationDocumentService.kt) |
-| Transactional worker and checkpoints | [AllocationSkuWorker](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/worker/AllocationSkuWorker.kt), [allocation repositories](../stockio-service/src/main/kotlin/nl/stockio/allocation/infra/AllocationJpaRepositories.kt), [stock repositories](../stockio-service/src/main/kotlin/nl/stockio/stock/infra/StockJpaRepositories.kt) |
+| Transactional worker, ports, and checkpoints | [AllocationSkuWorker](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/worker/AllocationSkuWorker.kt), [allocation ports](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/port/AllocationRepositories.kt), [stock ports](../stockio-service/src/main/kotlin/nl/stockio/stock/domain/port/StockRepository.kt), [allocation adapters](../stockio-service/src/main/kotlin/nl/stockio/allocation/infra/AllocationJpaRepositories.kt), [stock adapters](../stockio-service/src/main/kotlin/nl/stockio/stock/infra/StockJpaRepositories.kt) |
 | Schema evolution and constraints | [V3: request idempotency](../stockio-service/src/main/resources/db/migration/V3__add_request_idempotency.sql), [V11: parallel SKU allocation](../stockio-service/src/main/resources/db/migration/V11__support_parallel_sku_allocations.sql), [V15: multiline identities](../stockio-service/src/main/resources/db/migration/V15__order_and_shipment_lines.sql) |
-| Projection and execution replay | [AllocationProcessor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/processor/AllocationProcessor.kt), [AllocationJob](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJob.kt), [AllocationJobCompletionService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobCompletionService.kt) |
+| Projection and execution replay | [AllocationProcessor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/processor/AllocationProcessor.kt), [StockProjectionProcessor](../stockio-service/src/main/kotlin/nl/stockio/stock/domain/processor/StockProjectionProcessor.kt), [AllocationJobExecutor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt) |
 | Message redelivery and fallback | [AllocationRabbitListener](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/listener/AllocationRabbitListener.kt) |
 | Physical receipt and backorder trigger | [StockLedgerProcessor](../stockio-service/src/main/kotlin/nl/stockio/stock/domain/processor/StockLedgerProcessor.kt), [BackorderAllocationService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/BackorderAllocationService.kt) |
 | Database-backed examples | [AllocationIntegrationTest](../stockio-service/src/test/kotlin/nl/stockio/allocation/domain/service/AllocationIntegrationTest.kt) |

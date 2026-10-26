@@ -41,7 +41,7 @@ and independently synchronizes the physical stock ledger.
 
 ### Gherkin description
 **Given** a structured allocation request with a unique `requestId`, `asOfDate`, demand orders, and optional inbound shipments \
-**When** the client submits `POST /api/logistics/allocation-jobs`, or invokes `allocation_and_stock_projection` \
+**When** the client submits `POST /api/allocation/jobs` with the default `async=true`, or invokes `allocation_and_stock_projection` \
 **Then** Stockio accepts the request and processes it as `NEW_DEMAND` \
 **And** orders are processed by ascending priority and FIFO `placedDate` \
 **And** inventory is consumed FIFO by `receivedDate` and `lotId` \
@@ -49,42 +49,48 @@ and independently synchronizes the physical stock ledger.
 **And** any remaining quantity becomes an open backorder
 
 ### High-level technical analysis
-- REST endpoint: `POST /api/logistics/allocation-jobs`
+- REST endpoint: `POST /api/allocation/jobs` (`async=true` by default)
 - MCP tool: `allocation_and_stock_projection`
 - Controller: `AllocationController`
-- Services: `AllocationEventPublisher`, `AllocationJobService`, `AllocationProcessingService`, and the allocation workers
-- The REST request is published for asynchronous processing and returns a `jobId` with a `Location` header
+- Services: `AllocationJobExecutor`, `AllocationJobRunrService`, `AllocationProcessor`, and the allocation workers
+- The controller validates `asOfDate` against the business clock, then directly enqueues JobRunr work; no in-process event or after-commit listener is involved
+- The default REST flow returns `{jobId, requestId}` with `Location: /api/allocation/jobs/{jobId}` only after enqueue succeeds; enqueue failures propagate
+- MCP invokes the processing flow directly rather than returning a JobRunr acceptance response
+- `async=false` executes inline but currently returns the run ID as its job ID without creating a JobRunr job; its returned polling URL is not a valid execution-status contract
 - Allocation reserves persisted inventory and inbound supply and refreshes stock projections, but does not synchronize physical stock
 - New orders start as temporary reservations and expire unless confirmed
 - Reusing a `requestId` with the same payload is idempotent; using it with a different payload or operation is rejected
 
 ### Acceptance Criteria
-- A valid request returns `202 Accepted`, a `jobId`, and a location for status polling
+- A valid default asynchronous REST request returns `202 Accepted`, `jobId`, `requestId`, and a matching location for status polling
+- The REST endpoint rejects an `asOfDate` other than today before enqueueing or creating a run
 - The request must use `runType: NEW_DEMAND` for the structured new-demand flow
 - Allocation results distinguish inventory, inbound, allocated, partially backordered, and backordered quantities
 - Orders already submitted as new demand cannot be submitted again as new demand
 - The same request can be retried safely without creating a duplicate allocation run
+- Repeated HTTP submissions can create distinct execution jobs for one logical request; a lost acceptance response is an unknown outcome, not proof that enqueue failed
 - Allocation never changes physical live stock directly
 
 ## Scenario 3: Monitor an Allocation Job
 
 ### Gherkin description
 **Given** a client has received a `jobId` from a new-demand allocation request \
-**When** the client requests `GET /api/logistics/allocation-jobs/{jobId}` \
+**When** the client requests `GET /api/allocation/jobs/{jobId}` \
 **Then** Stockio returns the current job status \
-**And** when processing succeeds, the response includes the allocation run and contract version \
+**And** when processing succeeds, the response includes the execution job ID and saved allocation run \
 **And** when the job does not exist, Stockio returns `404 Not Found`
 
 ### High-level technical analysis
-- Endpoint: `GET /api/logistics/allocation-jobs/{jobId}`
+- Endpoint: `GET /api/allocation/jobs/{jobId}`
 - Controller: `AllocationController`
-- Service: `AllocationJobService`
-- Completed results are persisted as an `AllocationCompletionResult` containing `version` and `allocationRun`
+- Service: `AllocationJobRunrService`; execution and result persistence: `AllocationJobExecutor`
+- Completed results are persisted as an `AllocationCompletionResult` containing `jobId` and `allocationRun`, without a top-level `version` or stock-sync result
 - Job completion is serialized and reused on retries
 
 ### Acceptance Criteria
 - A known job returns its current status
 - A completed job returns `status: SUCCEEDED` and a non-null allocation result
+- A `SUCCEEDED` job without saved completion is an explicit consistency error, not an empty successful result
 - The successful result contains the persisted `runId`, `requestId`, run type, as-of date, allocations, and open backorder count
 - An unknown job returns `404 Not Found`
 
@@ -104,15 +110,18 @@ and independently synchronizes the physical stock ledger.
 - MCP tool: `allocate_open_backorders`
 - Automatic trigger: `StockLedgerProcessor` after a successful transaction marks inbound supply as received
 - Background execution: a dedicated JobRunr backorder-fulfillment job
-- Application service: a reusable backorder fulfillment service accepting a `BackorderFulfillmentCommand`, not an `AllocationRequest`
-- Command data: `asOfDate`, `trigger`, and an optional affected-SKU scope
+- Application path: `BackorderAllocationJob` -> `AllocationProcessor` -> `BackorderAllocationService`, accepting an internal `BackorderAllocationRequest`
+- Command data: `requestId`, `asOfDate`, `trigger`, optional `skuScope`, and inbound shipments for manual registration
 - Domain path: backorder fulfillment service -> existing per-SKU workers -> existing allocation policies and repository ports
 - The job runs only after the ledger transaction commits, uses persisted received supply and open backorders, and refreshes projections after successful fulfillment
-- The MCP tool remains an explicit manual/recovery adapter and may use the same application service
+- The MCP tool maps its external `AllocationRequest` to the same internal command with trigger `MANUAL`
 - Idempotency and concurrency protection prevent duplicate fulfillment for the same received-supply event or SKU scope
+- Receipt request/job IDs are derived from the date and sorted received shipment-line IDs
+- The after-commit callback is not durable: a crash before enqueue can lose the trigger, and enqueue failure cannot undo the receipt. There is no transactional outbox or automatic reconstruction of a missing enqueue
+- The current request fingerprint excludes internal `skuScope` and `trigger`; it must not be treated as validation of every internal command field
 
 ### Acceptance Criteria
-- Newly received inbound supply causes a backorder-fulfillment job to be enqueued only after the ledger transaction commits
+- When the post-commit callback runs and enqueue succeeds, newly received supply schedules fulfillment only after the ledger transaction commits
 - Registering expected inbound supply alone does not enqueue a fulfillment job
 - The job identifies and processes only SKUs affected by newly received supply when a scope is available
 - Fulfilled and partially fulfilled quantities are reported with their allocation sources
@@ -128,14 +137,14 @@ and independently synchronizes the physical stock ledger.
 
 ### Gherkin description
 **Given** an order that has been processed by an allocation flow \
-**When** the client requests `GET /api/logistics/orders/{orderId}/reservation`, or invokes `get_order_reservation_status` \
+**When** the client requests `GET /api/reservations/orders/{orderId}/status`, or invokes `get_order_reservation_status` \
 **Then** Stockio returns the current reservation lifecycle, line details, and expiry information \
 **And** if no reservation exists for the order, the REST API returns `404 Not Found`
 
 ### High-level technical analysis
-- REST endpoint: `GET /api/logistics/orders/{orderId}/reservation`
+- REST endpoint: `GET /api/reservations/orders/{orderId}/status`
 - MCP tool: `get_order_reservation_status`
-- Controller: `AllocationController`
+- Controller: `ReservationController`; `AllocationController` also exposes `GET /api/allocation/order-reservation/{orderId}/status`
 - Service: `OrderReservationService`
 - Reservation states are `PENDING_CONFIRMATION`, `CONFIRMED`, and `EXPIRED`
 - The reservation status is authoritative for the current hold; a historical allocation run alone does not prove that a reservation remains active
@@ -176,14 +185,15 @@ and independently synchronizes the physical stock ledger.
 
 ### Gherkin description
 **Given** the stock-ledger synchronization schedule and monitoring configuration \
-**When** a client requests `GET /api/logistics/stock-ledger/status` or checks the `stockLedger` health indicator \
+**When** a client requests `GET /api/stock/ledger/status` or checks the `stockLedger` health indicator \
 **Then** Stockio reports the last successful synchronization, expected next run, freshness deadline, and current stale state \
 **And** a missed freshness deadline makes the health indicator `DOWN` when scheduling is enabled \
 **And** disabled scheduling reports an `UNKNOWN` health state
 
 ### High-level technical analysis
-- Endpoint: `GET /api/logistics/stock-ledger/status`
-- Service: `LedgerSyncStatusService`
+- Endpoint: `GET /api/stock/ledger/status`; also `GET /api/allocation/stock-ledger/status`
+- Controller: `StockController` (dedicated route) or `AllocationController` (additional mapping)
+- Service: `StockLedgerService`
 - Health component: `stockLedger` health indicator
 - The status is based on the configured cron, business zone, and freshness tolerance
 - The status includes synchronization date and SKU/lot counts when a successful run exists
@@ -210,7 +220,8 @@ and independently synchronizes the physical stock ledger.
 - Controller: `AllocationAdminController`
 - Service: `AllocationExcelService`
 - The configured `stockio.allocation.csv-path` identifies the server-side input file
-- Product titles are resolved through the product repository, and generated IDs/customer names make each loaded request distinct
+- Product titles are resolved through `ProductRepository`; document/line IDs derive from the CSV byte hash and row position, and customer names are deterministic for those IDs
+- The request ID also includes the business date: identical bytes on the same date replay the same request regardless of file path
 
 ### Acceptance Criteria
 - A valid CSV returns a structurally valid `AllocationRequest`
@@ -218,6 +229,7 @@ and independently synchronizes the physical stock ledger.
 - Unsupported transaction types do not create allocation inputs
 - CSV loading does not create an allocation run, reservation, or stock movement
 - Invalid input is reported as an error rather than returning a success-shaped fallback
+- Same-date reloads preserve request and document identities; a later date does not authorize reusing existing documents as new demand
 
 ## Scenario 9: Generate an Excel Allocation Report
 
@@ -246,18 +258,20 @@ and independently synchronizes the physical stock ledger.
 ## Scenario 10: Remove Jobs with Excessive Retries
 
 ### Gherkin description
-**Given** failed or repeatedly retried background allocation jobs \
+**Given** scheduled or processing jobs with repeated execution-state transitions \
 **When** an administrator requests `DELETE /api/admin/allocations/delete-jobs-with-excessive-retries` \
-**Then** Stockio removes jobs that have exhausted or exceeded the configured retry state \
+**Then** Stockio permanently removes selected jobs whose counted state-history entries exceed two \
 **And** the endpoint returns a confirmation message
 
 ### High-level technical analysis
 - Endpoint: `DELETE /api/admin/allocations/delete-jobs-with-excessive-retries`
 - Controller: `AllocationAdminController`
-- Service: `AllocationJobService`
+- Service: `AllocationJobRunrService`
+- Reads up to 100 `PROCESSING` and 100 `SCHEDULED` jobs, oldest `updatedAt` first, and counts `SCHEDULED`, `PROCESSING`, and `FAILED` history entries; this is not a configured retry-limit check
 - The operation is an administrative cleanup action and does not re-run allocation or modify stock
 
 ### Acceptance Criteria
-- Jobs in the excessive-retry set are deleted
+- Selected jobs with more than two counted history entries are deleted
 - The endpoint returns a clear confirmation response
 - Cleanup does not create allocation runs, reservations, or stock movements
+- Removing a job record does not undo allocation or guarantee cancellation of code already executing
