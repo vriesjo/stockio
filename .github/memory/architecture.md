@@ -299,14 +299,12 @@ deployed services.
 
 ### Component responsibilities (hexagonal mapping)
 
+#### Allocation
+
 | Component | Responsibility |
 | --- | --- |
 | `AllocationTools` | MCP adapter for new-demand allocation and projection, backorder fulfillment, stock-ledger synchronization, and Excel report generation. |
-| `ProductAllocationTools` / `ProductAllocationService` | Resolves a product phrase through local catalog/vector matching with Tavily fallback, then delegates to `AllocationProcessor`. |
-| Tavily / Ollama clients | Perform external product search and local embedding requests with configured timeouts. |
-| `ProductVectorRepository` | Persists catalog embeddings and Tavily knowledge chunks and performs pgvector similarity searches. |
 | `AllocationController` | Validates today's business date, submits allocation/projection work directly to JobRunr by default, and exposes job status plus reservation/freshness read aliases. Also supports `async=false` with the limitation described below. |
-| `ReservationController` / `StockController` | Expose dedicated reservation-lifecycle and ledger-freshness reads. |
 | `AllocationAdminController` | Creates allocation requests from CSV, generates reports, and removes jobs with excessive retries. |
 | `AllocationService` | Validates, groups work by SKU, coordinates SKU workers, and completes allocation runs. |
 | `AllocationRunService` | Owns allocation-run identity, request-hash validation, completion, and persisted historical results. |
@@ -314,24 +312,48 @@ deployed services.
 | `AllocationDocumentService` | Registers immutable order/shipment headers and lines before SKU work and assigns one reservation deadline per order. |
 | `AllocationSkuWorker` | Performs one SKU's transactional allocation or backorder fulfillment, reserves stock/supply, and persists resumable operation results. |
 | `AllocationPolicyCalculator` | Applies order priority, FIFO source selection, delivery-date eligibility, and backorder rules. |
-| `StockProjectionProcessor` | Rebuilds aggregate and lot-level daily projections from the live stock baseline and persisted reservations. |
-| `StockLedgerProcessor` | Expires overdue holds, rebuilds today's projection, and synchronizes it to live stock. |
-| `StockLedgerSyncJob` | Independently schedules ledger synchronization twice daily by default. |
-| `ReservationExpiryJob` / expiry services | Release overdue pending orders in transactional batches and rebuild projections. |
 | `AllocationJobExecutor` | Directly enqueues HTTP requests, executes allocation/projection, and persists or reuses `{jobId, allocationRun}` completion JSON. |
 | `AllocationJobRunrService` | Reads JobRunr status and saved completion, and performs administrative job-record cleanup. |
 | `BackorderAllocationJob` / `BackorderAllocationService` | Process receipt-triggered or manual fulfillment commands without creating new demand. |
-| `OrderReservationService` / `StockLedgerService` | Read current lifecycle and ledger freshness without changing stock. |
-| `StockProjectionLockRepository` | Acquires the shared/exclusive database coordination lock; the caller must already have a transaction. |
-| `StockSnapshotRepository` | Reads and replaces derived snapshots through JDBC in the caller's transaction. |
 | `AllocationExcelService` | Parses the configured CSV and creates a validated allocation request. |
 | `ExcelReportProcessor` | Writes allocation details, sources, pivot tables, and formula summaries to an `.xlsx` workbook. |
-| Repositories and `JdbcTemplate` | Persist operational state, enforce locks, and read/write snapshot data. |
+| Allocation repository ports and JPA adapters | Persist allocation runs, records, sources, claims, and backorders. |
+
+#### Product
+
+| Component | Responsibility |
+| --- | --- |
+| `ProductAllocationTools` / `ProductAllocationService` | Resolves a product phrase through local catalog/vector matching with Tavily fallback, then delegates to `AllocationProcessor`. |
+| Tavily / Ollama clients | Perform external product search and local embedding requests with configured timeouts. |
+| `ProductRepository` / `ProductVectorRepository` | Persist catalog data and embeddings, and perform catalog and pgvector similarity searches. |
+
+#### Reservation
+
+| Component | Responsibility |
+| --- | --- |
+| `ReservationController` | Exposes dedicated reservation-lifecycle reads. |
+| `ReservationExpiryJob` / expiry services | Release overdue pending orders in transactional batches and rebuild projections. |
+| `OrderReservationService` | Reads current reservation lifecycle without changing stock. |
+| Reservation repository ports and JPA adapters | Persist shipments, supply, and reservations. |
+
+#### Stock
+
+| Component | Responsibility |
+| --- | --- |
+| `StockController` | Exposes ledger-freshness reads. |
+| `StockProjectionProcessor` | Rebuilds aggregate and lot-level daily projections from the live stock baseline and persisted reservations. |
+| `StockLedgerProcessor` | Expires overdue holds, rebuilds today's projection, and synchronizes it to live stock. |
+| `StockLedgerSyncJob` | Independently schedules ledger synchronization twice daily by default. |
+| `StockLedgerService` | Reads ledger freshness without changing stock. |
+| `StockProjectionLockRepository` | Acquires the shared/exclusive database coordination lock; the caller must already have a transaction. |
+| `StockSnapshotRepository` | Reads and replaces derived snapshots through JDBC in the caller's transaction. |
+| Stock repository ports and JPA/JDBC adapters | Persist live stock, projection locks, snapshots, and synchronization status. |
 
 The repository interfaces in `allocation/domain/port`, `reservation/domain/port`,
 `stock/domain/port`, and `product/domain/port` are the outbound ports shown in the diagram. Their
 implementations in `allocation/infra`, `reservation/infra`, `product/infra`, and
-`stock/infra` are outbound adapters. Some current port signatures still expose
+`stock/infra` are outbound adapters; JPA repositories and `JdbcTemplate` provide
+the persistence mechanisms for those adapters. Some current port signatures still expose
 infra entity types; replacing those with domain persistence models would make the
 hexagonal boundary stricter without changing the use-case components.
 
@@ -392,25 +414,37 @@ An order or shipment may contain repeated SKUs, including separate lines with id
 
 ## Supported flows
 
-The flow diagrams show runtime collaboration; PostgreSQL arrows abbreviate the
-repository calls. Transaction and lock boundaries are called out where they affect
-correctness. Allocation holds supply, projection forecasts movements, and ledger
-synchronization applies due physical movements: these are separate operations.
+The scenarios in [`scenarios.md`](./scenarios.md) define the supported
+observable user and operational behavior. This table aligns each scenario with
+the architecture detail below; the diagrams show runtime collaboration, with
+PostgreSQL arrows abbreviating repository calls. Transaction and lock boundaries
+are called out where they affect correctness. Allocation holds supply, projection
+forecasts movements, and ledger synchronization applies due physical movements:
+these are separate operations.
 
-| Flow | Trigger | Outcome |
+| Scenario | Scenario definition | Architecture detail |
 | --- | --- | --- |
-| [Allocation](#allocation-flow) | Structured new demand through an adapter or job | Reservations, backorders, historical result, and refreshed forecast. |
-| [Backorder fulfillment](#backorder-fulfillment-flow) | Receipt-triggered JobRunr job or explicit MCP request | Additional reservations against existing demand and refreshed forecast. |
-| [Product resolution and allocation](#product-resolution-and-allocation-flow) | Product REST endpoint or MCP tool | Resolved SKU and allocation, or an explicit non-allocation outcome. |
-| [Reservation expiry](#reservation-expiry-flow) | Recurring JobRunr sweep | Released holds, expired order headers, and refreshed forecast. |
-| [REST allocation submission](#rest-allocation-submission-and-completion-flow) | HTTP request and status polling | Asynchronous allocation/projection completion, not ledger sync. |
-| [RabbitMQ intake and retry](#rabbitmq-intake-and-retry-flow) | Queue delivery, including demo publications | Synchronous allocation attempt, JobRunr fallback, or dead-letter rejection. |
-| [Stock projection](#stock-projection-flow) | Allocation, expiry, or ledger processing | Replacement aggregate and lot-level forecasts. |
-| [Ledger synchronization](#ledger-synchronization-flow) | Independent recurring job or manual MCP call | Due receipts/deliveries applied atomically and sync success recorded. |
-| [Status and freshness reads](#status-and-freshness-read-flow) | REST, MCP, or Actuator query | Current reservation lifecycle or ledger freshness, without stock mutations. |
-| [CSV import](#csv-import-flow) | Admin HTTP request | A generated allocation request; no allocation is performed. |
-| [Excel report](#excel-report-flow) | Admin HTTP request or MCP tool | Workbook generated from a saved allocation run. |
-| [Job-record cleanup](#job-record-cleanup-flow) | Admin HTTP request | Permanent removal of qualifying JobRunr records, without undoing allocation. |
+| 1. Allocate a Product by Name | [Scenario 1](./scenarios.md#scenario-1-allocate-a-product-by-name) | [Product resolution and allocation](#product-resolution-and-allocation-flow), [allocation](#allocation-flow), and [stock projection](#stock-projection-flow). |
+| 2. Allocate Structured New Demand | [Scenario 2](./scenarios.md#scenario-2-allocate-structured-new-demand) | [REST allocation submission and completion](#rest-allocation-submission-and-completion-flow), [allocation](#allocation-flow), and [stock projection](#stock-projection-flow). |
+| 3. Monitor an Allocation Job | [Scenario 3](./scenarios.md#scenario-3-monitor-an-allocation-job) | [REST allocation submission and completion](#rest-allocation-submission-and-completion-flow). |
+| 4. Fulfill Open Backorders | [Scenario 4](./scenarios.md#scenario-4-fulfill-open-backorders) | [Backorder fulfillment](#backorder-fulfillment-flow) and the [receipt-triggered handoff](#ledger-synchronization-flow). |
+| 5. Inspect an Order Reservation | [Scenario 5](./scenarios.md#scenario-5-inspect-an-order-reservation) | [Status and freshness reads](#status-and-freshness-read-flow); [reservation expiry](#reservation-expiry-flow) is supporting lifecycle maintenance. |
+| 6. Synchronize the Physical Stock Ledger | [Scenario 6](./scenarios.md#scenario-6-synchronize-the-physical-stock-ledger) | [Ledger synchronization](#ledger-synchronization-flow), [stock projection](#stock-projection-flow), and [reservation expiry](#reservation-expiry-flow). |
+| 7. Monitor Stock-Ledger Freshness | [Scenario 7](./scenarios.md#scenario-7-monitor-stock-ledger-freshness) | [Status and freshness reads](#status-and-freshness-read-flow). |
+| 8. Load an Allocation Request from CSV | [Scenario 8](./scenarios.md#scenario-8-load-an-allocation-request-from-csv) | [CSV import](#csv-import-flow). |
+| 9. Generate an Excel Allocation Report | [Scenario 9](./scenarios.md#scenario-9-generate-an-excel-allocation-report) | [Excel report](#excel-report-flow). |
+| 10. Remove Jobs with Excessive Retries | [Scenario 10](./scenarios.md#scenario-10-remove-jobs-with-excessive-retries) | [Job-record cleanup](#job-record-cleanup-flow). |
+
+#### Supporting implementation flows
+
+These technical flows explain mechanisms that support the scenarios but are not
+separate scenario definitions:
+
+| Flow | Role | Related scenarios |
+| --- | --- | --- |
+| [RabbitMQ intake and retry](#rabbitmq-intake-and-retry-flow) | Queue delivery, synchronous allocation attempt, JobRunr fallback, or dead-letter rejection. | 2 |
+| [Reservation expiry](#reservation-expiry-flow) | Recurring release of overdue holds and forecast refresh. | 5 and 6 |
+| [Stock projection](#stock-projection-flow) | Rebuilds aggregate and lot-level forecasts without applying physical movements. | 1, 2, 4, and 6 |
 
 Order confirmation and explicit warehouse receipt/dispatch confirmation are not
 implemented flows. Receipt-triggered backorder fulfillment is implemented, but
