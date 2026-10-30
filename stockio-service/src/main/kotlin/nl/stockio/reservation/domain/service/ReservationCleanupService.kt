@@ -4,7 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.Clock
 import java.time.Instant
 import java.util.UUID
-import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
+import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.DemandOrderLineRepository
 import nl.stockio.allocation.domain.port.OpenBackorderRepository

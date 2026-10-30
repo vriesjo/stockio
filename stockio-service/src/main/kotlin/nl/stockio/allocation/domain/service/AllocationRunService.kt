@@ -2,13 +2,13 @@ package nl.stockio.allocation.domain.service
 
 import java.time.Instant
 import java.util.UUID
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.allocation.infra.AllocationRecordEntity
 import nl.stockio.allocation.infra.AllocationRunEntity
 import nl.stockio.allocation.infra.AllocationSourceEntity
-import nl.stockio.allocation.domain.model.AllocationRecord
-import nl.stockio.allocation.domain.model.AllocationRunResult
-import nl.stockio.allocation.domain.model.AllocationSource
+import nl.stockio.api.dto.AllocationRecord
+import nl.stockio.api.dto.AllocationRunResult
+import nl.stockio.api.dto.AllocationSource
 import nl.stockio.allocation.domain.port.AllocationRecordRepository
 import nl.stockio.allocation.domain.port.AllocationRunRepository
 import nl.stockio.allocation.domain.port.AllocationSkuOperationRepository

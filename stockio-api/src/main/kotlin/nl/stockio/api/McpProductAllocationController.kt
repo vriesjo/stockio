@@ -3,7 +3,7 @@ package nl.stockio.api
 import io.modelcontextprotocol.client.McpSyncClient
 import io.modelcontextprotocol.spec.McpSchema
 import jakarta.validation.Valid
-import nl.stockio.api.data.McpProductAllocationRequest
+import nl.stockio.api.dto.McpProductAllocationRequest
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody

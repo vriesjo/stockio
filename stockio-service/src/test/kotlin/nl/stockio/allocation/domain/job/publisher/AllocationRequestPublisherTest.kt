@@ -2,8 +2,8 @@ package nl.stockio.allocation.domain.job.publisher
 
 import java.time.Clock
 import java.time.LocalDate
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
-import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.allocation.domain.model.InboundSupplyState
 import nl.stockio.allocation.domain.service.allocationLines
 import nl.stockio.allocation.domain.worker.AllocationCalculator

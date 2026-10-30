@@ -3,8 +3,8 @@ package nl.stockio.allocation.domain.worker
 import java.time.LocalDate
 import java.util.UUID
 import kotlin.math.min
-import nl.stockio.allocation.domain.model.AllocationSource
-import nl.stockio.allocation.domain.model.AllocationSourceType
+import nl.stockio.api.dto.AllocationSource
+import nl.stockio.api.dto.AllocationSourceType
 import nl.stockio.allocation.domain.model.InventoryLotState
 import nl.stockio.allocation.domain.model.StockReservationChange
 

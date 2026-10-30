@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.api.dto
+package nl.stockio.api.dto
 
 import java.time.Instant
 import java.time.LocalDate

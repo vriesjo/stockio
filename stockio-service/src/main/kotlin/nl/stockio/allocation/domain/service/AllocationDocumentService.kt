@@ -3,9 +3,9 @@ package nl.stockio.allocation.domain.service
 import java.time.Clock
 import java.time.Instant
 import java.util.UUID
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
-import nl.stockio.allocation.domain.api.dto.AllocationRunType
-import nl.stockio.allocation.domain.api.dto.DemandOrder
+import nl.stockio.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRunType
+import nl.stockio.api.dto.DemandOrder
 import nl.stockio.allocation.domain.model.AllocationOrder
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationRunRepository

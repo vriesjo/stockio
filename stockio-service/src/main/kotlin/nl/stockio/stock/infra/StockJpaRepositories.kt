@@ -12,7 +12,7 @@ import org.springframework.data.repository.query.Param
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import java.util.UUID
-import nl.stockio.allocation.domain.model.StockSyncResult
+import nl.stockio.api.dto.StockSyncResult
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
 import nl.stockio.stock.domain.port.StockLedgerSyncStatusRepository
 import nl.stockio.stock.domain.port.StockProjectionLockRepository

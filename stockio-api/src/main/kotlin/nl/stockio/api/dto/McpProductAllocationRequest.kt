@@ -1,4 +1,4 @@
-package nl.stockio.api.data
+package nl.stockio.api.dto
 
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Positive

@@ -1,0 +1,103 @@
+openapi: 3.0.3
+info:
+  title: Stockio Reservation Controller API
+  version: 1.0.0
+  description: |
+    OpenAPI description of the existing ReservationController endpoint.
+    No application-level authentication is configured.
+paths:
+  /api/reservations/orders/{orderId}/status:
+    get:
+      tags:
+        - Reservation
+      operationId: getOrderReservationStatus
+      summary: Get an order's reservation status
+      description: |
+        Returns the current reservation lifecycle, lines, and timestamps.
+        A pending reservation past its deadline is reported as EXPIRED with
+        cleanupPending=true until expiry cleanup has completed. This read does
+        not itself mutate the reservation or stock.
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: Order identifier.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current reservation lifecycle and its lines.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderReservationResponse'
+        '404':
+          description: No reservation exists for this order.
+        '500':
+          description: An unexpected server error occurred while loading reservation status.
+
+components:
+  schemas:
+    OrderReservationResponse:
+      type: object
+      required:
+        - orderId
+        - lines
+        - status
+        - createdAt
+        - expiresAt
+        - confirmedAt
+        - expiredAt
+        - cleanupPending
+      properties:
+        orderId:
+          type: string
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderReservationLine'
+        status:
+          $ref: '#/components/schemas/OrderReservationStatus'
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        confirmedAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiredAt:
+          type: string
+          format: date-time
+          nullable: true
+        cleanupPending:
+          type: boolean
+
+    OrderReservationLine:
+      type: object
+      required:
+        - orderLineId
+        - sku
+        - requestedQuantity
+        - requiredDeliveryDate
+      properties:
+        orderLineId:
+          type: string
+        sku:
+          type: string
+        requestedQuantity:
+          type: integer
+          format: int32
+        requiredDeliveryDate:
+          type: string
+          format: date
+
+    OrderReservationStatus:
+      type: string
+      enum:
+        - PENDING_CONFIRMATION
+        - CONFIRMED
+        - EXPIRED

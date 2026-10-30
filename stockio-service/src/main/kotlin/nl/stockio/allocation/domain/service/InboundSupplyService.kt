@@ -1,6 +1,6 @@
 package nl.stockio.allocation.domain.service
 
-import nl.stockio.allocation.domain.api.dto.InboundShipment
+import nl.stockio.api.dto.InboundShipment
 import nl.stockio.reservation.domain.port.InboundShipmentRepository
 import nl.stockio.reservation.domain.port.InboundSupplyRepository
 import nl.stockio.reservation.infra.InboundShipmentEntity

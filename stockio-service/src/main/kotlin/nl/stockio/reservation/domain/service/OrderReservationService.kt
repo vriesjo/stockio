@@ -1,9 +1,9 @@
 package nl.stockio.reservation.domain.service
 
 import java.time.Clock
-import nl.stockio.allocation.domain.api.dto.OrderReservationResponse
-import nl.stockio.allocation.domain.api.dto.OrderReservationLine
-import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
+import nl.stockio.api.dto.OrderReservationResponse
+import nl.stockio.api.dto.OrderReservationLine
+import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.DemandOrderLineRepository
 import org.springframework.stereotype.Service

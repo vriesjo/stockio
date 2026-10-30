@@ -1,0 +1,579 @@
+openapi: 3.0.3
+info:
+  title: Stockio Allocation Controller API
+  version: 1.0.0
+  description: |
+    OpenAPI description of the endpoints implemented by AllocationController.
+    No application-level authentication is configured.
+paths:
+  /api/allocation/jobs:
+    post:
+      tags:
+        - Allocation
+      operationId: submitAllocationJob
+      summary: Submit an allocation request
+      description: |
+        Validates that `asOfDate` is the current business date and submits the
+        request for processing. `requestId` is the logical allocation
+        idempotency key; each asynchronous submission receives its own `jobId`.
+
+        By default, `async=true` enqueues a JobRunr job and returns after the
+        enqueue succeeds. With `async=false`, processing runs inline but the
+        endpoint still returns `202 Accepted`. The current inline branch uses
+        the allocation run ID as `jobId` without creating a JobRunr job, so the
+        returned `Location` is not a valid job-status polling URL for that
+        branch.
+      parameters:
+        - name: async
+          in: query
+          required: false
+          description: Enqueue the request for background processing. Defaults to true.
+          schema:
+            type: boolean
+            default: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AllocationRequest'
+      responses:
+        '202':
+          description: Request accepted; for `async=true`, the job was enqueued successfully.
+          headers:
+            Location:
+              description: Relative URL for querying the job status. Not pollable when `async=false`.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllocationJobAccepted'
+        '400':
+          description: The request is invalid or `asOfDate` is not the current business date.
+        '500':
+          description: Processing or enqueue failed, or an unexpected server error occurred.
+
+  /api/allocation/jobs/{jobId}:
+    get:
+      tags:
+        - Allocation
+      operationId: getAllocationJobStatus
+      summary: Get allocation job status
+      description: |
+        Returns the current JobRunr state. A completed job includes its saved
+        allocation result; other states have a null result. A succeeded job
+        without a saved completion is reported as a server consistency error.
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          description: JobRunr execution ID returned by asynchronous submission.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current job state and its completion result, when available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllocationJobStatus'
+        '400':
+          description: The supplied job ID is not a valid UUID.
+        '404':
+          description: No JobRunr job exists for this ID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The job succeeded but its saved completion is missing or unreadable.
+
+  /api/allocation/stock-ledger/status:
+    get:
+      tags:
+        - Allocation
+      operationId: getAllocationStockLedgerStatus
+      summary: Get stock-ledger synchronization status
+      description: |
+        Returns the latest committed ledger synchronization and freshness
+        information. This is an additional status mapping on AllocationController.
+      responses:
+        '200':
+          description: Ledger synchronization status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockLedgerSyncStatus'
+        '500':
+          description: An unexpected server error occurred while loading status.
+
+  /api/allocation/order-reservation/{orderId}/status:
+    get:
+      tags:
+        - Allocation
+      operationId: getAllocationOrderReservationStatus
+      summary: Get an order's reservation status
+      description: |
+        Returns the current reservation lifecycle and its lines. This is an
+        additional read mapping on AllocationController.
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          description: Order identifier.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current reservation status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderReservationResponse'
+        '404':
+          description: No reservation exists for this order.
+
+components:
+  schemas:
+    AllocationRequest:
+      type: object
+      required:
+        - requestId
+        - asOfDate
+        - runType
+      properties:
+        requestId:
+          type: string
+          format: uuid
+          description: Logical request identity used for allocation idempotency.
+        asOfDate:
+          type: string
+          format: date
+          description: Must equal the current business date for this endpoint.
+        runType:
+          $ref: '#/components/schemas/AllocationRunType'
+        demandOrders:
+          type: array
+          default: []
+          items:
+            $ref: '#/components/schemas/DemandOrder'
+        inboundShipments:
+          type: array
+          default: []
+          items:
+            $ref: '#/components/schemas/InboundShipment'
+
+    AllocationRunType:
+      type: string
+      enum:
+        - NEW_DEMAND
+        - BACKORDER_FULFILLMENT
+
+    DemandOrder:
+      type: object
+      required:
+        - orderId
+        - customer
+        - priority
+        - placedDate
+        - lines
+      properties:
+        orderId:
+          type: string
+          maxLength: 100
+          minLength: 1
+          pattern: '\S'
+        customer:
+          type: string
+          minLength: 1
+          pattern: '\S'
+        priority:
+          type: integer
+          format: int32
+          minimum: 1
+        placedDate:
+          type: string
+          format: date
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/DemandOrderLine'
+
+    DemandOrderLine:
+      type: object
+      required:
+        - orderLineId
+        - sku
+        - requestedQuantity
+        - requiredDeliveryDate
+      properties:
+        orderLineId:
+          type: string
+          maxLength: 100
+          minLength: 1
+          pattern: '\S'
+        sku:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: '\S'
+        requestedQuantity:
+          type: integer
+          format: int32
+          minimum: 1
+        requiredDeliveryDate:
+          type: string
+          format: date
+
+    InboundShipment:
+      type: object
+      required:
+        - shipmentId
+        - lines
+      properties:
+        shipmentId:
+          type: string
+          maxLength: 100
+          minLength: 1
+          pattern: '\S'
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/InboundShipmentLine'
+
+    InboundShipmentLine:
+      type: object
+      required:
+        - shipmentLineId
+        - sku
+        - expectedQuantity
+        - expectedArrivalDate
+      properties:
+        shipmentLineId:
+          type: string
+          maxLength: 100
+          minLength: 1
+          pattern: '\S'
+        sku:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: '\S'
+        expectedQuantity:
+          type: integer
+          format: int32
+          minimum: 1
+        expectedArrivalDate:
+          type: string
+          format: date
+        warehouseCode:
+          type: string
+          maxLength: 50
+          minLength: 1
+          pattern: '\S'
+          default: MAIN
+
+    AllocationJobAccepted:
+      type: object
+      required:
+        - jobId
+        - requestId
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: JobRunr execution ID for asynchronous requests.
+        requestId:
+          type: string
+          format: uuid
+
+    AllocationJobStatus:
+      type: object
+      required:
+        - jobId
+        - status
+        - result
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          description: Current JobRunr state name.
+        result:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/AllocationCompletionResult'
+          nullable: true
+
+    AllocationCompletionResult:
+      type: object
+      required:
+        - jobId
+        - allocationRun
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        allocationRun:
+          $ref: '#/components/schemas/AllocationRunResult'
+
+    AllocationRunResult:
+      type: object
+      required:
+        - runId
+        - requestId
+        - runType
+        - asOfDate
+        - createdAt
+        - openBackorderCount
+        - allocations
+      properties:
+        runId:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+        runType:
+          $ref: '#/components/schemas/AllocationRunType'
+        asOfDate:
+          type: string
+          format: date
+        createdAt:
+          type: string
+          format: date-time
+        openBackorderCount:
+          type: integer
+          format: int32
+          minimum: 0
+        allocations:
+          type: array
+          items:
+            $ref: '#/components/schemas/AllocationRecord'
+
+    AllocationRecord:
+      type: object
+      required:
+        - orderId
+        - customer
+        - sku
+        - priority
+        - placedDate
+        - requiredDeliveryDate
+        - requestedQuantity
+        - allocatedFromInventory
+        - allocatedFromInbound
+        - backorderedQuantity
+        - status
+        - sources
+        - orderLineId
+        - processingOutcome
+      properties:
+        orderId:
+          type: string
+        customer:
+          type: string
+        sku:
+          type: string
+        priority:
+          type: integer
+          format: int32
+        placedDate:
+          type: string
+          format: date
+        requiredDeliveryDate:
+          type: string
+          format: date
+        requestedQuantity:
+          type: integer
+          format: int32
+        allocatedFromInventory:
+          type: integer
+          format: int32
+        allocatedFromInbound:
+          type: integer
+          format: int32
+        backorderedQuantity:
+          type: integer
+          format: int32
+        status:
+          type: string
+          allOf:
+            - $ref: '#/components/schemas/AllocationStatus'
+          nullable: true
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/AllocationSource'
+        orderLineId:
+          type: string
+        processingOutcome:
+          $ref: '#/components/schemas/AllocationProcessingOutcome'
+
+    AllocationStatus:
+      type: string
+      enum:
+        - ALLOCATED
+        - PARTIALLY_BACKORDERED
+        - BACKORDERED
+        - PARTIALLY_FULFILLED
+        - FULFILLED
+
+    AllocationProcessingOutcome:
+      type: string
+      enum:
+        - PROCESSED
+        - SKIPPED_ORDER_EXPIRED
+
+    AllocationSource:
+      type: object
+      required:
+        - sourceType
+        - sourceId
+        - quantity
+        - sourceDate
+        - warehouseLocation
+        - shipmentId
+        - shipmentLineId
+      properties:
+        sourceType:
+          $ref: '#/components/schemas/AllocationSourceType'
+        sourceId:
+          type: string
+        quantity:
+          type: integer
+          format: int32
+        sourceDate:
+          type: string
+          format: date
+        warehouseLocation:
+          type: string
+          nullable: true
+        shipmentId:
+          type: string
+          nullable: true
+        shipmentLineId:
+          type: string
+          nullable: true
+
+    AllocationSourceType:
+      type: string
+      enum:
+        - INVENTORY
+        - INBOUND
+
+    StockLedgerSyncStatus:
+      type: object
+      required:
+        - schedulingEnabled
+        - lastSuccessAt
+        - snapshotDate
+        - skuCount
+        - lotSnapshotCount
+        - nextExpectedAt
+        - staleAfter
+        - stale
+      properties:
+        schedulingEnabled:
+          type: boolean
+        lastSuccessAt:
+          type: string
+          format: date-time
+          nullable: true
+        snapshotDate:
+          type: string
+          format: date
+          nullable: true
+        skuCount:
+          type: integer
+          format: int32
+          nullable: true
+        lotSnapshotCount:
+          type: integer
+          format: int32
+          nullable: true
+        nextExpectedAt:
+          type: string
+          format: date-time
+        staleAfter:
+          type: string
+          format: date-time
+        stale:
+          type: boolean
+
+    OrderReservationResponse:
+      type: object
+      required:
+        - orderId
+        - lines
+        - status
+        - createdAt
+        - expiresAt
+        - confirmedAt
+        - expiredAt
+        - cleanupPending
+      properties:
+        orderId:
+          type: string
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderReservationLine'
+        status:
+          $ref: '#/components/schemas/OrderReservationStatus'
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        confirmedAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiredAt:
+          type: string
+          format: date-time
+          nullable: true
+        cleanupPending:
+          type: boolean
+
+    OrderReservationLine:
+      type: object
+      required:
+        - orderLineId
+        - sku
+        - requestedQuantity
+        - requiredDeliveryDate
+      properties:
+        orderLineId:
+          type: string
+        sku:
+          type: string
+        requestedQuantity:
+          type: integer
+          format: int32
+        requiredDeliveryDate:
+          type: string
+          format: date
+
+    OrderReservationStatus:
+      type: string
+      enum:
+        - PENDING_CONFIRMATION
+        - CONFIRMED
+        - EXPIRED
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string

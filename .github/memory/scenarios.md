@@ -275,3 +275,27 @@ and independently synchronizes the physical stock ledger.
 - The endpoint returns a clear confirmation response
 - Cleanup does not create allocation runs, reservations, or stock movements
 - Removing a job record does not undo allocation or guarantee cancellation of code already executing
+
+## Scenario 11: Publish an Allocation Request from Another Spring Boot Application
+
+### Gherkin description
+**Given** another Spring Boot application includes the Stockio allocation RabbitMQ producer starter and has configured its broker connection, exchange, and routing key \
+**When** that application publishes an `AllocationRequest` through the starter's publisher \
+**Then** the starter sends a JSON message compatible with Stockio's allocation request contract to the configured exchange and routing key \
+**And** the existing Stockio RabbitMQ listener can consume and process the message
+
+### High-level technical analysis
+- The wire contract is provided by a reusable `stockio-allocation-contracts` artifact rather than requiring a dependency on the executable `stockio-service` module
+- A Spring Boot producer starter provides the typed publisher and is registered through `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`
+- The starter uses the host application's Spring AMQP `RabbitTemplate` and externalized properties for the exchange and routing key
+- Auto-configuration is opt-in and backs off when the host application supplies its own publisher or message converter
+- The scheduled sample-request generator remains application-specific; listener, queue, dead-letter, and JobRunr behavior remain in the Stockio service
+
+### Acceptance Criteria
+- An independent Spring Boot application can import the published producer starter and allocation-contract artifacts without depending on `stockio-service`
+- When enabled and configured, auto-configuration provides a typed publisher that sends the allocation request JSON to the configured exchange and routing key
+- The emitted JSON retains the field names, enum values, and date representation accepted by the existing Stockio listener
+- Auto-configuration is inactive unless explicitly enabled and backs off for host-provided publisher or message-converter beans
+- Conversion and send failures are surfaced to the caller rather than reported as successful publication
+- The producer starter does not create consumer queues or dead-letter topology, enable scheduling, or include Stockio-specific sample-data generation
+- The existing scheduled sample publisher continues to send requests consumable by the Stockio listener after it is adapted to the reusable publisher

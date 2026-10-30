@@ -6,12 +6,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
-import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.util.requestHash
 import nl.stockio.allocation.domain.api.validator.AllocationRequestValidator
-import nl.stockio.allocation.domain.model.AllocationRecord
-import nl.stockio.allocation.domain.model.AllocationRunResult
+import nl.stockio.api.dto.AllocationRecord
+import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
 import nl.stockio.allocation.domain.worker.AllocationSkuWorker

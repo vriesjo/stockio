@@ -23,3 +23,43 @@ Tell us what is the current active context for the agent. This should include:
 - Reference to the feature definition in `.github/memory/requirements-specification.md` in the `## Feature` section.
 - Steps worked on, including brief summary of the AGENTS.md `Workflow orchestration` routine in the `### Steps worked on` section.
 - If you have any suggestions for next steps, add them in the `### Next possible steps (suggestions)` section.
+
+## Planned feature: Add a reusable RabbitMQ allocation producer starter
+
+- **Specification:** `.github/memory/specifications.md#feature-add-a-reusable-rabbitmq-allocation-producer-starter`
+- **Scenario:** `.github/memory/scenarios.md#scenario-11-publish-an-allocation-request-from-another-spring-boot-application`
+- **Issue:** `.github/memory/issues/feature_rabbitmq_allocation_producer_starter.md`
+- **Implementation started:** No. This is a draft implementation handoff; application code has not been changed.
+
+### Steps worked on
+- Confirmed the feature targets RabbitMQ producer reuse, not Kafka.
+- Defined separate allocation-contract and producer-starter library modules, with Spring Boot auto-configuration registered through `AutoConfiguration.imports`.
+- Recorded the boundary that keeps demo request generation and scheduling in `stockio-service`, and keeps listeners, queue/dead-letter topology, and JobRunr fallback consumer-side.
+- Added Scenario 11, linked the feature specification and issue document, and documented the implementation plan and compatibility constraints.
+
+### Next possible steps (suggestions)
+- Confirm the artifact repository, artifact coordinates/versioning policy, and whether publisher confirms are in scope before implementation.
+- Implement the contract and producer-starter modules, then adapt the existing sample publisher and verify the current consumer contract.
+
+## Feature: Generate OpenAPI interfaces for REST controllers
+
+- **Specification:** `.github/memory/specifications.md#feature-generate-openapi-interfaces-for-rest-controllers`
+- **Issue:** `.github/memory/issues/feature_add_interfaces_to_the_controllers.md`
+- **Affected scenarios:** [1](scenarios.md#scenario-1-allocate-a-product-by-name), plus initial coverage for [2](scenarios.md#scenario-2-allocate-structured-new-demand), [3](scenarios.md#scenario-3-monitor-an-allocation-job), [5](scenarios.md#scenario-5-inspect-an-order-reservation), and [7](scenarios.md#scenario-7-monitor-stock-ledger-freshness).
+- **Status:** Done for the initial `AllocationController`, `ReservationController`, and user-selected `ProductAllocationController` integrations.
+- **Implementation:** Each controller now implements its generated Kotlin Spring API from a controller-specific OpenAPI specification; `stockio-service` compiles generated sources directly from `stockio-api/build`.
+
+### Steps worked on
+- Completed the initial `AllocationController` interface generation and implementation using the service-local specification and Gradle integration.
+- The user selected `ReservationController` for the next controller.
+- Inspected `ReservationController`, its service, DTOs, and existing endpoint tests. Created `reservation-controller.yaml` from the implementation before generating the interface.
+- Added dedicated `:stockio-api:openApiValidateReservation` and `:stockio-api:openApiGenerateReservation` tasks and registered their generated source with service compilation.
+- Made `ReservationController` implement `ReservationApi` and added standalone MockMvc coverage for the successful response and `404`.
+- Verified reservation spec validation, generation, service compilation, and focused tests.
+- The user selected `stockio-service/src/main/kotlin/nl/stockio/product/domain/api/ProductAllocationController.kt` as the next controller. Its endpoint is already covered by Scenario 1 and has a focused controller test.
+- Created `product-allocation-controller.yaml` from the existing endpoint DTOs and behavior, including the shared allocation-run schema reference.
+- Added product-specific OpenAPI validation/generation tasks and the generated source path to service compilation; `ProductAllocationController` now implements `ProductAllocationApi`.
+- Verified OpenAPI validation/generation, service compilation, and focused controller tests for the successful response and `400` error behavior.
+
+### Next possible steps (suggestions)
+- Apply the same specification-first workflow to another controller only after the user selects it.

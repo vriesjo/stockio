@@ -13,20 +13,20 @@ import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
-import nl.stockio.allocation.domain.api.dto.AllocationRunType
-import nl.stockio.allocation.domain.api.dto.DemandOrder
-import nl.stockio.allocation.domain.api.dto.DemandOrderLine
-import nl.stockio.allocation.domain.api.dto.InboundShipment
-import nl.stockio.allocation.domain.api.dto.InboundShipmentLine
-import nl.stockio.allocation.domain.api.dto.ProcessDailyStockRequest
-import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
+import nl.stockio.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRunType
+import nl.stockio.api.dto.DemandOrder
+import nl.stockio.api.dto.DemandOrderLine
+import nl.stockio.api.dto.InboundShipment
+import nl.stockio.api.dto.InboundShipmentLine
+import nl.stockio.api.dto.ProcessDailyStockRequest
+import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
-import nl.stockio.allocation.domain.model.AllocationCompletionResult
-import nl.stockio.allocation.domain.model.AllocationJobAccepted
-import nl.stockio.allocation.domain.model.AllocationProcessingOutcome
-import nl.stockio.allocation.domain.model.AllocationRecord
-import nl.stockio.allocation.domain.model.AllocationStatus
+import nl.stockio.api.dto.AllocationCompletionResult
+import nl.stockio.api.dto.AllocationJobAccepted
+import nl.stockio.api.dto.AllocationProcessingOutcome
+import nl.stockio.api.dto.AllocationRecord
+import nl.stockio.api.dto.AllocationStatus
 import nl.stockio.allocation.domain.processor.AllocationProcessor
 import nl.stockio.allocation.domain.processor.AllocationProjectionException
 import nl.stockio.stock.domain.job.StockLedgerSyncJob
@@ -42,6 +42,7 @@ import nl.stockio.allocation.infra.AllocationRecordJpaRepository
 import nl.stockio.allocation.infra.AllocationRunJpaRepository
 import nl.stockio.allocation.infra.AllocationSourceJpaRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
+import nl.stockio.McpServerRunner
 import nl.stockio.reservation.infra.InboundSupplyJpaRepository
 import nl.stockio.allocation.infra.OpenBackorderJpaRepository
 import nl.stockio.stock.infra.StockSnapshotRepositoryJdbcTemplate
@@ -92,6 +93,7 @@ import org.testcontainers.junit.jupiter.Testcontainers
 
 @Testcontainers
 @SpringBootTest(
+    classes = [McpServerRunner::class],
     properties = [
         "spring.rabbitmq.listener.simple.auto-startup=false",
         "jobrunr.dashboard.enabled=false",

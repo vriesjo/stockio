@@ -7,11 +7,11 @@ import jakarta.persistence.Enumerated
 import jakarta.persistence.Id
 import jakarta.persistence.Table
 import jakarta.persistence.UniqueConstraint
-import nl.stockio.allocation.domain.api.dto.AllocationRunType
-import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
-import nl.stockio.allocation.domain.model.AllocationProcessingOutcome
-import nl.stockio.allocation.domain.model.AllocationSourceType
-import nl.stockio.allocation.domain.model.AllocationStatus
+import nl.stockio.api.dto.AllocationRunType
+import nl.stockio.api.dto.OrderReservationStatus
+import nl.stockio.api.dto.AllocationProcessingOutcome
+import nl.stockio.api.dto.AllocationSourceType
+import nl.stockio.api.dto.AllocationStatus
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID

@@ -1,9 +1,9 @@
 package nl.stockio.allocation.domain.processor
 
 import java.util.UUID
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
-import nl.stockio.allocation.domain.api.dto.AllocationRunType
-import nl.stockio.allocation.domain.model.AllocationRunResult
+import nl.stockio.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRunType
+import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.service.AllocationService
 import nl.stockio.allocation.domain.service.BackorderAllocationService

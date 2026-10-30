@@ -1,0 +1,183 @@
+openapi: 3.0.3
+info:
+  title: Stockio Product Allocation Controller API
+  version: 1.0.0
+  description: |
+    OpenAPI description of the existing ProductAllocationController endpoint.
+    No application-level authentication is configured.
+paths:
+  /api/products/allocate:
+    post:
+      tags:
+        - ProductAllocation
+      operationId: allocate
+      summary: Resolve a product and allocate it
+      description: |
+        Resolves the requested product against the active catalog and, when
+        equivalent matching is enabled, may use external product evidence.
+        A successful resolution is submitted to the shared allocation flow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductAllocationRequest'
+      responses:
+        '200':
+          description: Product resolution and allocation result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductAllocationResponse'
+        '400':
+          description: The request is invalid or cannot be processed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: An unexpected server error occurred.
+
+components:
+  schemas:
+    ProductAllocationRequest:
+      type: object
+      required:
+        - requestId
+        - orderId
+        - customer
+        - productQuery
+        - quantity
+        - priority
+        - placedDate
+        - requiredDeliveryDate
+        - asOfDate
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          minLength: 1
+          pattern: '\S'
+        customer:
+          type: string
+          minLength: 1
+          pattern: '\S'
+        productQuery:
+          type: string
+          minLength: 1
+          pattern: '\S'
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+        priority:
+          type: integer
+          format: int32
+          minimum: 1
+        placedDate:
+          type: string
+          format: date
+        requiredDeliveryDate:
+          type: string
+          format: date
+        asOfDate:
+          type: string
+          format: date
+        allowEquivalent:
+          type: boolean
+          default: true
+
+    ProductAllocationResponse:
+      type: object
+      required:
+        - status
+        - message
+        - selectedProduct
+        - candidates
+        - sources
+        - allocationRun
+      properties:
+        status:
+          $ref: '#/components/schemas/ProductAllocationStatus'
+        message:
+          type: string
+        selectedProduct:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ResolvedProduct'
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductCandidate'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProductSource'
+        allocationRun:
+          nullable: true
+          allOf:
+            - $ref: './allocation-controller.yaml#/components/schemas/AllocationRunResult'
+
+    ProductAllocationStatus:
+      type: string
+      enum:
+        - ALLOCATION_PROCESSED
+        - TAVILY_LOOKUP_FAILED
+        - EMBEDDING_FAILED
+        - NO_PRODUCT_MATCH
+        - AMBIGUOUS_PRODUCT_MATCH
+
+    ResolvedProduct:
+      type: object
+      required:
+        - sku
+        - title
+        - similarity
+        - equivalent
+      properties:
+        sku:
+          type: string
+        title:
+          type: string
+        similarity:
+          type: number
+          format: double
+        equivalent:
+          type: boolean
+
+    ProductCandidate:
+      type: object
+      required:
+        - sku
+        - title
+        - similarity
+      properties:
+        sku:
+          type: string
+        title:
+          type: string
+        similarity:
+          type: number
+          format: double
+
+    ProductSource:
+      type: object
+      required:
+        - title
+        - url
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+          format: uri
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string

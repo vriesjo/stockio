@@ -3,9 +3,9 @@ package nl.stockio.allocation.domain.worker
 import java.time.LocalDate
 import nl.stockio.allocation.domain.model.AllocationCalculationResult
 import nl.stockio.allocation.domain.model.AllocationOrder
-import nl.stockio.allocation.domain.model.AllocationRecord
-import nl.stockio.allocation.domain.model.AllocationSource
-import nl.stockio.allocation.domain.model.AllocationStatus
+import nl.stockio.api.dto.AllocationRecord
+import nl.stockio.api.dto.AllocationSource
+import nl.stockio.api.dto.AllocationStatus
 import nl.stockio.allocation.domain.model.BackorderRegistration
 import nl.stockio.allocation.domain.model.InboundReservationChange
 import nl.stockio.allocation.domain.model.InboundSupplyState

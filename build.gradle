@@ -5,6 +5,7 @@ plugins {
     id 'org.jetbrains.kotlin.jvm' version '2.2.20' apply false
     id 'org.jetbrains.kotlin.plugin.spring' version '2.2.20' apply false
     id 'org.jetbrains.kotlin.plugin.jpa' version '2.2.20' apply false
+    id 'org.openapi.generator' version '7.26.0' apply false
 }
 
 ext {
@@ -51,6 +52,166 @@ subprojects {
     }
 }
 
+project(":stockio-api") {
+    apply plugin: 'org.openapi.generator'
+
+    def allocationOpenApiSpec = rootProject.file(
+        'stockio-api/src/main/resources/openapi/allocation-controller.yaml'
+    )
+    def generatedAllocationOpenApiDir = layout.buildDirectory.dir('generated/openapi/allocation')
+
+    tasks.register(
+        'openApiGenerateAllocation',
+        org.openapitools.generator.gradle.plugin.tasks.GenerateTask
+    ) {
+        generatorName.set('kotlin-spring')
+        inputSpec.set(allocationOpenApiSpec)
+        outputDir.set(generatedAllocationOpenApiDir.get())
+        apiPackage.set('nl.stockio.allocation.domain.api.generated')
+        modelPackage.set('nl.stockio.allocation.domain.api.generated.model')
+        importMappings.set([
+            AllocationRequest: 'nl.stockio.api.dto.AllocationRequest',
+            AllocationRunType: 'nl.stockio.api.dto.AllocationRunType',
+            DemandOrder: 'nl.stockio.api.dto.DemandOrder',
+            DemandOrderLine: 'nl.stockio.api.dto.DemandOrderLine',
+            InboundShipment: 'nl.stockio.api.dto.InboundShipment',
+            InboundShipmentLine: 'nl.stockio.api.dto.InboundShipmentLine',
+            AllocationJobAccepted: 'nl.stockio.api.dto.AllocationJobAccepted',
+            AllocationJobStatus: 'nl.stockio.api.dto.AllocationJobStatus',
+            AllocationCompletionResult: 'nl.stockio.api.dto.AllocationCompletionResult',
+            AllocationRunResult: 'nl.stockio.api.dto.AllocationRunResult',
+            AllocationRecord: 'nl.stockio.api.dto.AllocationRecord',
+            AllocationStatus: 'nl.stockio.api.dto.AllocationStatus',
+            AllocationProcessingOutcome: 'nl.stockio.api.dto.AllocationProcessingOutcome',
+            AllocationSource: 'nl.stockio.api.dto.AllocationSource',
+            AllocationSourceType: 'nl.stockio.api.dto.AllocationSourceType',
+            StockLedgerSyncStatus: 'nl.stockio.stock.domain.service.StockLedgerSyncStatus',
+            OrderReservationResponse: 'nl.stockio.api.dto.OrderReservationResponse',
+            OrderReservationLine: 'nl.stockio.api.dto.OrderReservationLine',
+            OrderReservationStatus: 'nl.stockio.api.dto.OrderReservationStatus',
+            ErrorResponse: 'kotlin.collections.Map'
+        ])
+        globalProperties.set([
+            apis: '',
+            models: 'false'
+        ])
+        cleanupOutput.set(true)
+        configOptions.set([
+            interfaceOnly: 'true',
+            useSpringBoot3: 'true',
+            useBeanValidation: 'true',
+            useResponseEntity: 'true',
+            skipDefaultInterface: 'true',
+            useTags: 'true',
+            annotationLibrary: 'none',
+            documentationProvider: 'none',
+            generateJsonIncludeAnnotations: 'false',
+            generateJsonSetterNullsAnnotations: 'false'
+        ])
+    }
+
+    openApiValidate {
+        inputSpec.set(allocationOpenApiSpec)
+    }
+
+    def reservationOpenApiSpec = rootProject.file(
+        'stockio-api/src/main/resources/openapi/reservation-controller.yaml'
+    )
+    def generatedReservationOpenApiDir = layout.buildDirectory.dir('generated/openapi/reservation')
+
+    tasks.register(
+        'openApiGenerateReservation',
+        org.openapitools.generator.gradle.plugin.tasks.GenerateTask
+    ) {
+        generatorName.set('kotlin-spring')
+        inputSpec.set(reservationOpenApiSpec)
+        outputDir.set(generatedReservationOpenApiDir.get())
+        apiPackage.set('nl.stockio.reservation.domain.api.generated')
+        modelPackage.set('nl.stockio.reservation.domain.api.generated.model')
+        importMappings.set([
+            OrderReservationResponse: 'nl.stockio.api.dto.OrderReservationResponse',
+            OrderReservationLine: 'nl.stockio.api.dto.OrderReservationLine',
+            OrderReservationStatus: 'nl.stockio.api.dto.OrderReservationStatus'
+        ])
+        globalProperties.set([
+            apis: '',
+            models: 'false'
+        ])
+        cleanupOutput.set(true)
+        configOptions.set([
+            interfaceOnly: 'true',
+            useSpringBoot3: 'true',
+            useBeanValidation: 'true',
+            useResponseEntity: 'true',
+            skipDefaultInterface: 'true',
+            useTags: 'true',
+            annotationLibrary: 'none',
+            documentationProvider: 'none',
+            generateJsonIncludeAnnotations: 'false',
+            generateJsonSetterNullsAnnotations: 'false'
+        ])
+    }
+
+    tasks.register(
+        'openApiValidateReservation',
+        org.openapitools.generator.gradle.plugin.tasks.ValidateTask
+    ) {
+        inputSpec.set(reservationOpenApiSpec)
+    }
+
+    def productAllocationOpenApiSpec = rootProject.file(
+        'stockio-api/src/main/resources/openapi/product-allocation-controller.yaml'
+    )
+    def generatedProductAllocationOpenApiDir = layout.buildDirectory.dir(
+        'generated/openapi/product-allocation'
+    )
+
+    tasks.register(
+        'openApiGenerateProductAllocation',
+        org.openapitools.generator.gradle.plugin.tasks.GenerateTask
+    ) {
+        generatorName.set('kotlin-spring')
+        inputSpec.set(productAllocationOpenApiSpec)
+        outputDir.set(generatedProductAllocationOpenApiDir.get())
+        apiPackage.set('nl.stockio.product.domain.api.generated')
+        modelPackage.set('nl.stockio.product.domain.api.generated.model')
+        importMappings.set([
+            ProductAllocationRequest: 'nl.stockio.api.dto.ProductAllocationRequest',
+            ProductAllocationResponse: 'nl.stockio.api.dto.ProductAllocationResponse',
+            ProductAllocationStatus: 'nl.stockio.api.dto.ProductAllocationStatus',
+            ResolvedProduct: 'nl.stockio.api.dto.ResolvedProduct',
+            ProductCandidate: 'nl.stockio.api.dto.ProductCandidate',
+            ProductSource: 'nl.stockio.api.dto.ProductSource',
+            AllocationRunResult: 'nl.stockio.api.dto.AllocationRunResult',
+            ErrorResponse: 'kotlin.collections.Map'
+        ])
+        globalProperties.set([
+            apis: '',
+            models: 'false'
+        ])
+        cleanupOutput.set(true)
+        configOptions.set([
+            interfaceOnly: 'true',
+            useSpringBoot3: 'true',
+            useBeanValidation: 'true',
+            useResponseEntity: 'true',
+            skipDefaultInterface: 'true',
+            useTags: 'true',
+            annotationLibrary: 'none',
+            documentationProvider: 'none',
+            generateJsonIncludeAnnotations: 'false',
+            generateJsonSetterNullsAnnotations: 'false'
+        ])
+    }
+
+    tasks.register(
+        'openApiValidateProductAllocation',
+        org.openapitools.generator.gradle.plugin.tasks.ValidateTask
+    ) {
+        inputSpec.set(productAllocationOpenApiSpec)
+    }
+}
+
 project(":stockio-service") {
     group = 'nl.stockio'
     version = '0.0.1-SNAPSHOT'
@@ -59,7 +220,32 @@ project(":stockio-service") {
         mainClass = 'nl.stockio.StockioApplicationKt'
     }
 
+    def generatedAllocationOpenApiDir = project(":stockio-api").layout.buildDirectory.dir(
+        'generated/openapi/allocation'
+    )
+
+    def generatedReservationOpenApiDir = project(":stockio-api").layout.buildDirectory.dir(
+        'generated/openapi/reservation'
+    )
+    def generatedProductAllocationOpenApiDir = project(":stockio-api").layout.buildDirectory.dir(
+        'generated/openapi/product-allocation'
+    )
+    sourceSets {
+        main {
+            kotlin.srcDir(generatedAllocationOpenApiDir.map { it.dir('src/main/kotlin') })
+            kotlin.srcDir(generatedReservationOpenApiDir.map { it.dir('src/main/kotlin') })
+            kotlin.srcDir(generatedProductAllocationOpenApiDir.map { it.dir('src/main/kotlin') })
+        }
+    }
+
+    tasks.named('compileKotlin') {
+        dependsOn(project(":stockio-api").tasks.named('openApiGenerateAllocation'))
+        dependsOn(project(":stockio-api").tasks.named('openApiGenerateReservation'))
+        dependsOn(project(":stockio-api").tasks.named('openApiGenerateProductAllocation'))
+    }
+
     dependencies {
+        implementation project(":stockio-api")
         implementation 'org.springframework.ai:spring-ai-starter-mcp-server'
         implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core'
         implementation 'org.springframework.boot:spring-boot-starter-actuator'

@@ -12,9 +12,9 @@ import nl.stockio.allocation.domain.converter.toInventoryLotState
 import nl.stockio.allocation.domain.converter.toStockReservationChange
 import nl.stockio.allocation.domain.model.AllocationCalculationResult
 import nl.stockio.allocation.domain.model.AllocationOrder
-import nl.stockio.allocation.domain.model.AllocationProcessingOutcome
-import nl.stockio.allocation.domain.model.AllocationRecord
-import nl.stockio.allocation.domain.model.AllocationStatus
+import nl.stockio.api.dto.AllocationProcessingOutcome
+import nl.stockio.api.dto.AllocationRecord
+import nl.stockio.api.dto.AllocationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
 import nl.stockio.allocation.domain.port.AllocationSkuOperationRepository

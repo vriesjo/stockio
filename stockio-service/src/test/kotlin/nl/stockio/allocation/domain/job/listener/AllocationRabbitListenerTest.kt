@@ -2,8 +2,8 @@ package nl.stockio.allocation.domain.job.listener
 
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
-import nl.stockio.allocation.domain.api.dto.AllocationRunType
+import nl.stockio.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import nl.stockio.allocation.domain.processor.AllocationProjectionException
 import org.jobrunr.jobs.Job

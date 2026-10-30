@@ -1,11 +1,11 @@
 package nl.stockio.allocation.tools
 
 import java.nio.file.Path
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
-import nl.stockio.allocation.domain.api.dto.AllocationRunType
-import nl.stockio.allocation.domain.api.dto.ExcelReportRequest
-import nl.stockio.allocation.domain.api.dto.ProcessDailyStockRequest
-import nl.stockio.allocation.domain.model.AllocationRunResult
+import nl.stockio.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRunType
+import nl.stockio.api.dto.ExcelReportRequest
+import nl.stockio.api.dto.ProcessDailyStockRequest
+import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
 import nl.stockio.allocation.domain.service.AllocationRunService

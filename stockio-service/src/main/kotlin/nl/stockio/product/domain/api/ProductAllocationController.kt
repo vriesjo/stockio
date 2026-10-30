@@ -1,28 +1,25 @@
 package nl.stockio.product.domain.api
 
-import jakarta.validation.Valid
-import nl.stockio.product.domain.api.dto.ProductAllocationRequest
-import nl.stockio.product.domain.api.dto.ProductAllocationResponse
+import nl.stockio.api.dto.ProductAllocationRequest
+import nl.stockio.api.dto.ProductAllocationResponse
+import nl.stockio.product.domain.api.generated.ProductAllocationApi
 import nl.stockio.product.domain.service.ProductAllocationService
 import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.ExceptionHandler
-import org.springframework.web.bind.annotation.PostMapping
-import org.springframework.web.bind.annotation.RequestBody
-import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 
 @RestController
-@RequestMapping("/api/products")
 class ProductAllocationController(
     private val productAllocationService: ProductAllocationService
-) {
+) : ProductAllocationApi {
 
-    @PostMapping("/allocate")
-    fun allocate(
-        @Valid @RequestBody request: ProductAllocationRequest
-    ): ProductAllocationResponse =
-        productAllocationService.allocate(request)
+    @Suppress("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
+    override fun allocate(
+        request: ProductAllocationRequest
+    ): ResponseEntity<ProductAllocationResponse> =
+        ResponseEntity.ok(productAllocationService.allocate(request))
 
     @ExceptionHandler(IllegalArgumentException::class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)

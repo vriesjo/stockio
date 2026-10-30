@@ -1,7 +1,7 @@
 package nl.stockio.product.tools
 
-import nl.stockio.product.domain.api.dto.ProductAllocationRequest
-import nl.stockio.product.domain.api.dto.ProductAllocationResponse
+import nl.stockio.api.dto.ProductAllocationRequest
+import nl.stockio.api.dto.ProductAllocationResponse
 import nl.stockio.product.domain.service.ProductAllocationService
 import org.springframework.ai.tool.annotation.Tool
 import org.springframework.stereotype.Component

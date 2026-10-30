@@ -1,6 +1,6 @@
 package nl.stockio.allocation.domain.processor
 
-import nl.stockio.allocation.domain.model.AllocationRunResult
+import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.service.BackorderAllocationService
 import nl.stockio.stock.domain.processor.StockProjectionProcessor

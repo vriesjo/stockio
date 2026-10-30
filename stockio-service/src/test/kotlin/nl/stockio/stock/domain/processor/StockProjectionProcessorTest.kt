@@ -12,7 +12,7 @@ import io.mockk.verifyOrder
 import java.time.Clock
 import java.time.LocalDate
 import java.time.ZoneOffset
-import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
+import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity

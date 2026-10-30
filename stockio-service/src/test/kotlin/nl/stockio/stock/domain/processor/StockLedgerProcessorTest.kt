@@ -14,12 +14,12 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.UUID
-import nl.stockio.allocation.domain.api.dto.OrderReservationStatus
-import nl.stockio.allocation.domain.api.dto.ProcessDailyStockRequest
+import nl.stockio.api.dto.OrderReservationStatus
+import nl.stockio.api.dto.ProcessDailyStockRequest
 import nl.stockio.allocation.domain.job.BackorderAllocationJob
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
-import nl.stockio.allocation.domain.model.StockSyncResult
+import nl.stockio.api.dto.StockSyncResult
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.reservation.domain.port.InboundReservationRepository

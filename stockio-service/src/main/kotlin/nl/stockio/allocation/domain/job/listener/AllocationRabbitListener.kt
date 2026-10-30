@@ -2,7 +2,7 @@ package nl.stockio.allocation.domain.job.listener
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import org.jobrunr.scheduling.JobScheduler
 import org.jobrunr.storage.JobNotFoundException

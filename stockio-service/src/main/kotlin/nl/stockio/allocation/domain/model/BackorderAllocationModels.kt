@@ -2,7 +2,7 @@ package nl.stockio.allocation.domain.model
 
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.api.dto.InboundShipment
+import nl.stockio.api.dto.InboundShipment
 
 enum class BackorderAllocationTrigger {
     MANUAL,

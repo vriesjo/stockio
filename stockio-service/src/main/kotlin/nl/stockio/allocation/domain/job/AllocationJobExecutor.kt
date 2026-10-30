@@ -3,11 +3,11 @@ package nl.stockio.allocation.domain.job
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.util.UUID
-import nl.stockio.allocation.domain.api.dto.AllocationRequest
-import nl.stockio.allocation.domain.api.dto.AllocationRequestEvent
-import nl.stockio.allocation.domain.model.AllocationCompletionResult
-import nl.stockio.allocation.domain.model.AllocationJobAccepted
-import nl.stockio.allocation.domain.model.AllocationRunResult
+import nl.stockio.api.dto.AllocationRequest
+import nl.stockio.api.dto.AllocationRequestEvent
+import nl.stockio.api.dto.AllocationCompletionResult
+import nl.stockio.api.dto.AllocationJobAccepted
+import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.allocation.domain.processor.AllocationProcessor
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
 import nl.stockio.stock.infra.AllocationJobResultEntity

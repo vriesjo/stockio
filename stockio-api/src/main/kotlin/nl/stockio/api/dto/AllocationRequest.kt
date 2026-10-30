@@ -1,12 +1,10 @@
-package nl.stockio.allocation.domain.api.dto
+package nl.stockio.api.dto
 
 import jakarta.validation.Valid
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.NotEmpty
 import jakarta.validation.constraints.Size
 import jakarta.validation.constraints.Positive
-import jakarta.validation.constraints.PositiveOrZero
-import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
 
@@ -78,11 +76,6 @@ data class InboundShipmentLine(
     @field:Size(max = 50)
     val warehouseCode: String = "MAIN"
 )
-
-enum class AllocationRunType {
-    NEW_DEMAND,
-    BACKORDER_FULFILLMENT
-}
 
 data class ExcelReportRequest(
     val runId: UUID,

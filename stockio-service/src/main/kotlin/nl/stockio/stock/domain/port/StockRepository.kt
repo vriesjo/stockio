@@ -3,7 +3,7 @@ package nl.stockio.stock.domain.port
 import java.time.LocalDate
 import java.util.Optional
 import java.util.UUID
-import nl.stockio.allocation.domain.model.StockSyncResult
+import nl.stockio.api.dto.StockSyncResult
 import nl.stockio.stock.infra.AllocationJobResultEntity
 import nl.stockio.stock.infra.StockDailyLotSnapshot
 import nl.stockio.stock.infra.StockDailySnapshot
