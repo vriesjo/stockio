@@ -1,41 +1,124 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { createServer, type RequestListener } from "node:http";
+import test, { type TestContext } from "node:test";
+import axios, { AxiosError, type AxiosRequestConfig } from "axios";
 import { POST } from "../app/api/allocate/route.ts";
 
-test("forwards JSON to the configured Spring API and preserves its status and body", async (context) => {
-  const body = '{"requestId":"550e8400-e29b-41d4-a716-446655440000","quantity":50}';
-  context.mock.method(globalThis, "fetch", async (...[input, options]: Parameters<typeof fetch>) => {
-    const base = process.env.STOCKIO_API_URL ?? "http://127.0.0.1:8082";
-    assert.equal(input, `${new URL(base).toString().replace(/\/$/, "")}/api/allocate`);
-    assert.equal(options?.method, "POST");
-    assert.equal(options?.body, body);
-    assert.deepEqual(options?.headers, { "Content-Type": "application/json" });
-    return Response.json({ message: "Invalid request" }, { status: 400 });
+const body = JSON.stringify({
+  requestId: "550e8400-e29b-41d4-a716-446655440000", orderId: "ORDER-UI-001",
+  customer: "Example Customer", productQuery: "Maki Komkommer", quantity: 50, priority: 1,
+  placedDate: "2026-11-02", requiredDeliveryDate: "2026-11-04", asOfDate: "2026-11-02",
+  allowEquivalent: false,
+});
+const request = () => new Request("http://127.0.0.1:3000/api/allocate", { method: "POST", body });
+
+function configureUrl(context: TestContext, value: string | undefined) {
+  const previous = process.env.STOCKIO_API_URL;
+  if (value === undefined) delete process.env.STOCKIO_API_URL;
+  else process.env.STOCKIO_API_URL = value;
+  context.after(() => {
+    if (previous === undefined) delete process.env.STOCKIO_API_URL;
+    else process.env.STOCKIO_API_URL = previous;
   });
+}
 
-  const response = await POST(new Request("http://127.0.0.1:3000/api/allocate", {
-    method: "POST", body,
+async function service(context: TestContext, listener: RequestListener) {
+  const server = createServer(listener);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  context.after(() => new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+    server.closeAllConnections();
   }));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  configureUrl(context, `http://127.0.0.1:${address.port}/stockio/`);
+}
 
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { message: "Invalid request" });
-  assert.equal(response.headers.get("Cache-Control"), "no-store");
+for (const status of [200, 400, 500]) {
+  test(`Axios forwards unchanged JSON to the configured service and preserves HTTP ${status}`, async (context) => {
+    let calls = 0;
+    const result = status === 200
+      ? { status: "NO_PRODUCT_MATCH", message: "No match.", selectedProduct: null, candidates: [], sources: [], allocationRun: null }
+      : { error: "The service rejected this allocation." };
+    await service(context, async (incoming, outgoing) => {
+      calls++;
+      assert.equal(incoming.method, "POST");
+      assert.equal(incoming.url, "/stockio/api/products/allocate");
+      assert.equal(incoming.headers["content-type"], "application/json");
+      assert.equal(incoming.headers["cache-control"], "no-store");
+      const chunks = [];
+      for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+      assert.equal(Buffer.concat(chunks).toString(), body);
+      outgoing.writeHead(status, { "Content-Type": "application/json" });
+      outgoing.end(JSON.stringify(result));
+    });
+    const response = await POST(request());
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.deepEqual(await response.json(), result);
+    assert.equal(calls, 1);
+  });
+}
+
+test("Axios defaults to the independent service on port 8080 with a bounded timeout", async (context) => {
+  configureUrl(context, undefined);
+  context.mock.method(axios, "post", async (url: string, data: string, config: AxiosRequestConfig) => {
+    assert.equal(url, "http://127.0.0.1:8080/api/products/allocate");
+    assert.equal(data, body);
+    assert.equal(config.timeout, 180_000);
+    return { status: 200, headers: {}, data: "{}" };
+  });
+  assert.equal((await POST(request())).status, 200);
 });
 
-test("connection failures and timeouts return explicit non-success responses", async (context) => {
+test("upstream redirects are not followed or exposed as browser redirects", async (context) => {
+  let calls = 0;
+  await service(context, (_incoming, outgoing) => {
+    calls++;
+    outgoing.writeHead(307, { Location: "/another-allocation-endpoint" });
+    outgoing.end("Redirect rejected.");
+  });
+  const response = await POST(request());
+  assert.equal(response.status, 307);
+  assert.equal(response.headers.get("Location"), null);
+  assert.equal(await response.text(), "Redirect rejected.");
+  assert.equal(calls, 1);
+});
+
+test("non-JSON service content is preserved for explicit frontend rejection", async (context) => {
+  await service(context, (_incoming, outgoing) => {
+    outgoing.writeHead(200, { "Content-Type": "text/plain" });
+    outgoing.end("Not JSON");
+  });
+  const response = await POST(request());
+  assert.equal(response.headers.get("Content-Type"), "text/plain");
+  await assert.rejects(response.json(), SyntaxError);
+});
+
+test("connection failures and Axios timeout codes return non-success responses without retries", async (context) => {
   context.mock.method(console, "error", () => {});
-  for (const [error, status] of [
-    [new TypeError("Connection refused"), 502],
-    [new DOMException("Request timed out", "TimeoutError"), 504],
+  for (const [code, status] of [
+    ["ECONNREFUSED", 502], ["ECONNABORTED", 504], ["ETIMEDOUT", 504],
   ] as const) {
-    const fetchMock = context.mock.method(globalThis, "fetch", async () => { throw error; });
-    const response = await POST(new Request("http://127.0.0.1:3000/api/allocate", {
-      method: "POST", body: "{}",
-    }));
+    const post = context.mock.method(axios, "post", async () => { throw new AxiosError("Upstream failed", code); });
+    const response = await POST(request());
     assert.equal(response.status, status);
-    const body: unknown = await response.json();
-    assert.equal(typeof body, "object");
-    assert.match(JSON.stringify(body), status === 504 ? /timed out/ : /Cannot reach/);
-    fetchMock.mock.restore();
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.match(JSON.stringify(await response.json()), status === 504 ? /timed out/ : /Cannot reach/);
+    assert.equal(post.mock.callCount(), 1);
+    post.mock.restore();
   }
+});
+
+test("rejects invalid upstream URLs before making an HTTP request", async (context) => {
+  const post = context.mock.method(axios, "post", async () => { throw new Error("Must not call upstream"); });
+  configureUrl(context, undefined);
+  for (const url of ["ftp://localhost", "http://user:password@localhost", "http://localhost?query=1", "http://localhost#fragment"]) {
+    process.env.STOCKIO_API_URL = url;
+    await assert.rejects(POST(request()), /STOCKIO_API_URL must be/);
+  }
+  assert.equal(post.mock.callCount(), 0);
 });

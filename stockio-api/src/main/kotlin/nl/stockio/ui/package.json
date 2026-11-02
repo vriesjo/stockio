@@ -12,9 +12,10 @@
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "test:e2e": "STOCKIO_API_URL=http://127.0.0.1:18182 npm run build && STOCKIO_API_URL=http://127.0.0.1:18182 playwright test"
+    "test:e2e": "npm run build && playwright test"
   },
   "dependencies": {
+    "axios": "^1.13.2",
     "next": "^16.4.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"

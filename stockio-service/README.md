@@ -4,24 +4,64 @@ The Kotlin Spring Boot MCP server processes a lot-level stock ledger, allocates 
 
 ## Run
 
-Requirements: JDK 21 and PostgreSQL (or Docker Compose for a local database). Start the included PostgreSQL service and configure the server connection with:
+Requirements: JDK 21, PostgreSQL, and RabbitMQ (or Docker Compose for local infrastructure).
+From the repository root, configure the connection and start the service:
 
 ```shell
 export DB_URL=jdbc:postgresql://localhost:5437/logistics
 export DB_USERNAME=logistics
 export DB_PASSWORD=your-password
 export REPORT_DIR="$HOME/itzitzo-mcp/reports"
-docker compose up -d --wait postgres
-./gradlew :stock-service:bootJar
-java -jar stockio-service/build/libs/stock-service-0.0.1-SNAPSHOT.jar
+docker compose -f infra/docker/docker-compose.yml up -d --wait postgres rabbitmq
+./gradlew :stockio-service:bootRun
 ```
 
-The server exposes both MCP STDIO and a local REST API. When using MCP, launch the JAR from an MCP client and keep protocol messages on stdout; application logs are sent to stderr. The REST API listens on `127.0.0.1:8080` by default and can also be used when the JAR is launched directly. Set `SERVER_ADDRESS` and `SERVER_PORT` to override the REST bind address and port.
+The REST API listens on `127.0.0.1:8080` by default. Set `SERVER_ADDRESS` and
+`SERVER_PORT` to override the REST bind address and port. The service also
+supports independent MCP integrations for the tools listed below; protocol
+messages use stdout and application logs use stderr.
 
-The `stockio-api` MCP client starts its own service subprocess with a random HTTP
-port and the JobRunr dashboard disabled, avoiding a conflict with another
-service's dashboard on port `8181`. After changing the client launch
-configuration, restart `stockio-api` so it starts a new subprocess.
+### Run the allocation UI separately
+
+Requirements: Node.js 22.18 or later. Leave `stockio-service` running on `8080`
+and start Next.js in a second terminal:
+
+```shell
+cd stockio-api/src/main/kotlin/nl/stockio/ui
+npm ci
+cp .env.example .env.local
+npm run dev
+```
+
+Open `http://127.0.0.1:3000`. For production, run `npm run build` followed by
+`npm start` in the UI directory. `STOCKIO_API_URL` is server-side configuration
+and defaults to `http://127.0.0.1:8080`; set it in `.env.local` or the Next.js
+process environment when the service runs elsewhere.
+
+The browser posts to Next.js `/api/allocate`; that route uses Axios to call
+the service's existing `POST /api/products/allocate`, which directly invokes
+`ProductAllocationService.allocate(request)` and returns plain JSON.
+Product allocation is REST-only: `allocate_product_by_name` has been removed.
+There is no Spring frontend backend on `8082`, UI-managed service JVM,
+fat-JAR startup dependency, or UI bundled into the service JAR.
+`stockio-api` remains a normal shared Kotlin DTO library and OpenAPI generation
+module, not a separately running application. From the repository root,
+`make run-service` starts the service and `make run-ui` (or `make run-api`)
+starts the Next.js UI. The UI target loads nvm from `${NVM_DIR:-$HOME/.nvm}`
+and applies the UI's `.nvmrc` before starting npm. Install that Node version
+with `nvm install` from the UI directory if it is not installed yet.
+
+The UI preserves domain non-allocation outcomes and service validation errors.
+Requests time out after 180 seconds, but processing may continue server-side;
+retrying without editing reuses the same request ID. Automatic retries are
+disabled. The service owns allocation, persistence, projections, and backorders.
+
+Run browser tests from the UI directory with `npm run test:e2e`. They start
+Next.js and their own mock backend; `stockio-service` is not required.
+`playwright.config.ts` defaults `STOCKIO_API_URL` to the mock server on
+`127.0.0.1:18182`, including IntelliJ launches. For direct IDE launches,
+run `npm run build` first because Playwright starts the production UI.
+Do not point these mock-backed tests at the real service on `8080`.
 
 ### Local embedding model
 

@@ -1,40 +1,30 @@
-export const runtime = "nodejs";
+import axios from "axios";
+import { allocateProduct } from "../../../lib/product-allocation-client.ts";
 
-const apiUrl = new URL(process.env.STOCKIO_API_URL ?? "http://127.0.0.1:8082");
-if (!["http:", "https:"].includes(apiUrl.protocol) || apiUrl.username || apiUrl.password) {
-  throw new Error("STOCKIO_API_URL must be an HTTP(S) URL without embedded credentials.");
-}
-const allocationUrl = `${apiUrl.toString().replace(/\/$/, "")}/api/allocate`;
+export const runtime = "nodejs";
 
 export async function POST(request: Request): Promise<Response> {
   const body = await request.text();
   try {
-    const upstream = await fetch(allocationUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-      cache: "no-store",
-      redirect: "error",
-      signal: AbortSignal.timeout(180_000),
-    });
-    return new Response(await upstream.text(), {
+    const upstream = await allocateProduct(body);
+    return new Response(upstream.data, {
       status: upstream.status,
       headers: {
-        "Content-Type": upstream.headers.get("Content-Type") ?? "application/json",
+        "Content-Type": String(upstream.headers["content-type"] ?? "application/json"),
         "Cache-Control": "no-store",
       },
     });
   } catch (error) {
-    const timedOut = error instanceof DOMException && error.name === "TimeoutError";
-    if (!(error instanceof TypeError) && !timedOut) throw error;
-    console.error(`Allocation API request to ${allocationUrl} failed.`, error);
+    if (!axios.isAxiosError(error)) throw error;
+    const timedOut = error.code === "ECONNABORTED" || error.code === "ETIMEDOUT";
+    console.error("Stockio allocation HTTP request failed:", error.code);
     return Response.json(
       {
         message: timedOut
           ? "The Stockio API timed out. It may still be processing this allocation; retry unchanged to reuse the request ID."
-          : "Cannot reach the Stockio API. Check that it is running and STOCKIO_API_URL points to the correct host and port.",
+          : "Cannot reach the Stockio API. It may still be processing this allocation; retry unchanged to reuse the request ID. Check that stockio-service is running and STOCKIO_API_URL points to the correct host and port.",
       },
-      { status: timedOut ? 504 : 502 },
+      { status: timedOut ? 504 : 502, headers: { "Cache-Control": "no-store" } },
     );
   }
 }

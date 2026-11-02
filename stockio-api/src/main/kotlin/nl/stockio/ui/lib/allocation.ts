@@ -10,7 +10,7 @@ export interface AllocationForm {
   allowEquivalent: boolean;
 }
 
-export interface McpProductAllocationRequest {
+export interface ProductAllocationRequest {
   requestId: string;
   orderId: string;
   customer: string;
@@ -42,7 +42,8 @@ export interface AllocationSource {
 }
 
 export interface AllocationResult {
-  status: string;
+  status: "ALLOCATION_PROCESSED" | "TAVILY_LOOKUP_FAILED" | "EMBEDDING_FAILED" |
+    "NO_PRODUCT_MATCH" | "AMBIGUOUS_PRODUCT_MATCH";
   message: string;
   selectedProduct: (ProductCandidate & { equivalent: boolean }) | null;
   candidates: ProductCandidate[];
@@ -85,7 +86,7 @@ function date(value: string, label: string): string {
 export function buildAllocationRequest(
   form: AllocationForm,
   requestId: string,
-): McpProductAllocationRequest {
+): ProductAllocationRequest {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId)) {
     throw new Error("A valid request UUID is required.");
   }
@@ -156,15 +157,20 @@ function allocationSource(value: unknown): value is AllocationSource {
 
 function allocationResult(value: unknown): value is AllocationResult {
   if (!record(value) || !text(value.status) || !text(value.message)) return false;
+  if (!["ALLOCATION_PROCESSED", "TAVILY_LOOKUP_FAILED", "EMBEDDING_FAILED",
+    "NO_PRODUCT_MATCH", "AMBIGUOUS_PRODUCT_MATCH"].includes(value.status)) return false;
   if (!("selectedProduct" in value) || !("allocationRun" in value)) return false;
-  if (value.selectedProduct != null &&
+  if (value.selectedProduct !== null &&
       (!candidate(value.selectedProduct) || !("equivalent" in value.selectedProduct) ||
        typeof value.selectedProduct.equivalent !== "boolean")) return false;
   if (!Array.isArray(value.candidates) || !value.candidates.every(candidate)) return false;
   if (!Array.isArray(value.sources) || !value.sources.every(
     (source: unknown) => record(source) && text(source.title) && text(source.url),
   )) return false;
-  if (value.allocationRun != null) {
+  if (value.status === "ALLOCATION_PROCESSED" &&
+      (value.selectedProduct === null || value.allocationRun === null)) return false;
+  if (value.status !== "ALLOCATION_PROCESSED" && value.allocationRun !== null) return false;
+  if (value.allocationRun !== null) {
     const run = value.allocationRun;
     if (!record(run) || !text(run.runId) || !number(run.openBackorderCount) ||
         !Array.isArray(run.allocations) || !run.allocations.every(
@@ -181,26 +187,16 @@ function allocationResult(value: unknown): value is AllocationResult {
 }
 
 export function readAllocationResult(response: unknown): AllocationResult {
-  if (!record(response)) throw new Error("The allocation API returned an invalid MCP response.");
-  const texts = Array.isArray(response.content)
-    ? response.content.flatMap((item: unknown) =>
-        record(item) && item.type === "text" && text(item.text) ? [item.text] : [])
-    : [];
-  if (response.isError === true) {
-    throw new Error(texts.join("\n") || "The MCP allocation tool reported an error.");
+  if (allocationResult(response)) return response;
+  throw new Error("The allocation API returned an invalid product allocation result.");
+}
+
+export function readAllocationError(response: unknown, status: number): string {
+  if (record(response)) {
+    if (text(response.error) && response.error.trim()) return response.error;
+    if (text(response.message) && response.message.trim()) return response.message;
   }
-  if (allocationResult(response.structuredContent)) return response.structuredContent;
-  for (const content of texts) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-      continue;
-    }
-    if (allocationResult(parsed)) return parsed;
-  }
-  throw new Error("The MCP response did not contain a valid product allocation result.");
+  return `Allocation API returned HTTP ${status}.`;
 }
 
 export function safeSourceUrl(value: string): string | null {

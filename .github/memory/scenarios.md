@@ -16,14 +16,14 @@ and independently synchronizes the physical stock ledger.
 
 ### Gherkin description
 **Given** an order containing a product name or description, quantity, priority, customer, and valid dates \
-**When** the client submits the request to `POST /api/products/allocate`, or invokes the `allocate_product_by_name` MCP tool \
+**When** the client submits the request to `POST /api/products/allocate` \
 **Then** Stockio resolves the product against the active catalog and allocates the resolved SKU against eligible inventory and inbound supply \
 **And** if the product cannot be matched confidently, the response explains why and no allocation is made \
 **And** any unfilled quantity is recorded as an open backorder
 
 ### High-level technical analysis
 - REST endpoint: `POST /api/products/allocate`
-- MCP tool: `allocate_product_by_name`
+- The Next.js frontend reaches this endpoint through its same-origin `/api/allocate` route using server-side Axios
 - Controller: `ProductAllocationController`
 - Service: `ProductAllocationService`
 - Product resolution first checks exact active catalog titles, then local embeddings, and optionally Tavily evidence when equivalent matching is allowed
@@ -299,3 +299,38 @@ and independently synchronizes the physical stock ledger.
 - Conversion and send failures are surfaced to the caller rather than reported as successful publication
 - The producer starter does not create consumer queues or dead-letter topology, enable scheduling, or include Stockio-specific sample-data generation
 - The existing scheduled sample publisher continues to send requests consumable by the Stockio listener after it is adapted to the reusable publisher
+
+## Scenario 12: Allocate a Product from the Frontend through Direct Service HTTP
+
+**Status:** Implemented.
+
+### Gherkin description
+**Given** the Next.js allocation frontend and an independently running `stockio-service` on port `8080` \
+**When** a user submits a valid product allocation form to the same-origin `POST /api/allocate` route \
+**Then** the Next.js route uses Axios to send the flat request to `POST /api/products/allocate` on `stockio-service` \
+**And** `ProductAllocationController` directly invokes `productAllocationService.allocate(request)` \
+**And** the frontend renders the plain product allocation response without an MCP envelope \
+**And** no separate Spring frontend backend or child service JVM is required \
+**And** the UI and service start separately without a fat-JAR build or bundled UI \
+**And** `allocate_product_by_name` is no longer exposed as an MCP tool \
+**And** an unchanged manual retry preserves the request ID, while editing an attempted request creates a new request ID
+
+### High-level technical analysis
+- Keep the existing Next.js route as the same-origin adapter; Axios runs server-side, not in the browser
+- Use a small TypeScript Axios client with server-side `STOCKIO_API_URL`, defaulting to `http://127.0.0.1:8080`, and upstream path `/api/products/allocate`
+- The REST controller directly delegates to `ProductAllocationService`; `ProductAllocationTools.kt` and `allocate_product_by_name` have been removed
+- Return plain `ProductAllocationResponse` JSON; frontend parsing, error text, proxy tests, and browser fixtures use the REST contract
+- The obsolete Spring MCP bridge runtime is removed; `stockio-api` remains a normal Kotlin DTO library and owns the OpenAPI documents and Gradle generation tasks used by `stockio-service`
+- Start Next.js and the service independently; there is no fat-JAR startup dependency or UI bundled into an executable JAR
+- No-store behavior, the 180-second upstream timeout, explicit connection/timeout errors, and manual retry identity are preserved; allocation POSTs are not automatically retried
+- The service's allocation, persistence, product lookup, and unrelated MCP interfaces remain unchanged; product allocation uses REST-only access and no browser-to-service CORS change is needed
+
+### Acceptance Criteria
+- The frontend works with independently started Next.js and `stockio-service:8080`, without `StockioMcpApplication`, a `bootJar` prerequisite, a bundled UI/service fat JAR, or a child service JVM
+- The Next.js route uses Axios to send the unchanged flat request fields to the configured service's `/api/products/allocate` endpoint
+- Valid service responses preserve HTTP status and JSON content, including non-allocation domain outcomes returned with HTTP `200`
+- The UI displays selected products, candidates, evidence, allocation quantities, line/source identities, skipped-expiry outcomes, and backorders from plain REST JSON
+- Invalid response payloads are explicit errors; HTTP `400` exposes the service's error message rather than referring to an unavailable MCP bridge
+- Unreachable upstream and timeout conditions return non-success responses (`502` and `504` respectively); timeout messaging warns that allocation may still complete
+- No automatic retry occurs; unchanged manual retries preserve `requestId`, and editing an attempted request generates a new ID
+- The service's shared DTO compilation and OpenAPI interface generation still work after bridge removal; `ProductAllocationTools.kt` and `allocate_product_by_name` are removed while unrelated MCP tools remain available

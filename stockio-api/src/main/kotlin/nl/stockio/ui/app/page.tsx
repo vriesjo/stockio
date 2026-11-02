@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState, type FormEvent, type InputHTMLAttributes } from "react";
 import {
   buildAllocationRequest,
+  readAllocationError,
   readAllocationResult,
   type AllocationForm,
   type AllocationResult,
-  type McpProductAllocationRequest,
+  type ProductAllocationRequest,
 } from "@/lib/allocation";
 import AllocationResultView from "./allocation-result";
 
@@ -87,7 +88,7 @@ export default function AllocationPage() {
     event.preventDefault();
     if (pending) return;
     setError(null);
-    let request: McpProductAllocationRequest;
+    let request: ProductAllocationRequest;
     try {
       request = buildAllocationRequest(form, requestId);
     } catch (error) {
@@ -104,13 +105,15 @@ export default function AllocationPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       });
-      if (!response.ok) {
-        throw new Error(
-          `Allocation API returned HTTP ${response.status}. Check that the Spring API and MCP service are available.`,
-        );
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch (error) {
+        if (!(error instanceof SyntaxError) || response.ok) throw error;
+        throw new Error(readAllocationError(null, response.status));
       }
-      const body: unknown = await response.json();
       setRawResponse(body);
+      if (!response.ok) throw new Error(readAllocationError(body, response.status));
       setResult(readAllocationResult(body));
     } catch (error) {
       setError(
@@ -241,7 +244,7 @@ export default function AllocationPage() {
               {result && <AllocationResultView result={result} />}
             </div>
             {rawResponse !== null && <details className="rounded-xl border border-stone-200 bg-white p-5">
-              <summary className="cursor-pointer text-sm font-semibold">Raw MCP response</summary>
+              <summary className="cursor-pointer text-sm font-semibold">Raw API response</summary>
               <pre className="mt-4 max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs leading-6">{JSON.stringify(rawResponse, null, 2)}</pre>
             </details>}
           </div>

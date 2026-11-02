@@ -1,5 +1,32 @@
 # Active Context
 
+## Feature: Replace the frontend MCP bridge with an Axios service client
+
+- **Specification:** [Feature specification](./specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
+- **Scenario:** [Scenario 12](./scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http), building on [Scenario 1](./scenarios.md#scenario-1-allocate-a-product-by-name).
+- **Issue:** [Feature issue](./issues/feature-frontend-axios-service-client.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Complete: Axios forwarding, plain REST results, removal of the bridge/product MCP tool, and shared DTO/OpenAPI compilation.
+
+### Steps worked on
+- Traced browser fetch -> Next.js route -> Spring MCP bridge on `8082` -> stdio child JVM -> `allocate_product_by_name` -> `ProductAllocationService`.
+- Confirmed `POST /api/products/allocate` already calls the same service directly and returns plain `ProductAllocationResponse`.
+- Confirmed the user's choice: keep the same-origin Next.js route and place Axios there, calling the independently running service on `8080`; do not introduce browser CORS access.
+- Identified MCP-specific frontend parsing/fixtures and the shared Kotlin DTO/OpenAPI build responsibilities that must survive bridge removal.
+- Added the linked draft specification, planned scenario, issue analysis, and explicitly planned architecture boundary.
+- Clarified the requested removal of `ProductAllocationTools.kt` and `allocate_product_by_name`; unrelated MCP tools remain outside removal scope.
+- Made separate UI/service startup explicit: no bundled UI/service fat JAR, `bootJar` prerequisite for the UI, or UI-managed service JVM.
+- Implemented server-side Axios forwarding to `/api/products/allocate`, plain REST validation/rendering, explicit HTTP/network errors, and unchanged manual retry identity.
+- Removed the bridge runtime/configuration/tests and product MCP tool/registration. Kept shared DTOs as a normal Kotlin library and retained unrelated MCP tools.
+- Restricted the Boot application plugin to the service and aligned BOM-managed Kotlin dependencies with the Kotlin plugin to preserve library compilation.
+- Updated README/environment guidance, Makefile launch targets, scenarios, architecture, and the original product-resolution issue's interface references.
+- Verified UI unit/type/build/browser checks, OpenAPI validation/generation, focused controller/service/tool-registration tests, and live browser allocation against separately started Next.js/service processes with an isolated database. Stopped the temporary validation services.
+- Moved the browser test's default mock-service URL into `playwright.config.ts` so IntelliJ/direct Playwright runs do not depend on npm-script environment setup; the tests do not need the real service.
+
+### Next possible steps (suggestions)
+- No remaining implementation steps for this feature.
+
 ## Feature: Automate backorder fulfillment after physical inbound receipt
 
 - **Specification:** `.github/memory/specifications.md#feature-automate-backorder-fulfillment-after-physical-inbound-receipt`
