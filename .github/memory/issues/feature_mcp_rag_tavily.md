@@ -1,5 +1,11 @@
 # Implementation Plan: Natural-Language Product Resolution and Stock Allocation
 
+The product allocation interface is now REST-only:
+`POST /api/products/allocate` calls `ProductAllocationService` directly.
+The [Axios frontend integration](./feature-frontend-axios-service-client.md)
+removed the product MCP tool and Spring frontend bridge; the UI and service
+run separately.
+
 ## Goal
 
 Support requests such as:
@@ -54,7 +60,7 @@ Return allocation, reservation, and any backorder details
 
 ### 1. Parse the request
 
-The MCP caller parses the user's natural-language request into the structured `ProductAllocationRequest`; the service does not attempt to parse arbitrary prose. For the example above, the product phrase and quantity are `Maki Komkommer` and `50`.
+The frontend or another REST client supplies the structured `ProductAllocationRequest`; the service does not attempt to parse arbitrary prose. For the example above, the product phrase and quantity are `Maki Komkommer` and `50`.
 
 The caller must also provide `requestId`, `orderId`, `customer`, `priority`, `placedDate`, `requiredDeliveryDate`, and `asOfDate`. These are required by Stockio's allocation model and must not be invented by the service. `allowEquivalent` defaults to `true`.
 
@@ -72,7 +78,7 @@ For fallback matches, the default minimum similarity is `0.72`; if the top two c
 
 ### 4. Allocate through Stockio
 
-After product resolution, construct a normal `AllocationRequest` using the resolved SKU and the validated request details. Invoke the existing allocation application service through a suitable orchestration layer and expose that orchestration through the relevant MCP or HTTP interface.
+After product resolution, construct a normal `AllocationRequest` using the resolved SKU and the validated request details. Invoke the existing allocation application service through the product application service and expose that orchestration through `POST /api/products/allocate`.
 
 Keep the responsibilities separate:
 
@@ -97,10 +103,10 @@ Treat Tavily content as external, potentially stale or incorrect input. Validate
 
 ## Implementation phases
 
-1. **Provide request metadata.** The MCP caller supplies the order/customer identity and dates required by Stockio, along with a stable `requestId` for retries.
+1. **Provide request metadata.** The REST client supplies the order/customer identity and dates required by Stockio, along with a stable `requestId` for retries.
 2. **Resolve locally, then fall back to external lookup.** Exact title matches skip external calls; strong, separated local vector matches skip Tavily. External calls use a bounded timeout.
 3. **Resolve and cache product evidence.** Ollama embeds the query, active catalog descriptions, and Tavily results. pgvector ranks catalog products and prior Tavily knowledge; successful source chunks are upserted for the resolved SKU.
-4. **Delegate allocation.** The `allocate_product_by_name` MCP tool builds a normal `NEW_DEMAND` `AllocationRequest`, invokes `AllocationService`, and rebuilds the projection. Existing behavior is preserved: available inventory/inbound quantity is allocated, and any remainder is saved as an open backorder.
+4. **Delegate allocation.** `ProductAllocationService`, called by the REST controller, builds a normal `NEW_DEMAND` `AllocationRequest` and delegates through `AllocationProcessor` to allocate and rebuild the projection. Existing behavior is preserved: available inventory/inbound quantity is allocated, and any remainder is saved as an open backorder.
 5. **Return an auditable result.** Return the selected product/SKU, Tavily sources, allocation run, and actual allocated/backordered quantities. If resolution fails, return candidate products and do not allocate.
 
 ## Failure and safety behavior

@@ -36,7 +36,7 @@ The Gradle build includes two modules:
 | Module | Purpose |
 | --- | --- |
 | `:stockio-service` (`stockio-service/`) | Spring Boot application, MCP tools, REST API, allocation workflows, persistence, CSV import, and Excel generation. |
-| `:stockio-api` (`stockio-api/`) | Sample Spring AI MCP client. It is not required by the service at runtime. |
+| `:stockio-api` (`stockio-api/`) | Shared Kotlin DTO library and OpenAPI specifications/generation tasks consumed by the service; also contains the independently run Next.js UI. It has no Spring application entry point. |
 
 The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL with pgvector, Flyway, RabbitMQ, JobRunr, Apache POI, HikariCP, and Spring Boot Actuator. Natural-language product allocation also uses the Tavily search API and Ollama embeddings. Allocation work is parallelized across SKUs with Kotlin coroutines.
 
@@ -45,6 +45,8 @@ The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. 
 ```mermaid
 flowchart LR
     Operator["Operator / REST client"] -->|"HTTP / JSON"| API["Stockio service"]
+    Browser["Browser"] -->|"Same-origin POST /api/allocate"| UI["Next.js UI"]
+    UI -->|"Server-side Axios POST /api/products/allocate"| API
     Agent["MCP client"] -->|"MCP tools"| API
     API -->|"Application data and JobRunr storage"| DB[("PostgreSQL + pgvector")]
     API -->|"Product lookup"| Tavily["Tavily Search API"]
@@ -56,6 +58,38 @@ flowchart LR
 ```
 
 The service runs as a servlet application and exposes MCP tools through Spring AI. The HTTP server binds to `127.0.0.1:8080` by default. No application-level authentication is configured; protect the API and Actuator endpoints if `SERVER_ADDRESS` is changed to expose them beyond the local host.
+
+### Frontend HTTP integration
+
+The Next.js allocation UI under `stockio-api/src/main/kotlin/nl/stockio/ui`
+posts to its same-origin `/api/allocate` route. The route uses the server-side
+Axios client in `lib/product-allocation-client.ts` to call
+`POST /api/products/allocate` at `STOCKIO_API_URL` (default
+`http://127.0.0.1:8080`). The service controller directly invokes
+`ProductAllocationService.allocate(request)` and returns plain JSON.
+
+Next.js and the service start independently, using npm scripts and
+IDE/`:stockio-service:bootRun` respectively. There is no Spring frontend backend,
+child JVM, fat-JAR startup dependency, bundled UI/service JAR, or browser CORS
+requirement. `stockio-api` builds a normal Kotlin DTO JAR, retains OpenAPI
+generation tasks, and is a compile/runtime library dependency of the service;
+only `stockio-service` applies the Spring Boot application plugin.
+The Spring Boot BOM's Kotlin version is explicitly aligned with the Kotlin
+plugin so its compiler/build-tools dependencies are not downgraded in the
+non-Boot library module.
+
+The route preserves upstream HTTP status/body, disables redirects and caching,
+and bounds upstream requests to 180 seconds. Network failures and timeouts
+return `502` and `504`; neither proves the service stopped processing.
+The UI validates plain REST results, displays domain non-allocation outcomes
+without claiming success, and reuses request identity on unchanged manual
+retries. No automatic POST retries occur.
+`ProductAllocationTools` and `allocate_product_by_name` are removed; unrelated
+service MCP tools remain registered.
+
+See the [feature specification](./specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client),
+[Scenario 12](./scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http),
+and [issue handoff](./issues/feature-frontend-axios-service-client.md).
 
 ## C4 - level 3 component diagram
 
@@ -92,7 +126,7 @@ flowchart LR
             RestAdapters["AllocationController / ReservationController / StockController<br/>Spring MVC<br/>Jobs, lifecycle and freshness"]
             ProductAdapter["ProductAllocationController<br/>Spring MVC<br/>Product-by-name allocation"]
             AdminAdapter["AllocationAdminController<br/>Spring MVC<br/>CSV, reports, retry cleanup"]
-            McpAdapters["AllocationTools / ProductAllocationTools<br/>Spring AI @Tool<br/>MCP use cases"]
+            McpAdapters["AllocationTools<br/>Spring AI @Tool<br/>MCP use cases"]
             MessageAdapter["AllocationRabbitListener<br/>Spring AMQP<br/>Queue intake and retry handoff"]
             ScheduledAdapter["ReservationExpiryJob / StockLedgerSyncJob / BackorderAllocationJob<br/>JobRunr + scheduling<br/>Recurring and receipt triggers"]
         end
@@ -138,7 +172,6 @@ flowchart LR
     ProductAdapter -->|"Calls"| ProductFlow
     AdminAdapter -->|"Calls"| FileFlow
     AdminAdapter -->|"Calls"| AllocationJob
-    McpAdapters -->|"Calls"| ProductFlow
     McpAdapters -->|"Calls"| AllocationFlow
     McpAdapters -->|"Calls"| LedgerFlow
     McpAdapters -->|"Reads"| QueryFlow
@@ -323,7 +356,7 @@ deployed services.
 
 | Component | Responsibility |
 | --- | --- |
-| `ProductAllocationTools` / `ProductAllocationService` | Resolves a product phrase through local catalog/vector matching with Tavily fallback, then delegates to `AllocationProcessor`. |
+| `ProductAllocationController` / `ProductAllocationService` | REST-only product resolution through local catalog/vector matching with Tavily fallback, then delegation to `AllocationProcessor`. |
 | Tavily / Ollama clients | Perform external product search and local embedding requests with configured timeouts. |
 | `ProductRepository` / `ProductVectorRepository` | Persist catalog data and embeddings, and perform catalog and pgvector similarity searches. |
 
@@ -364,7 +397,6 @@ hexagonal boundary stricter without changing the use-case components.
 | Tool | Input | Behavior |
 | --- | --- | --- |
 | `allocation_and_stock_projection` | `AllocationRequest` with `runType: NEW_DEMAND` | Allocates demand, persists reservations/backorders, and rebuilds daily projections. It does not synchronize live stock. |
-| `allocate_product_by_name` | `ProductAllocationRequest` | Resolves an active catalog SKU locally or through Tavily fallback, delegates allocation/projection, and returns product evidence plus the allocation result. Unresolved or ambiguous products are not allocated. |
 | `allocate_open_backorders` | `AllocationRequest` with `runType: BACKORDER_FULFILLMENT` | Attempts to fulfill persisted backorders using eligible stock and inbound supply, rebuilds projections, and returns an `AllocationRunResult`. Does not synchronize live stock. |
 | `process_stock_ledger` | `ProcessDailyStockRequest` | Expires overdue reservations, rebuilds today's projection, and applies it to live stock. Only confirmed orders are delivered; allocation is not recalculated. |
 | `get_order_reservation_status` | Order ID | Returns the current lifecycle, deadline, and whether expired reservations still await cleanup. |
@@ -572,15 +604,15 @@ command's `skuScope` and `trigger`; this is not full command-field validation.
 
 ### Product resolution and allocation flow
 
-`POST /api/products/allocate` and `allocate_product_by_name` both call
-`ProductAllocationService` synchronously. The MCP caller translates natural
-language into a structured `ProductAllocationRequest`; the service does not
-invent order identity, quantities, or dates.
+`POST /api/products/allocate` calls `ProductAllocationService` synchronously.
+The frontend or another REST client supplies a structured
+`ProductAllocationRequest`; the service does not invent order identity,
+quantities, or dates.
 
 ```mermaid
 sequenceDiagram
     actor Caller
-    participant Adapter as Product REST endpoint or MCP tool
+    participant Adapter as Product REST endpoint
     participant Product as ProductAllocationService
     participant Ollama
     participant Tavily as Tavily Search API
@@ -1289,12 +1321,10 @@ Flyway migrations V1-V16 create and evolve these tables, seed products, add dail
 | `ALLOCATION_RABBITMQ_PUBLISHER_ENABLED` | `true` | Enables the demo request publisher in the current application config. |
 | `ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL` | `1000` | Demo publisher interval in milliseconds. |
 | `JOBRUNR_DASHBOARD_PORT` | `8181` | JobRunr dashboard port. |
-| `JOBRUNR_DASHBOARD_ENABLED` | `true` for a standalone service | Overrides dashboard startup; the API's STDIO subprocess explicitly sets it to `false` to avoid port conflicts. |
+| `STOCKIO_API_URL` | `http://127.0.0.1:8080` | Next.js server-side Axios base URL for the independently running service. |
 
-The sample API launches the service as an MCP STDIO subprocess on an ephemeral
-HTTP port with the dashboard disabled; background JobRunr execution remains
-enabled. An existing standalone dashboard on `8181` does not need to be stopped
-for that subprocess to initialize.
+The frontend does not launch a service subprocess or manage its dashboard.
+The standalone service owns its configured HTTP and JobRunr dashboard ports.
 
 Local Docker Compose includes a one-shot `ollama-pull-model` service. It waits
 for Ollama's healthcheck, pulls `nomic-embed-text` over the internal Ollama URL,

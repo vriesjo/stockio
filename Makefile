@@ -1,10 +1,13 @@
-.PHONY: run-api run-service build test up up-rabbitmq up-postgres up-ollama down logs
+.PHONY: run-ui run-api run-service build test up up-rabbitmq up-postgres up-ollama down logs
 
-run-api:
-	./gradlew :stock-api:bootRun
+run-api: run-ui
+
+run-ui:
+	cd stockio-api/src/main/kotlin/nl/stockio/ui && \
+		bash -c '. "$${NVM_DIR:-$$HOME/.nvm}/nvm.sh" --no-use && nvm use && exec npm run dev'
 
 run-service:
-	./gradlew :stock-service:bootRun
+	./gradlew :stockio-service:bootRun
 
 build:
 	./gradlew clean build --no-daemon

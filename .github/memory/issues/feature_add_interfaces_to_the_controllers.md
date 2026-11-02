@@ -53,9 +53,11 @@ scenario and linked feature documentation as well.
   types; blindly generating models can create duplicate API types.
 - The root Gradle build uses Gradle 8.14.3, Kotlin 2.2.20, and Spring Boot
   3.5.10. OpenAPI Generator 7.26.0 is configured in `project(":stockio-api")`.
-- `stockio-api` is currently a sample Spring AI MCP client, not a server API
-  contracts module. The service must not depend on its compiled client artifact
-  just to implement its REST API.
+- `stockio-api` now builds a normal shared DTO library after the
+  [Axios frontend integration](./feature-frontend-axios-service-client.md)
+  removed its Spring MCP client runtime. The service depends on that library
+  for DTOs, but still compiles generated REST interfaces directly from build
+  output rather than obtaining them through the library artifact.
 - Kotlin Spring interface generation writes only the API interface under
   `stockio-api/build/generated/openapi`; model generation is disabled and the
   interface references existing service DTOs.

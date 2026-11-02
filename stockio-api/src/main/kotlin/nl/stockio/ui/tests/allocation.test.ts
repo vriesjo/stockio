@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildAllocationRequest,
+  readAllocationError,
   readAllocationResult,
   safeSourceUrl,
   type AllocationForm,
@@ -82,21 +83,26 @@ test("keeps user text as data rather than treating it as HTML", () => {
   assert.equal(buildAllocationRequest({ ...form, productQuery }, requestId).productQuery, productQuery);
 });
 
-test("reads JSON embedded in MCP text and preserves actual shortage quantities", () => {
-  const result = readAllocationResult({
-    isError: false,
-    content: [{ type: "text", text: JSON.stringify(allocation) }],
-  });
+test("reads plain REST JSON and preserves actual shortage quantities", () => {
+  const result = readAllocationResult(allocation);
   assert.deepEqual(result, allocation);
   assert.equal(result.allocationRun?.allocations[0].backorderedQuantity, 10);
 });
 
-test("supports MCP structured content and domain non-allocation statuses", () => {
-  const noMatch = { ...allocation, status: "NO_PRODUCT_MATCH", selectedProduct: null, allocationRun: null };
-  assert.deepEqual(readAllocationResult({ structuredContent: noMatch }), noMatch);
+test("preserves all domain non-allocation statuses and optional evidence", () => {
+  for (const status of [
+    "NO_PRODUCT_MATCH", "AMBIGUOUS_PRODUCT_MATCH", "EMBEDDING_FAILED", "TAVILY_LOOKUP_FAILED",
+  ]) {
+    const noMatch = {
+      ...allocation, status, selectedProduct: null, allocationRun: null,
+      candidates: [{ sku: "MAKI-ZALM", title: "Maki Zalm", similarity: 0.6 }],
+      sources: [{ title: "Product evidence", url: "https://example.test/product" }],
+    };
+    assert.deepEqual(readAllocationResult(noMatch), noMatch);
+  }
 });
 
-test("accepts LocalDate arrays from MCP and normalizes source dates", () => {
+test("normalizes source dates when the service serializes LocalDate arrays", () => {
   const arrayDatePayload = {
     ...allocation,
     allocationRun: {
@@ -110,7 +116,7 @@ test("accepts LocalDate arrays from MCP and normalizes source dates", () => {
       }],
     },
   };
-  const result = readAllocationResult({ structuredContent: arrayDatePayload });
+  const result = readAllocationResult(arrayDatePayload);
   assert.equal(result.allocationRun?.allocations[0].sources[0].sourceDate, "2026-10-21");
 });
 
@@ -135,7 +141,7 @@ test("preserves repeated order and SKU lines and a skipped expiry outcome", () =
       ],
     },
   };
-  const result = readAllocationResult({ structuredContent: multiLine });
+  const result = readAllocationResult(multiLine);
   assert.deepEqual(result, multiLine);
   assert.equal(result.allocationRun?.allocations[0].sources[0].shipmentLineId, "SHIPMENT-LINE-001");
   assert.equal(result.allocationRun?.allocations[1].status, null);
@@ -148,30 +154,35 @@ test("rejects missing line identity, invalid outcomes and inconsistent skipped s
     { sources: [{ sourceType: "INBOUND", shipmentId: "SHIPMENT-001" }] },
   ]) {
     assert.throws(() => readAllocationResult({
-      structuredContent: {
-        ...allocation,
-        allocationRun: {
-          ...allocation.allocationRun,
-          allocations: [{ ...allocation.allocationRun.allocations[0], ...patch }],
-        },
+      ...allocation,
+      allocationRun: {
+        ...allocation.allocationRun,
+        allocations: [{ ...allocation.allocationRun.allocations[0], ...patch }],
       },
     }));
   }
 });
 
-test("treats MCP isError as failure even when a successful payload is also present", () => {
-  assert.throws(() => readAllocationResult({
-    isError: true,
-    structuredContent: allocation,
-    content: [{ type: "text", text: "Ollama read timed out" }],
-  }), /Ollama read timed out/);
+test("reads service validation and proxy error messages with an HTTP fallback", () => {
+  assert.equal(readAllocationError({ error: "Quantity must be positive." }, 400), "Quantity must be positive.");
+  assert.equal(readAllocationError({ message: "The Stockio API timed out." }, 504), "The Stockio API timed out.");
+  for (const body of [null, {}, "Bad gateway", { error: "", message: "" }]) {
+    assert.equal(readAllocationError(body, 500), "Allocation API returned HTTP 500.");
+  }
 });
 
-test("rejects malformed or incomplete MCP results rather than showing success", () => {
+test("rejects MCP envelopes and malformed or inconsistent REST results", () => {
   for (const response of [
-    null, {}, { content: [{ type: "text", text: "not JSON" }] },
-    { structuredContent: { status: "ALLOCATION_PROCESSED" } },
-    { structuredContent: { ...allocation, allocationRun: { allocations: "invalid" } } },
+    null, {}, { content: [{ type: "text", text: JSON.stringify(allocation) }] },
+    { structuredContent: allocation },
+    { status: "ALLOCATION_PROCESSED" },
+    { ...allocation, allocationRun: { allocations: "invalid" } },
+    { ...allocation, allocationRun: null },
+    { ...allocation, selectedProduct: null },
+    { ...allocation, selectedProduct: undefined },
+    { ...allocation, allocationRun: undefined },
+    { ...allocation, status: "UNKNOWN" },
+    { ...allocation, status: "NO_PRODUCT_MATCH" },
   ]) {
     assert.throws(() => readAllocationResult(response));
   }

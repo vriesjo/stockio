@@ -199,3 +199,61 @@ existing MCP backorder tool remains available as a manual and recovery trigger.
 - [Scenario 4: Fulfill Open Backorders](./scenarios.md#scenario-4-fulfill-open-backorders)
 - [Feature issue: automate backorder fulfillment after physical inbound receipt](./issues/feature_automate-backorder-fulfillment-after-inbound-receipt.md)
 - [Architecture](./architecture.md)
+
+## Feature: Replace the frontend MCP bridge with an Axios service client
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Product allocation REST contract](../../stockio-api/src/main/resources/openapi/product-allocation-controller.yaml)
+- **Bounded Context:** Frontend Integration & Product Allocation
+
+### Overview
+
+The frontend no longer requires a separate Spring MCP client application.
+The same-origin Next.js `POST /api/allocate` route uses
+a server-side Axios HTTP client to call the independently running
+`stockio-service` at `http://127.0.0.1:8080/api/products/allocate`. The existing
+REST controller calls `productAllocationService.allocate(request)` and the
+frontend consumes its plain JSON result, not an MCP envelope.
+`ProductAllocationTools.kt` and `allocate_product_by_name` are removed.
+The UI and service run as separate processes without a bundled UI/service fat
+JAR or fat-JAR startup dependency. Shared Kotlin DTOs remain a normal library
+dependency, and OpenAPI generation remains API-module-owned. Implementation
+and scoped validation are complete; priority remains unset.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Same-origin frontend route | Keep browser submissions to Next.js `POST /api/allocate`; perform the service call inside that route, without a separate Spring frontend backend. |
+| FR-02 | Axios service client | Add Axios to the UI package and a small server-side TypeScript client using `STOCKIO_API_URL`, default `http://127.0.0.1:8080`, to POST flat `ProductAllocationRequest` JSON to `/api/products/allocate`. |
+| FR-03 | Existing application use case | Use `ProductAllocationController.allocate` and its direct `productAllocationService.allocate(request)` delegation; do not invoke MCP or duplicate allocation logic in TypeScript. |
+| FR-04 | Plain REST result | Update frontend types and result parsing to consume plain `ProductAllocationResponse`, preserving domain outcomes, evidence, allocation quantities, line/source identities, skipped-expiry outcomes, and backorders. |
+| FR-05 | Explicit HTTP failures | Preserve upstream HTTP status and JSON bodies; show service validation errors, reject malformed successful payloads, and return explicit `502` connection and `504` timeout responses. |
+| FR-06 | Request identity | Preserve unchanged request IDs on manual retries and generate a new ID when an attempted request is edited; do not automatically retry allocation POSTs. |
+| FR-07 | Retire obsolete MCP adapters safely | Remove the obsolete MCP bridge runtime/configuration/build/test wiring and `ProductAllocationTools.kt` (`allocate_product_by_name`); preserve shared DTOs, OpenAPI assets, generation tasks, and unrelated service MCP tools. |
+| FR-08 | Runtime guidance and coverage | Update frontend environment examples, UI wording, and relevant run documentation; cover the new Axios forwarding contract, plain results, failures, and retry identity in focused tests. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Separate processes without fat-JAR coupling | Run Next.js and the service independently; do not bundle the UI into a fat JAR, require `bootJar` for UI startup, launch a service JVM/JAR from the UI, or add browser-to-service CORS access. |
+| NFR-02 | Transport safety | Keep service configuration server-side, validate HTTP(S) URLs without embedded credentials, disable upstream redirects and caching, and preserve the existing 180-second upstream timeout. |
+| NFR-03 | Honest unknown outcomes | A timeout or connection loss does not prove allocation failed; warn that processing may continue and retain the original request identity for unchanged manual retries. |
+| NFR-04 | Compatibility and build isolation | Preserve the service REST contract, shared Kotlin DTO library dependency, OpenAPI generation, allocation semantics, and unrelated MCP tools; removal of `allocate_product_by_name` is intentional. No schema migration or new business abstraction is required. |
+
+### Plan
+
+1. Add Axios and a server-side product allocation client; update the Next.js route to call the existing service endpoint with the configured base URL, unchanged payload, timeout, and explicit status/error handling.
+2. Update frontend request naming, plain REST response validation, service error display, and UI wording while retaining form validation, rendering, and manual retry identity.
+3. Remove the obsolete Spring MCP bridge runtime, bridge-only configuration/dependencies/tests, and `ProductAllocationTools.kt`; remove fat-JAR startup coupling, preserve shared DTO/OpenAPI build responsibilities and unrelated MCP tools, and verify service compilation.
+4. Update environment/run guidance and focused client, route, parser, and browser tests to use a mock service's `/api/products/allocate` endpoint and plain REST JSON.
+5. Run UI unit tests, type checking, production build, and the focused browser flow; validate/generate OpenAPI interfaces and compile/test the affected Kotlin service boundary, then smoke-test with only Next.js and `stockio-service:8080`.
+
+### Resources
+
+- [Scenario 12: Allocate a Product from the Frontend through Direct Service HTTP](./scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http)
+- [Scenario 1: Allocate a Product by Name](./scenarios.md#scenario-1-allocate-a-product-by-name)
+- [Feature issue: Replace the frontend MCP bridge with an Axios service client](./issues/feature-frontend-axios-service-client.md)
+- [Frontend architecture boundary](./architecture.md#frontend-http-integration)
