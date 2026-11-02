@@ -527,7 +527,8 @@ sequenceDiagram
     else New or resumable run
         Allocation->>DB: Begin or resume run
         Allocation->>Documents: initialize(runId, request)
-        Documents->>DB: Exclusive projection lock and locked run validation
+        Documents->>DB: Shared projection gate, sorted document keys and inbound SKU locks
+        Documents->>DB: Locked run validation
         Documents->>DB: Claim order headers, save ordered lines and TTL deadlines
         Documents->>DB: Register shipment lines and mark documents initialized
         Note over Documents,DB: Initialization commits before SKU workers start
@@ -552,6 +553,13 @@ including time spent waiting for SKU processing. Already initialized documents
 are not registered again, so retries do not renew TTL or reapply supply amendments.
 An expired header cannot acquire new reservations; late workers persist
 `SKIPPED_ORDER_EXPIRED` with null allocation status and no active demand.
+
+Independent registrations can overlap. Conflicting header/line identities
+serialize through namespaced `allocation_document_lock` rows, including before
+the business identities exist. Inbound amendments additionally hold the same
+SKU locks as allocation and pessimistically lock existing supply before
+validating reserved/received quantities. Existing identity constraints remain
+in force; retries do not reparent lines or change shipment membership.
 
 The allocation rules are:
 
@@ -1239,10 +1247,26 @@ reservations.
 
 `StockProjectionLockRepository` coordinates participating paths through the
 singleton `stock_projection_lock` row (`id = 1`), not a lock on stock row 1.
-SKU workers hold its shared lock and a per-SKU lock; distinct SKUs can proceed
-concurrently. Document initialization, projection, expiry, and ledger sync use
-the exclusive lock. Callers must have an active transaction, and a missing lock
-row is an error. A worker never upgrades its shared lock to an exclusive one.
+SKU workers and document initialization hold its shared lock; projection,
+expiry, and ledger sync use the exclusive lock. Callers must have an active
+transaction, and a missing lock row is an error. No registration/worker
+transaction upgrades its shared lock to exclusive.
+
+Registration acquires the shared gate, all namespaced document keys in sorted
+order, all inbound SKU locks in sorted order, the run row, and then business
+rows. Acquiring SKU locks before the run row prevents a retry waiting on a
+worker while holding a run lock that could block that worker's foreign-key
+checks. Workers keep shared-gate -> SKU -> business-row ordering. Exclusive
+operations acquire their gate before business locks. Run completion does not
+acquire document or SKU locks.
+
+Document lock rows are lazily inserted with `ON CONFLICT DO NOTHING`, then
+locked transactionally; they remain stored like SKU lock rows. Namespaces keep
+order, order-line, shipment, and shipment-line identities distinct. Different
+document/SKU scopes can register concurrently; shared identities or inbound
+SKUs still serialize. Database row locks coordinate multiple service instances.
+This does not remove full projection rebuilds, bound waiting work, or increase
+the configured database/worker budgets.
 
 SKU concurrency is limited by `stockio.allocation.max-concurrent-skus` (default
 `4`), configured through `ALLOCATION_MAX_CONCURRENT_SKUS`. The limit applies to
@@ -1250,6 +1274,45 @@ each service's dispatcher, not independently per request or globally across the
 separate new-demand and backorder services or application instances. Each SKU
 uses its own transaction; forecast replacement begins after the allocation
 transactions finish.
+
+**Shared gate versus business-row protection**
+
+`PESSIMISTIC_READ` on the projection-lock row allows multiple shared holders;
+`PESSIMISTIC_WRITE` conflicts with both shared and exclusive holders. These locks
+remain held until transaction commit or rollback. "Read" describes the lock on
+the coordination row, not a read-only business transaction: shared holders can
+update orders, supply, and reservations under the narrower document/SKU/supply
+locks. Shared gate holders do not need to serialize their commits merely
+because they lock the same coordination row.
+
+**Example: concurrent A(order 1, SKU 1), B(order 2, SKU 2), C(order 3, SKU 1)**
+
+Assume distinct request, order, and line identities, order-only requests with
+no inbound amendments, and no exclusive operation intervening. All three can
+hold the shared projection gate simultaneously. If A wins the SKU 1 lock:
+
+| Phase | A: order 1, SKU 1 | B: order 2, SKU 2 | C: order 3, SKU 1 |
+| --- | --- | --- | --- |
+| Document registration | Can register independently. | Can register independently. | Can register independently, despite sharing SKU 1 with A. |
+| SKU allocation | Holds the shared gate and SKU 1 lock; allocates supply. | Holds the shared gate and SKU 2 lock; proceeds independently. | Holds the shared gate but waits for SKU 1. |
+| After A commits its SKU transaction | Releases that transaction's locks. | Can commit its SKU transaction independently. | Acquires SKU 1, reads availability including A's committed reservations, then allocates and commits. |
+
+A and C cannot concurrently modify the same SKU through the allocation workers.
+Whichever acquires the SKU lock first proceeds; arrival order does not guarantee
+which request wins. If supply is insufficient after A's reservation, C can
+receive a partial allocation or backorder instead of reserving the same units.
+
+Registration locks SKUs only for inbound registration/amendments, so different
+order-only documents can register concurrently even when their demand uses the
+same SKU. Registration, per-SKU allocation, run completion, and projection are
+separate transaction phases, not one transaction covering the entire request.
+
+After allocation, projection requires the exclusive gate. It waits for active
+shared holders, including a worker waiting for its SKU lock, and excludes new
+shared holders while it owns the gate. Exclusive operations can therefore add
+pauses between the phases above; this example is not a guaranteed execution
+schedule. The shared gate enables concurrency but does not remove projection
+serialization or connection-pool pressure from lock waits.
 
 Stable recurring IDs register one shared schedule definition across pods;
 database locks and lifecycle checks make overlapping executions/retries safe.
@@ -1290,7 +1353,8 @@ historical combined allocation/sync job results.
 | `allocation_record` | Per-order-line allocation and backorder results. |
 | `allocation_source` | Lot/shipment source detail for each allocation record. |
 | `open_backorder` | Current unfulfilled quantity by order line. |
-| `allocation_sku_lock` | Per-SKU serialization for allocation workers. |
+| `allocation_sku_lock` | Per-SKU serialization for allocation workers and inbound registration/amendments. |
+| `allocation_document_lock` | Namespaced header/line identity locks, including absent business identities, retained across registrations. |
 | `allocation_sku_operation` | Per-run, per-SKU result used to resume work safely. |
 | `demand_order` | Order header, original-run ownership, and shared confirmation/expiry lifecycle. |
 | `demand_order_line` | Immutable line identity, SKU, requested quantity, delivery date, and document position. |
@@ -1301,7 +1365,7 @@ historical combined allocation/sync job results.
 | `allocation_job_result` | Serialized `{jobId, allocationRun}` completion for executor calls, including synchronous RabbitMQ execution. |
 | `flyway_schema_history` | Flyway migration metadata. |
 
-Flyway migrations V1-V16 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, enable pgvector product-resolution storage, add order-reservation expiry, migrate single-line documents to header/line relationships, and persist ledger-sync freshness. V15 preserves lifecycle timestamps, legacy line mappings, and received lots, and rejects inconsistent legacy reservation data. Hibernate validates the migrated JPA schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
+Flyway migrations V1-V17 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, enable pgvector product-resolution storage, add order-reservation expiry, migrate single-line documents to header/line relationships, and persist ledger-sync freshness. V15 preserves lifecycle timestamps, legacy line mappings, and received lots, and rejects inconsistent legacy reservation data. V17 adds the document identity-lock table without changing business data or keys. Hibernate validates the migrated JPA schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
 
 ## Configuration and operations
 

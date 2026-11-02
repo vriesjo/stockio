@@ -1,5 +1,28 @@
 # Active Context
 
+## Feature: Allow concurrent allocation document registration
+
+- **Specification:** [Feature specification](./specifications.md#feature-allow-concurrent-allocation-document-registration)
+- **Scenario:** [Scenario 14](./scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
+- **Issue:** [Feature issue](./issues/feature-concurrent-document-registration.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Complete, at the user's request.
+
+### Steps worked on
+- Traced registration, inbound amendments, SKU workers, run locks, schema constraints, and exclusive projection/ledger/expiry paths.
+- Selected a shared projection gate plus sorted namespaced identity-lock rows, existing sorted inbound SKU locks, run locking, and locked supply reads.
+- Identified that the run lock must follow inbound SKU acquisition to avoid blocking worker foreign-key checks while waiting for that worker.
+- Linked scope, scenario, requirements, issue, and deterministic PostgreSQL validation before code changes.
+- Added V17's namespaced document-lock table and the matching entity/port/JPA repository, following existing SKU-lock patterns.
+- Switched registration to the shared gate, sorted document/inbound SKU locks, then run protection; existing supply reads now use row locks before amendment checks.
+- Added eight real PostgreSQL concurrency cases covering independent overlap, exclusive exclusion, all four identity conflict types, supply amendments, same-run retries, and reversed SKU input.
+- Verified 90 affected tests, including all 51 allocation integration cases, Flyway/schema validation, and reservation/ledger/projection behavior. Updated architecture, README, scenarios, linked issue/specification, and system-design notes.
+- Preserved the existing controller edit. Admission control, full projection rebuilding, worker/pool sizes, and API contracts remain outside this change.
+
+### Next possible steps (suggestions)
+- No remaining implementation steps for registration. Measure remaining projection/lock contention before selecting separate admission-control or projection changes.
+
 ## Feature: Isolate browser tests and synthetic publishing in a test harness
 
 - **Specification:** [Feature specification](./specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)

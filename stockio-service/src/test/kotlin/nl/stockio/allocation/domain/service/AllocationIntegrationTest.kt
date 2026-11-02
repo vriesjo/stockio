@@ -11,7 +11,9 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.UUID
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
@@ -64,6 +66,8 @@ import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.mockito.Mockito
 import org.jobrunr.jobs.states.StateName
 import org.jobrunr.scheduling.JobScheduler
@@ -232,6 +236,7 @@ class AllocationIntegrationTest {
         backorderRepository.deleteAll()
         jdbcTemplate.update("DELETE FROM demand_order_line")
         jdbcTemplate.update("DELETE FROM demand_order")
+        jdbcTemplate.update("DELETE FROM allocation_document_lock")
         jdbcTemplate.update("DELETE FROM product_knowledge_chunks")
         jdbcTemplate.update("DELETE FROM product_embeddings")
         runRepository.deleteAll()
@@ -1840,6 +1845,259 @@ class AllocationIntegrationTest {
     }
 
     @Test
+    fun `independent registrations overlap while excluding the projection writer`() {
+        val today = LocalDate.now()
+        val first = reservationRequest("INDEPENDENT-A", 2).copy(
+            inboundShipments = listOf(singleLineShipment("INDEPENDENT-SHIP-A", "MAKI-ZALM", 5, today))
+        )
+        val second = AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            demandOrders = listOf(singleLineOrder("INDEPENDENT-B", "Independent", "MAKI-TONIJN", 2, 1, today, today)),
+            inboundShipments = listOf(singleLineShipment("INDEPENDENT-SHIP-B", "MAKI-TONIJN", 5, today))
+        )
+        val firstRun = allocationRunService.beginOrResume(first, requestHash(first))
+        val secondRun = allocationRunService.beginOrResume(second, requestHash(second))
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                documentService.initialize(firstRun.id, first)
+                executor.submit {
+                    TransactionTemplate(transactionManager).executeWithoutResult {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                        documentService.initialize(secondRun.id, second)
+                    }
+                }.get(10, TimeUnit.SECONDS)
+                executor.submit {
+                    Assertions.assertThrows(PessimisticLockingFailureException::class.java) {
+                        TransactionTemplate(transactionManager).executeWithoutResult {
+                            jdbcTemplate.execute("SET LOCAL lock_timeout = '200ms'")
+                            stockProjectionLockRepository.acquire()
+                        }
+                    }
+                }.get(10, TimeUnit.SECONDS)
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(2, claimRepository.count())
+        Assertions.assertEquals(2, inboundSupplyRepository.count())
+        Assertions.assertTrue(runRepository.findById(firstRun.id).orElseThrow().documentsInitialized)
+        Assertions.assertTrue(runRepository.findById(secondRun.id).orElseThrow().documentsInitialized)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["order", "order-line", "shipment", "shipment-line"])
+    fun `concurrent registrations cannot merge document identities`(identity: String) {
+        val today = LocalDate.now()
+        val isOrder = identity.startsWith("order")
+        val first = AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            demandOrders = if (isOrder) listOf(DemandOrder(
+                "IDENTITY-OWNER", "Owner", 1, today,
+                listOf(DemandOrderLine("IDENTITY-LINE", "MAKI-ZALM", 2, today))
+            )) else emptyList(),
+            inboundShipments = if (isOrder) emptyList() else listOf(InboundShipment(
+                "IDENTITY-OWNER", listOf(InboundShipmentLine("IDENTITY-LINE", "MAKI-ZALM", 5, today))
+            ))
+        )
+        val second = first.copy(
+            requestId = UUID.randomUUID(),
+            demandOrders = first.demandOrders.map { order ->
+                order.copy(
+                    orderId = if (identity == "order") order.orderId else "IDENTITY-OTHER",
+                    lines = order.lines.map { line ->
+                        line.copy(
+                            orderLineId = if (identity == "order-line") line.orderLineId else "OTHER-LINE",
+                            sku = "MAKI-TONIJN"
+                        )
+                    }
+                )
+            },
+            inboundShipments = first.inboundShipments.map { shipment ->
+                shipment.copy(
+                    shipmentId = if (identity == "shipment") shipment.shipmentId else "IDENTITY-OTHER",
+                    lines = shipment.lines.map { line ->
+                        line.copy(
+                            shipmentLineId = if (identity == "shipment-line") line.shipmentLineId else "OTHER-LINE",
+                            sku = "MAKI-TONIJN"
+                        )
+                    }
+                )
+            }
+        )
+        val firstRun = allocationRunService.beginOrResume(first, requestHash(first))
+        val secondRun = allocationRunService.beginOrResume(second, requestHash(second))
+        val backend = ArrayBlockingQueue<Int>(1)
+        val executor = Executors.newSingleThreadExecutor()
+        lateinit var attempt: Future<IllegalArgumentException>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                documentService.initialize(firstRun.id, first)
+                val holder = currentBackendPid()
+                attempt = executor.submit<IllegalArgumentException> {
+                    Assertions.assertThrows(IllegalArgumentException::class.java) {
+                        TransactionTemplate(transactionManager).executeWithoutResult {
+                            jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                            backend.put(currentBackendPid())
+                            documentService.initialize(secondRun.id, second)
+                        }
+                    }
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+            }
+            attempt.get(10, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertFalse(runRepository.findById(secondRun.id).orElseThrow().documentsInitialized)
+        val table = if (isOrder) "demand_order_line" else "inbound_supply"
+        val parent = if (isOrder) "order_id" else "shipment_id"
+        Assertions.assertEquals(1, requireNotNull(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM $table", Int::class.java)))
+        Assertions.assertEquals(
+            "IDENTITY-OWNER:MAKI-ZALM",
+            jdbcTemplate.queryForObject("SELECT $parent || ':' || sku FROM $table", String::class.java)
+        )
+        Assertions.assertEquals(
+            if (isOrder) 1 else 0,
+            claimRepository.count().toInt()
+        )
+        Assertions.assertEquals(0, stockReservationRepository.count())
+    }
+
+    @Test
+    fun `inbound amendments wait for allocation and validate the committed reserved quantity`() {
+        val today = LocalDate.now()
+        val shipment = singleLineShipment("AMENDMENT-SHIP", "MAKI-ZALM", 100, today)
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND, inboundShipments = listOf(shipment)
+        ))
+        val request = reservationRequest("AMENDMENT-ORDER", 50)
+        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        documentService.initialize(run.id, request)
+        val amendment = AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            inboundShipments = listOf(shipment.copy(lines = shipment.lines.map { it.copy(expectedQuantity = 20) }))
+        )
+        val amendmentRun = allocationRunService.beginOrResume(amendment, requestHash(amendment))
+        val backend = ArrayBlockingQueue<Int>(1)
+        val executor = Executors.newSingleThreadExecutor()
+        lateinit var attempt: Future<IllegalArgumentException>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                allocationSkuWorker.allocateNewDemand(
+                    run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines()
+                )
+                val holder = currentBackendPid()
+                attempt = executor.submit<IllegalArgumentException> {
+                    Assertions.assertThrows(IllegalArgumentException::class.java) {
+                        TransactionTemplate(transactionManager).executeWithoutResult {
+                            jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                            backend.put(currentBackendPid())
+                            documentService.initialize(amendmentRun.id, amendment)
+                        }
+                    }
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+            }
+            Assertions.assertTrue(requireNotNull(attempt.get(10, TimeUnit.SECONDS).message).contains("reservations"))
+        } finally {
+            executor.shutdownNow()
+        }
+        val supply = inboundSupplyRepository.findById("AMENDMENT-SHIP").orElseThrow()
+        Assertions.assertEquals(100, supply.expectedQuantity)
+        Assertions.assertEquals(50, supply.quantityReserved)
+        Assertions.assertEquals(50, requireNotNull(jdbcTemplate.queryForObject(
+            "SELECT SUM(quantity) FROM inbound_reservation WHERE shipment_line_id = 'AMENDMENT-SHIP'", Int::class.java
+        )))
+        Assertions.assertFalse(runRepository.findById(amendmentRun.id).orElseThrow().documentsInitialized)
+    }
+
+    @Test
+    fun `registration retries do not hold the run lock while waiting for its SKU worker`() {
+        val today = LocalDate.now()
+        val request = reservationRequest("RETRY-LOCK-ORDER", 2).copy(
+            inboundShipments = listOf(singleLineShipment("RETRY-LOCK-SHIP", "MAKI-ZALM", 5, today))
+        )
+        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        documentService.initialize(run.id, request)
+        val deadline = claimRepository.findById("RETRY-LOCK-ORDER").orElseThrow().reservationExpiresAt
+        val backend = ArrayBlockingQueue<Int>(1)
+        val executor = Executors.newSingleThreadExecutor()
+        lateinit var attempt: Future<*>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                stockProjectionLockRepository.acquireAllocationReadLock()
+                jdbcTemplate.queryForObject(
+                    "SELECT sku FROM allocation_sku_lock WHERE sku = 'MAKI-ZALM' FOR UPDATE", String::class.java
+                )
+                val holder = currentBackendPid()
+                attempt = executor.submit {
+                    TransactionTemplate(transactionManager).executeWithoutResult {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                        backend.put(currentBackendPid())
+                        documentService.initialize(run.id, request)
+                    }
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+                allocationSkuWorker.allocateNewDemand(
+                    run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines()
+                )
+            }
+            attempt.get(10, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(2, inboundSupplyRepository.findById("RETRY-LOCK-SHIP").orElseThrow().quantityReserved)
+        Assertions.assertEquals(deadline, claimRepository.findById("RETRY-LOCK-ORDER").orElseThrow().reservationExpiresAt)
+    }
+
+    @Test
+    fun `registrations acquire overlapping inbound SKUs consistently despite reversed input order`() {
+        val today = LocalDate.now()
+        val skus = listOf("MAKI-KOMKOMMER", "MAKI-ZALM")
+        skus.forEach { sku ->
+            jdbcTemplate.update("INSERT INTO allocation_sku_lock (sku) VALUES (?) ON CONFLICT DO NOTHING", sku)
+        }
+        val requests = listOf(skus, skus.reversed()).mapIndexed { index, ordered ->
+            AllocationRequest(
+                UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+                inboundShipments = listOf(InboundShipment("LOCK-ORDER-SHIP-$index", ordered.map { sku ->
+                    InboundShipmentLine("LOCK-ORDER-LINE-$index-$sku", sku, 5, today)
+                }))
+            )
+        }
+        val runs = requests.map { allocationRunService.beginOrResume(it, requestHash(it)) }
+        val executor = Executors.newFixedThreadPool(2)
+        val attempts = mutableListOf<Future<*>>()
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                stockProjectionLockRepository.acquireAllocationReadLock()
+                jdbcTemplate.queryForObject(
+                    "SELECT sku FROM allocation_sku_lock WHERE sku = ? FOR UPDATE", String::class.java, skus.first()
+                )
+                val holder = currentBackendPid()
+                requests.zip(runs).forEach { (request, run) ->
+                    val backend = ArrayBlockingQueue<Int>(1)
+                    attempts += executor.submit {
+                        TransactionTemplate(transactionManager).executeWithoutResult {
+                            jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                            backend.put(currentBackendPid())
+                            documentService.initialize(run.id, request)
+                        }
+                    }
+                    awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+                }
+            }
+            attempts.forEach { it.get(10, TimeUnit.SECONDS) }
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(4, inboundSupplyRepository.count())
+        runs.forEach { Assertions.assertTrue(runRepository.findById(it.id).orElseThrow().documentsInitialized) }
+    }
+
+    @Test
     fun `resuming initialized documents does not reapply shipment quantities or renew the order deadline`() {
         val today = LocalDate.now()
         val shipment = InboundShipment("INITIALIZED-SHIP", listOf(
@@ -1881,6 +2139,26 @@ class AllocationIntegrationTest {
         Assertions.assertEquals("LEGACY-SHIP", record.sources.single().shipmentId)
         Assertions.assertEquals("LEGACY-SHIP", record.sources.single().shipmentLineId)
         Assertions.assertEquals(2, record.allocatedFromInbound)
+    }
+
+    private fun currentBackendPid(): Int =
+        requireNotNull(jdbcTemplate.queryForObject("SELECT pg_backend_pid()", Int::class.java))
+
+    private fun awaitBlockedBy(holder: Int, waiter: Int) {
+        Awaitility.await().atMost(Duration.ofSeconds(5)).until {
+            // PostgreSQL may report a preceding waiter rather than the root lock holder.
+            jdbcTemplate.queryForObject(
+                """
+                    WITH RECURSIVE blockers(pid) AS (
+                        SELECT unnest(pg_blocking_pids(?))
+                        UNION
+                        SELECT unnest(pg_blocking_pids(pid)) FROM blockers
+                    )
+                    SELECT EXISTS (SELECT 1 FROM blockers WHERE pid = ?)
+                """.trimIndent(),
+                Boolean::class.java, waiter, holder
+            ) == true
+        }
     }
 
     private fun reservationRequest(orderId: String, quantity: Int) = AllocationRequest(

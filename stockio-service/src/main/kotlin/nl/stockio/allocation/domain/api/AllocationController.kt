@@ -29,7 +29,6 @@ class AllocationController(
     private val clock: Clock
 ) : AllocationApi {
 
-    @Suppress("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
     override fun submitAllocationJob(
         request: AllocationRequest,
         async: Boolean

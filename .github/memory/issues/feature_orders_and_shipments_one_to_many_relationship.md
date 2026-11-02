@@ -170,7 +170,7 @@ Initialize all headers and their complete line sets in a short transaction befor
 starting SKU workers:
 
 1. Validate the full document structure and resolve the request/run identity.
-2. Acquire the exclusive projection lock before document locks or mutations.
+2. Acquire the shared projection gate, sorted document identity locks, sorted inbound SKU locks, and then the run row before mutations.
 3. Register order headers and lines, and register or validate shipment documents.
 4. Assign one reservation creation time and deadline per new order header.
 5. Commit initialization, then flatten the lines and dispatch per-SKU allocation.
@@ -183,10 +183,12 @@ The implemented TTL begins when the order header is initialized. This intentiona
 replaces the current per-SKU start time: queueing and slow SKU processing consume
 the same order-level TTL.
 
-`AllocationDocumentService` uses the stronger exclusive lock for this short
-initialization transaction to serialize immutable document registration and
-ownership checks. SKU allocation still uses shared projection locking and
-per-SKU transactions after registration commits.
+The later [concurrent-registration feature](./feature-concurrent-document-registration.md)
+replaced the original globally exclusive initialization phase with shared
+projection coordination and namespaced identity/SKU locks. Independent
+registrations can overlap while ownership checks and inbound amendments remain
+protected. SKU allocation still uses shared projection locking and per-SKU
+transactions after registration commits.
 
 The run stores `documents_initialized` in that same transaction. A retry of an
 initialized run does not reapply shipment quantity updates or recreate documents;

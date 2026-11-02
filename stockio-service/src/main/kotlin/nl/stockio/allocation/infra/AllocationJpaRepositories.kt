@@ -5,6 +5,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.util.Optional
 import java.util.UUID
+import nl.stockio.allocation.domain.port.AllocationDocumentLockRepository
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationRecordRepository
 import nl.stockio.allocation.domain.port.AllocationRunRepository
@@ -58,6 +59,21 @@ interface AllocationRecordJpaRepository : AllocationRecordRepository, JpaReposit
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface AllocationSourceJpaRepository : AllocationSourceRepository, JpaRepository<AllocationSourceEntity, UUID> {
     override fun findAllByAllocationRecordIdIn(recordIds: Collection<UUID>): List<AllocationSourceEntity>
+}
+
+@ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
+interface AllocationDocumentLockJpaRepository :
+    AllocationDocumentLockRepository, JpaRepository<AllocationDocumentLockEntity, String> {
+    @Modifying
+    @Query(
+        value = "INSERT INTO allocation_document_lock (lock_key) VALUES (:lockKey) ON CONFLICT (lock_key) DO NOTHING",
+        nativeQuery = true
+    )
+    override fun insertIfMissing(@Param("lockKey") lockKey: String): Int
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select l from AllocationDocumentLockEntity l where l.lockKey = :lockKey")
+    override fun lockByKey(@Param("lockKey") lockKey: String): AllocationDocumentLockEntity?
 }
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)

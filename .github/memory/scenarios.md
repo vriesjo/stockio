@@ -60,6 +60,7 @@ and independently synchronizes the physical stock ledger.
 - Allocation reserves persisted inventory and inbound supply and refreshes stock projections, but does not synchronize physical stock
 - New orders start as temporary reservations and expire unless confirmed
 - Reusing a `requestId` with the same payload is idempotent; using it with a different payload or operation is rejected
+- Independent document registrations share the projection gate and use sorted document/SKU locks for conflicting identities and inbound amendments; see [Scenario 14](#scenario-14-register-independent-allocation-documents-concurrently)
 
 ### Acceptance Criteria
 - A valid default asynchronous REST request returns `202 Accepted`, `jobId`, `requestId`, and a matching location for status polling
@@ -364,3 +365,31 @@ and independently synchronizes the physical stock ledger.
 - Disabled harness publishing and standalone service startup generate no synthetic allocation traffic
 - Service consumption/topology and application tests remain independent of harness dependencies
 - No performance runner or load-generation guarantee is introduced
+
+## Scenario 14: Register Independent Allocation Documents Concurrently
+
+**Status:** Implemented.
+
+### Gherkin description
+**Given** concurrent allocation requests with independent order and shipment identities \
+**When** their documents are registered before SKU allocation \
+**Then** independent registrations can overlap under the shared projection gate \
+**And** competing order, line, and shipment identities cannot be reassigned or merged \
+**And** inbound amendments serialize with allocation for the affected SKUs without losing reservations \
+**And** exclusive projection, ledger, and expiry operations remain excluded until registration commits
+
+### High-level technical analysis
+- `AllocationDocumentService.initialize` takes the existing shared database projection gate instead of the exclusive gate
+- Namespaced document-identity lock rows protect order headers/lines and shipment headers/lines, including identities that have not yet been inserted; existing primary, unique, and foreign-key constraints remain authoritative
+- Registration acquires the shared gate, all document keys in sorted order, all inbound SKU locks in sorted order, the run row, and then business rows; locking the run after the SKU locks avoids waiting for a worker's SKU while blocking its run foreign-key checks
+- Existing SKU workers retain shared-gate -> SKU -> business-row ordering; projection, ledger, and expiry retain exclusive-gate-first ordering, with no shared-to-exclusive upgrade
+- Inbound registration locks existing shipment supply rows before validation and amendment; initialized/completed runs still skip re-registration and deadline renewal
+- This changes concurrency only, not request contracts, allocation rules, full projection rebuilding, admission control, worker/pool sizes, or cross-SKU transaction boundaries
+
+### Acceptance Criteria
+- Two registrations with disjoint document identities and inbound SKUs can both finish their registration bodies before either transaction commits
+- An exclusive projection-gate request cannot pass an active registration transaction
+- Concurrent duplicate headers and cross-parent order/shipment line IDs are rejected without reparenting, partial registration, or duplicate holds
+- An amendment waiting behind allocation revalidates the committed reserved quantity and cannot reduce expected supply below it or overwrite it
+- Opposite input orders for overlapping inbound SKUs do not cause opposite lock acquisition
+- Existing retry/idempotency, immutable shipment membership, received-supply restrictions, expiry, ledger, and projection behavior remain valid

@@ -32,7 +32,7 @@ interface InboundSupplyJpaRepository : InboundSupplyRepository, JpaRepository<In
     override fun lockAllByShipmentLineIdIn(@Param("lineIds") lineIds: Collection<String>): List<InboundSupplyEntity>
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("select s from InboundSupplyEntity s where s.shipmentId in :shipmentIds")
+    @Query("select s from InboundSupplyEntity s where s.shipmentId in :shipmentIds order by s.shipmentLineId")
     override fun lockAllByShipmentIdIn(@Param("shipmentIds") shipmentIds: Collection<String>): List<InboundSupplyEntity>
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

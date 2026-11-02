@@ -18,7 +18,8 @@ class InboundSupplyService(
     fun registerInboundSupply(shipments: List<InboundShipment>) {
         shipments.sortedBy { it.shipmentId }.forEach { shipment ->
             val exists = shipmentRepository.existsById(shipment.shipmentId)
-            val existing = supplyRepository.findAllByShipmentId(shipment.shipmentId).associateBy { it.shipmentLineId }
+            val existing = supplyRepository.lockAllByShipmentIdIn(listOf(shipment.shipmentId))
+                .associateBy { it.shipmentLineId }
             if (exists) {
                 require(existing.keys == shipment.lines.map { it.shipmentLineId }.toSet()) {
                     "Shipment '${shipment.shipmentId}' cannot change its registered line membership."

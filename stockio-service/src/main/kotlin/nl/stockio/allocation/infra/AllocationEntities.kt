@@ -43,6 +43,14 @@ class AllocationRunEntity(
 )
 
 @Entity
+@Table(name = "allocation_document_lock")
+class AllocationDocumentLockEntity(
+    @Id
+    @Column(name = "lock_key", length = 160)
+    var lockKey: String = ""
+)
+
+@Entity
 @Table(
     name = "allocation_sku_lock"
 )

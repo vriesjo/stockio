@@ -4,6 +4,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.util.Optional
 import java.util.UUID
+import nl.stockio.allocation.infra.AllocationDocumentLockEntity
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.AllocationRecordEntity
 import nl.stockio.allocation.infra.AllocationRunEntity
@@ -45,6 +46,12 @@ interface AllocationRunRepository {
         asOfDate: LocalDate,
         createdAt: Instant
     ): Int
+}
+
+interface AllocationDocumentLockRepository {
+
+    fun insertIfMissing(lockKey: String): Int
+    fun lockByKey(lockKey: String): AllocationDocumentLockEntity?
 }
 
 interface AllocationSkuLockRepository {

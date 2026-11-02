@@ -190,6 +190,17 @@ their holds expire unless confirmed; only confirmed orders project outgoing
 deliveries and shortages. Unreceived persisted shipments remain available to later
 allocation runs.
 
+Document registration uses a shared projection gate and sorted database locks
+for order/shipment header and line identities, including new identities.
+Independent registrations can overlap. Inbound amendments also acquire sorted
+SKU locks and lock existing supply rows before validation, so they cannot
+overwrite concurrent reservations or reduce supply below committed holds.
+The run lock follows SKU acquisition to avoid blocking workers while waiting
+for their SKU. These locks are transaction-scoped and work across service
+instances; Flyway V17 adds the retained identity-lock table. Projection,
+ledger, and expiry operations remain globally exclusive. This is not admission
+control and does not remove the per-request projection rebuild.
+
 The recurring ledger job, or manual `process_stock_ledger`, independently applies
 today's movements. It first cleans up expiry and rebuilds its projection under the
 same exclusive lock and transaction rather than trusting a saved forecast. Due

@@ -7,8 +7,10 @@ import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.api.dto.DemandOrder
 import nl.stockio.allocation.domain.model.AllocationOrder
+import nl.stockio.allocation.domain.port.AllocationDocumentLockRepository
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationRunRepository
+import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
 import nl.stockio.allocation.domain.port.DemandOrderLineRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.AllocationRunEntity
@@ -22,9 +24,10 @@ import org.springframework.transaction.annotation.Transactional
 /**
  * Registers order headers, demand lines, and inbound supply before per-SKU allocation starts.
  *
- * [initialize] runs transactionally, acquiring the exclusive stock-projection lock and locking
- * the allocation run before validating its contract version, request identity, and payload hash.
- * This serializes document registration with competing requests and other projection-lock users.
+ * [initialize] acquires the shared projection gate, sorted document identity locks, sorted inbound
+ * SKU locks, and then the run row before validating its contract version, identity, and payload hash.
+ * Independent registrations can overlap; conflicting identities and supply amendments serialize.
+ * Projection, ledger synchronization, and expiry retain the exclusive gate.
  *
  * For new-demand runs, each new order is claimed by the run and its lines are stored in request
  * order. One reservation deadline is created per order using [Clock] and the configured TTL;
@@ -43,6 +46,8 @@ import org.springframework.transaction.annotation.Transactional
 @Service
 class AllocationDocumentService(
     private val stockProjectionLockRepository: StockProjectionLockRepository,
+    private val documentLockRepository: AllocationDocumentLockRepository,
+    private val skuLockRepository: AllocationSkuLockRepository,
     private val allocationRunRepository: AllocationRunRepository,
     private val orderClaimRepository: AllocationOrderClaimRepository,
     private val demandOrderLineRepository: DemandOrderLineRepository,
@@ -52,10 +57,11 @@ class AllocationDocumentService(
 ) {
     @Transactional
     fun initialize(runId: UUID, request: AllocationRequest) {
-        // Serialize the short registration phase so competing requests cannot merge document identities.
-        stockProjectionLockRepository.acquire()
+        stockProjectionLockRepository.acquireAllocationReadLock()
+        lockDocuments(request)
+        lockInboundSkus(request)
 
-        // Validate the run and skip completed or already-initialized runs, so retries do not reset reservation deadlines.
+        // Do not hold the run lock while waiting for SKU workers that may reference the run through foreign keys.
         val run = checkAndLockRun(runId, request)
         if (run.completed || run.documentsInitialized) return
 
@@ -66,6 +72,29 @@ class AllocationDocumentService(
         inboundSupplyService.registerInboundSupply(request.inboundShipments)
 
         run.documentsInitialized = true
+    }
+
+    private fun lockDocuments(request: AllocationRequest) {
+        val keys = request.demandOrders.flatMap { order ->
+            listOf("order:${order.orderId}") + order.lines.map { "order-line:${it.orderLineId}" }
+        } + request.inboundShipments.flatMap { shipment ->
+            listOf("shipment:${shipment.shipmentId}") + shipment.lines.map { "shipment-line:${it.shipmentLineId}" }
+        }
+        keys.distinct().sorted().forEach { key ->
+            documentLockRepository.insertIfMissing(key)
+            check(documentLockRepository.lockByKey(key) != null) {
+                "Could not acquire allocation document lock '$key'."
+            }
+        }
+    }
+
+    private fun lockInboundSkus(request: AllocationRequest) {
+        request.inboundShipments.flatMap { it.lines }.map { it.sku }.distinct().sorted().forEach { sku ->
+            skuLockRepository.insertIfMissing(sku)
+            check(skuLockRepository.lockBySku(sku) != null) {
+                "Could not acquire allocation lock for SKU '$sku'."
+            }
+        }
     }
 
     // Validate and claim a new-demand order, or verify that an existing claim matches the submitted document.

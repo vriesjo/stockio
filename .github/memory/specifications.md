@@ -302,3 +302,46 @@ service but never depends on the executable service module.
 
 - [Scenario 13: Run Tests and Synthetic Traffic from a Separate Harness](./scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness)
 - [Feature issue: isolate test harness](./issues/feature-isolate-test-harness.md)
+
+## Feature: Allow concurrent allocation document registration
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md)
+- **Bounded Context:** Allocation & Reservation Concurrency
+
+### Overview
+
+Replace globally exclusive document registration with shared projection
+coordination and narrower identity/SKU/supply protection. Keep exclusive
+projection, ledger, and expiry behavior and all existing allocation contracts.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Shared registration gate | Allow independent document registrations to overlap under the existing shared projection lock while excluding exclusive projection, ledger, and expiry transactions. |
+| FR-02 | Document identity protection | Serialize competing order headers/lines and shipment headers/lines, including absent identities, using sorted namespaced database lock rows and existing identity constraints. |
+| FR-03 | Safe inbound amendments | Acquire the existing inbound SKU locks in sorted order and lock supply rows before validating/amending quantities, preserving reservations, receipt state, immutable membership, and SKU metadata. |
+| FR-04 | Consistent transaction ordering | Acquire shared gate -> sorted document keys -> sorted inbound SKUs -> run row -> business rows; preserve worker/exclusive-operation ordering and atomic rollback without lock upgrades. |
+| FR-05 | Retry and compatibility | Preserve initialized/completed-run skipping, order deadlines, request idempotency, allocation rules, wire contracts, and independent per-SKU commits; add concurrency regression coverage and synchronized documentation. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Database-wide coordination | Coordinate across service instances using transaction-scoped database row locks, not in-process synchronization; introduce only an additive lock-table migration. |
+| NFR-02 | Bounded change | Do not implement rate limiting, admission control, background/scoped projection rebuilding, pool tuning, virtual threads, or a new persistence stack in this feature. |
+
+### Plan
+
+1. Add an additive document-lock migration and matching entity/repository port/JPA adapter, following the existing SKU lock pattern.
+2. Switch registration to shared-gate, sorted document/SKU, run-row, and supply-row locking while preserving document validation and retry behavior.
+3. Add deterministic PostgreSQL concurrency tests for independent overlap, exclusive exclusion, identity conflicts, supply amendments versus allocation, and reversed SKU input order.
+4. Validate migration startup and affected allocation/reservation/ledger/projection tests, then synchronize architecture, scenarios, design notes, README, issue, and active context.
+
+### Resources
+
+- [Scenario 14: Register Independent Allocation Documents Concurrently](./scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
+- [Feature issue: concurrent document registration](./issues/feature-concurrent-document-registration.md)
+- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
