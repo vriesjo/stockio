@@ -1,0 +1,8 @@
+/node_modules/
+/playwright-report/
+/test-results/
+/e2e/playwright-report/
+/e2e/test-results/
+*.tsbuildinfo
+.env*
+!.env.example

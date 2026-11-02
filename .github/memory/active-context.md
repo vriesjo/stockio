@@ -1,5 +1,28 @@
 # Active Context
 
+## Feature: Isolate browser tests and synthetic publishing in a test harness
+
+- **Specification:** [Feature specification](./specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
+- **Scenario:** [Scenario 13](./scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness)
+- **Issue:** [Feature issue](./issues/feature-isolate-test-harness.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Complete: independent publisher, relocated browser suite, and performance scaffolding.
+
+### Steps worked on
+- Confirmed `stockio-test-harness/{e2e,performance,publisher}` as the requested layout.
+- Confirmed a harness-only JDBC catalogue connection and performance scaffolding only.
+- Traced publisher, service topology/configuration, shared DTO ownership, Playwright setup, and the existing publisher/browser tests.
+- Linked the specification, scenario, issue, affected boundaries, and validation plan before implementation.
+- Registered the Gradle harness with publisher-specific source sets and shared DTO dependencies only; service and UI runtimes do not depend on it.
+- Moved the fake publisher to a non-web application with opt-in scheduling, its own read-only JDBC datasource and business clock, and compatible RabbitMQ JSON. Removed its service code/configuration and obsolete integration-test override.
+- Moved Playwright spec/configuration and npm ownership to the harness. UI build/start and mock defaults work for npm and direct IntelliJ launches; added Node 22 configuration and Make targets.
+- Added performance guidance only, updated architecture/README, and rebased the still-draft producer-starter handoff on the new harness boundary.
+- Verified five publisher/JDBC tests, four affected service tests, 19 UI unit cases, UI/harness typechecking, the relocated browser flow, default-disabled non-web startup, and one-way runtime dependency graphs.
+
+### Next possible steps (suggestions)
+- No remaining implementation steps. Performance tooling and workloads remain explicitly deferred.
+
 ## Feature: Replace the frontend MCP bridge with an Axios service client
 
 - **Specification:** [Feature specification](./specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
@@ -61,7 +84,7 @@ Tell us what is the current active context for the agent. This should include:
 ### Steps worked on
 - Confirmed the feature targets RabbitMQ producer reuse, not Kafka.
 - Defined separate allocation-contract and producer-starter library modules, with Spring Boot auto-configuration registered through `AutoConfiguration.imports`.
-- Recorded the boundary that keeps demo request generation and scheduling in `stockio-service`, and keeps listeners, queue/dead-letter topology, and JobRunr fallback consumer-side.
+- Updated the boundary to keep JDBC demo request generation and opt-in scheduling in `stockio-test-harness/publisher`, and keep listeners, queue/dead-letter topology, and JobRunr fallback consumer-side.
 - Added Scenario 11, linked the feature specification and issue document, and documented the implementation plan and compatibility constraints.
 
 ### Next possible steps (suggestions)

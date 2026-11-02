@@ -100,9 +100,6 @@ stockio:
       dead-letter-exchange: ${ALLOCATION_RABBITMQ_DEAD_LETTER_EXCHANGE:stockio.allocation.dlx}
       dead-letter-routing-key: ${ALLOCATION_RABBITMQ_DEAD_LETTER_ROUTING_KEY:allocation.failed}
       dead-letter-queue: ${ALLOCATION_RABBITMQ_DEAD_LETTER_QUEUE:stockio.allocation.dead}
-      publisher:
-        enabled: ${ALLOCATION_RABBITMQ_PUBLISHER_ENABLED:true}
-        interval: ${ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL:1000}
 
   report:
     directory: ${REPORT_DIR:${user.home}/itzitzo-mcp/reports}

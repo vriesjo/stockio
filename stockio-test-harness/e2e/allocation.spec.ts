@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { expect, test } from "@playwright/test";
-import type { ProductAllocationRequest } from "../lib/allocation";
+import type { ProductAllocationRequest } from "../../stockio-api/src/main/kotlin/nl/stockio/ui/lib/allocation";
 
 test("submits the form through the Next proxy and preserves identity on retry", async ({ page }) => {
   const requests: ProductAllocationRequest[] = [];

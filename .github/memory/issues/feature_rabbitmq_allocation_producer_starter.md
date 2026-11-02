@@ -21,7 +21,7 @@ The proposed deliverables are:
   configuration properties, and Spring Boot auto-configuration.
 
 This is producer-only. Keep sample-data creation and scheduling in
-`stockio-service`, and keep the listener, queue/dead-letter topology, and
+`stockio-test-harness/publisher`, and keep the listener, queue/dead-letter topology, and
 JobRunr fallback in the consumer application.
 
 ## Scenario
@@ -41,11 +41,11 @@ message
 ### High-level technical analysis
 
 - The existing `AllocationRequestPublisher` is not a reusable sender as-is: it
-  also generates sample data using `ProductRepository`, `Clock`, and a scheduled
-  method.
+  also generates sample data using a harness-only JDBC catalogue connection,
+  `Clock`, and an opt-in scheduled method.
 - `AllocationRequest` and its nested request models currently live in the
-  executable service module at
-  `stockio-service/src/main/kotlin/nl/stockio/allocation/domain/api/dto/AllocationRequest.kt`.
+  shared `stockio-api` DTO library under `nl.stockio.api.dto`, not the executable
+  service module.
 - A contracts artifact must provide the wire types without requiring consumers
   to depend on the service's persistence, web, JobRunr, and application code.
 - The starter should provide a publisher backed by the host application's
@@ -85,7 +85,7 @@ message
 | FR-01 | Reusable allocation contract | Extract the allocation-request wire model into a versioned contracts module and preserve the JSON shape accepted by the existing Stockio listener. |
 | FR-02 | Typed RabbitMQ publisher | Provide a publisher API that sends an allocation request through the host application's `RabbitTemplate` using configured exchange and routing-key values. |
 | FR-03 | Spring Boot auto-configuration | Register producer auto-configuration through `AutoConfiguration.imports`; bind configuration properties, require explicit enablement, and back off when the host provides equivalent beans. |
-| FR-04 | Reuse from Stockio sample publisher | Adapt the existing scheduled sample publisher to use the reusable publisher while keeping product lookup, sample generation, and scheduling in `stockio-service`. |
+| FR-04 | Reuse from Stockio sample publisher | Adapt the existing scheduled sample publisher to use the reusable publisher while keeping JDBC catalogue lookup, sample generation, and opt-in scheduling in `stockio-test-harness/publisher`. |
 | FR-05 | External artifact consumption | Package the contract and producer starter as versioned, independently consumable artifacts without depending on the executable service module. |
 | FR-06 | Producer-only boundary | Keep the allocation listener, queue and dead-letter topology, JobRunr fallback, and consumer retry behavior in `stockio-service`. |
 
@@ -102,14 +102,14 @@ message
 
 ### Current implementation
 
-- The root `settings.gradle` includes `stockio-service` and `stockio-api`.
-- The root `build.gradle` applies the Spring Boot plugin and common Kotlin
-  plugins across all subprojects. A reusable library module will require
-  per-module plugin application so Boot's executable-application plugin is not
-  imposed on library artifacts.
+- The root `settings.gradle` includes `stockio-service`, `stockio-api`, and
+  `stockio-test-harness`.
+- The root `build.gradle` applies common Kotlin plugins across subprojects and
+  the Spring Boot application plugin only to the service and harness
+  publisher. Preserve that boundary for future reusable libraries.
 - `AllocationRequestPublisher` in
-  `stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/publisher/AllocationRequestPublisher.kt`
-  depends on `RabbitTemplate`, `ProductRepository`, `Clock`, exchange/routing-key
+  `stockio-test-harness/publisher/src/main/kotlin/nl/stockio/harness/publisher/AllocationRequestPublisher.kt`
+  depends on `RabbitTemplate`, `JdbcTemplate`, `Clock`, exchange/routing-key
   values, and `@Scheduled`; it creates five random sample orders and shipments
   before calling `convertAndSend`.
 - `AllocationRabbitConfiguration` and `AllocationRabbitListener` share a source
@@ -117,19 +117,19 @@ message
   `stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/listener/AllocationRabbitListener.kt`.
   They declare the consumer exchange, request queue, dead-letter exchange and
   queue, bindings, message converter, and listener retry/fallback behavior.
-- Rabbit connection settings and current exchange, routing-key, queue, and
-  publisher settings are configured in
-  `stockio-service/src/main/resources/application.yml`.
-- The message wire types are coupled to service code and are currently in the
-  allocation API DTO package. Moving the request wire types needs to preserve
-  the JSON contract and update service imports.
+- Consumer Rabbit connection/exchange/routing-key/queue settings remain in
+  `stockio-service/src/main/resources/application.yml`; the harness has its own
+  publisher connection/exchange/routing-key/enablement settings.
+- The message wire types already live in the `stockio-api` library under
+  `nl.stockio.api.dto`. A further contracts extraction must preserve JSON,
+  type-header compatibility, and both service and harness imports.
 
 ### Proposed implementation
 
 1. Create a contracts module containing only the allocation request message
    types needed by producers and consumers: `AllocationRequest`,
    `AllocationRunType`, `DemandOrder`, `DemandOrderLine`, `InboundShipment`, and
-   `InboundShipmentLine`. Keep unrelated request DTOs in the service.
+   `InboundShipmentLine`. Keep unrelated request DTOs in the existing API library.
 2. Add a producer starter module with a public publisher API such as
    `AllocationRequestPublisher.publish(request)`, an immutable
    `@ConfigurationProperties` model, and a conditional auto-configuration.
@@ -149,7 +149,8 @@ message
    publication for external consumption.
 6. Adapt the Stockio scheduled sample publisher to construct the same requests
    and delegate sending to the starter. Keep its product lookup, sample
-   generation, scheduling, and existing operational enablement in the service.
+   generation, scheduling, and explicit operational enablement in
+   `stockio-test-harness/publisher`.
 7. Leave `AllocationRabbitListener`, consumer queue/DLX declarations, and
    JobRunr fallback in `stockio-service`.
 
@@ -181,7 +182,7 @@ Final property names should be implemented through the starter's
   conversion, and propagation of conversion/send errors.
 - Contract serialization tests verify JSON property names, enum values, and
   dates against the existing listener's accepted payload.
-- A Stockio service test verifies the scheduled sample publisher delegates to
+- A harness test verifies the scheduled sample publisher delegates to
   the reusable publisher and still constructs valid messages.
 - Build checks verify the new modules are libraries, artifacts can be
   published/consumed in a local test setup, and the service consumer compiles
@@ -219,8 +220,9 @@ Final property names should be implemented through the starter's
    publication/versioning support, and adjust root Gradle plugin application
    so application plugins are not forced onto library modules.
 4. Adapt the scheduled sample publisher to call the reusable publisher; retain
-   sample generation and scheduling in the service, and retain listener
-   topology and consumer behavior there.
+   JDBC catalogue lookup and opt-in scheduling in
+   `stockio-test-harness/publisher`, and retain listener topology and consumer
+   behavior in the service.
 5. Add focused auto-configuration, serialization, send-routing, override,
    failure, and compatibility tests, plus a consumer-compatible message test.
 

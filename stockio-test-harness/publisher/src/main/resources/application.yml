@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: stockio-test-harness-publisher
+  main:
+    web-application-type: none
+    banner-mode: off
+  datasource:
+    url: ${HARNESS_DB_URL:jdbc:postgresql://localhost:5437/logistics}
+    username: ${HARNESS_DB_USERNAME:logistics}
+    password: ${HARNESS_DB_PASSWORD:logistics}
+    hikari:
+      pool-name: HarnessCataloguePool
+      read-only: true
+      maximum-pool-size: 2
+      minimum-idle: 0
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:stockio}
+    password: ${RABBITMQ_PASSWORD:stockio}
+    virtual-host: ${RABBITMQ_VIRTUAL_HOST:/}
+
+stockio:
+  harness:
+    zone: ${ALLOCATION_LEDGER_SYNC_ZONE:UTC}
+  allocation:
+    rabbitmq:
+      exchange: ${ALLOCATION_RABBITMQ_EXCHANGE:stockio.allocation.exchange}
+      routing-key: ${ALLOCATION_RABBITMQ_ROUTING_KEY:allocation.request}
+      publisher:
+        enabled: ${ALLOCATION_RABBITMQ_PUBLISHER_ENABLED:false}
+        interval: ${ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL:1000}

@@ -42,7 +42,7 @@ publish Stockio `AllocationRequest` messages without depending on the executable
 `stockio-service` module. Extract the wire contract into a shared artifact and
 register the typed RabbitMQ publisher through
 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`.
-Keep the current sample-data generation in `stockio-service`; the reusable
+Keep sample-data generation in `stockio-test-harness/publisher`; the reusable
 starter owns publishing and configuration, not demo scheduling or consumer
 behavior.
 
@@ -53,7 +53,7 @@ behavior.
 | FR-01 | Reusable allocation contract | Extract the allocation-request wire model into a versioned contracts module and preserve the JSON shape accepted by the existing Stockio listener. |
 | FR-02 | Typed RabbitMQ publisher | Provide a publisher API that sends an allocation request through the host application's `RabbitTemplate` using configured exchange and routing-key values. |
 | FR-03 | Spring Boot auto-configuration | Register producer auto-configuration through `AutoConfiguration.imports`; bind configuration properties, require explicit enablement, and back off when the host provides equivalent beans. |
-| FR-04 | Reuse from Stockio sample publisher | Adapt the existing scheduled sample publisher to use the reusable publisher while keeping product lookup, sample generation, and scheduling in `stockio-service`. |
+| FR-04 | Reuse from Stockio sample publisher | Adapt the existing scheduled sample publisher to use the reusable publisher while keeping JDBC catalogue lookup, sample generation, and opt-in scheduling in `stockio-test-harness/publisher`. |
 | FR-05 | External artifact consumption | Package the contract and producer starter as versioned, independently consumable artifacts without depending on the executable service module. |
 | FR-06 | Producer-only boundary | Keep the allocation listener, queue and dead-letter topology, JobRunr fallback, and consumer retry behavior in `stockio-service`. |
 
@@ -71,7 +71,7 @@ behavior.
 1. Extract the allocation request wire types into a versioned `stockio-allocation-contracts` module and update service imports without changing the existing JSON contract.
 2. Add a reusable RabbitMQ producer starter with configuration properties, a typed publisher, conditional auto-configuration, and the `AutoConfiguration.imports` registration.
 3. Configure the starter as a library module, add artifact publication/versioning support, and adjust root Gradle plugin application so application plugins are not forced onto library modules.
-4. Adapt the scheduled sample publisher to call the reusable publisher; retain sample generation and scheduling in the service, and retain listener topology and consumer behavior there.
+4. Adapt the scheduled sample publisher in `stockio-test-harness/publisher` to call the reusable publisher; retain JDBC catalogue lookup and opt-in scheduling in the harness, and retain listener topology and consumer behavior in the service.
 5. Add focused auto-configuration, serialization, send-routing, override, failure, and compatibility tests, plus a consumer-compatible message test.
 
 ### Resources
@@ -257,3 +257,48 @@ and scoped validation are complete; priority remains unset.
 - [Scenario 1: Allocate a Product by Name](./scenarios.md#scenario-1-allocate-a-product-by-name)
 - [Feature issue: Replace the frontend MCP bridge with an Axios service client](./issues/feature-frontend-axios-service-client.md)
 - [Frontend architecture boundary](./architecture.md#frontend-http-integration)
+
+## Feature: Isolate browser tests and synthetic publishing in a test harness
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md)
+- **Bounded Context:** Test Infrastructure & Allocation Messaging
+
+### Overview
+
+Create `stockio-test-harness/` with `e2e/`, `performance/`, and `publisher/`.
+Move the existing mock-backed Playwright flow and synthetic RabbitMQ publisher
+out of the UI/service. The user selected a harness-only JDBC catalogue
+connection and performance scaffolding only. The harness shares DTOs with the
+service but never depends on the executable service module.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Separate harness layout | Register `:stockio-test-harness` and create `e2e/`, `performance/`, and `publisher/`, with independent npm and Gradle commands. |
+| FR-02 | Relocate browser coverage | Move the existing Playwright configuration, allocation spec, and dependency ownership into the harness; retain isolated mock traffic, UI startup, and all existing observable assertions. |
+| FR-03 | Standalone JDBC publisher | Move the synthetic publisher and focused tests into `publisher/`; select catalogue SKUs using a harness-only read-only JDBC datasource and shared DTOs, without service classes or migrations. |
+| FR-04 | Opt-in compatible traffic | Keep generated request/date/quantity/supply rules and JSON/routing compatible; require explicit publisher enablement and remove synthetic publisher startup/configuration from the service. |
+| FR-05 | Performance scaffolding and guidance | Reserve `performance/` with guidance only, add harness launch/test instructions and Make targets, and synchronize affected repository documentation. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | One-way dependencies | The harness may depend on `stockio-api` contracts and the running UI/service infrastructure; neither service nor UI runtime may depend on the harness. |
+| NFR-02 | Safe operational boundaries | Publisher scheduling is disabled by default; document test-only side effects, use read-only catalogue connections, and leave consumer topology and schema ownership in the service. |
+| NFR-03 | Preserved contracts | Preserve allocation wire fields, dates, paired demand/supply eligibility, browser behavior, and independent UI/service startup; do not introduce a performance framework or unrelated producer starter. |
+
+### Plan
+
+1. Register the harness module and its publisher source sets, bootstrap a non-web publisher application, and retain shared DTO dependencies without importing service code.
+2. Move the publisher to harness-owned JDBC catalogue lookup, JSON conversion, clock, and opt-in scheduling; remove service-owned publisher code/configuration and relocate focused tests.
+3. Move Playwright configuration/specs and npm dependencies into the harness, wire UI startup and mock defaults, and create the performance guidance and Make targets.
+4. Verify publisher/JDBC/serialization tests, service compilation and affected tests, UI checks and relocated browser coverage; synchronize architecture, scenarios, specifications, issues, README, and active context.
+
+### Resources
+
+- [Scenario 13: Run Tests and Synthetic Traffic from a Separate Harness](./scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness)
+- [Feature issue: isolate test harness](./issues/feature-isolate-test-harness.md)

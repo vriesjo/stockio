@@ -88,6 +88,12 @@ Browser fetch POST /api/allocate (same origin)
 
 ### Completed validation
 
+The later [test-harness extraction](./feature-isolate-test-harness.md) moved
+browser-test ownership to `stockio-test-harness/e2e/` and its npm package.
+Use `make test-e2e` or the harness's `npm run test:e2e` for current browser
+checks; the relocated configuration also builds the UI for direct IDE runs.
+The commands below record the original feature validation.
+
 - UI `npm test` (19 cases), `npm run typecheck`, and `npm run test:e2e`
   (production build plus the browser flow) passed.
 - The default mock-service URL is set in `playwright.config.ts`, not only in

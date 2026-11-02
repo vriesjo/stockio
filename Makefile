@@ -1,4 +1,4 @@
-.PHONY: run-ui run-api run-service build test up up-rabbitmq up-postgres up-ollama down logs
+.PHONY: run-ui run-api run-service run-publisher test-e2e build test up up-rabbitmq up-postgres up-ollama down logs
 
 run-api: run-ui
 
@@ -8,6 +8,13 @@ run-ui:
 
 run-service:
 	./gradlew :stockio-service:bootRun
+
+run-publisher:
+	ALLOCATION_RABBITMQ_PUBLISHER_ENABLED=true ./gradlew :stockio-test-harness:bootRun
+
+test-e2e:
+	cd stockio-test-harness && \
+		bash -c '. "$${NVM_DIR:-$$HOME/.nvm}/nvm.sh" --no-use && nvm use && exec npm run test:e2e'
 
 build:
 	./gradlew clean build --no-daemon

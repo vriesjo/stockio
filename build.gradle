@@ -282,3 +282,37 @@ project(":stockio-api") {
         implementation 'jakarta.validation:jakarta.validation-api'
     }
 }
+
+project(":stockio-test-harness") {
+    apply plugin: 'org.springframework.boot'
+    group = 'nl.stockio.test'
+    version = '0.0.1-SNAPSHOT'
+
+    springBoot {
+        mainClass = 'nl.stockio.harness.publisher.AllocationPublisherApplicationKt'
+    }
+
+    sourceSets {
+        main {
+            kotlin.setSrcDirs(['publisher/src/main/kotlin'])
+            resources.setSrcDirs(['publisher/src/main/resources'])
+        }
+        test {
+            kotlin.setSrcDirs(['publisher/src/test/kotlin'])
+        }
+    }
+
+    dependencies {
+        implementation project(":stockio-api")
+        implementation 'org.springframework.boot:spring-boot-starter-amqp'
+        implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+        implementation 'org.springframework.boot:spring-boot-starter-json'
+        implementation 'io.github.oshai:kotlin-logging-jvm:8.0.4'
+        runtimeOnly 'org.postgresql:postgresql'
+
+        testImplementation 'org.springframework.boot:spring-boot-starter-test'
+        testImplementation 'org.testcontainers:junit-jupiter'
+        testImplementation 'org.testcontainers:postgresql'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    }
+}

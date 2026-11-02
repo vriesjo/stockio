@@ -12,6 +12,7 @@ pluginManagement {
 rootProject.name = 'stockio'
 
 // Keep logical project names independent of their physical module directories.
-include ':stockio-service', ':stockio-api'
+include ':stockio-service', ':stockio-api', ':stockio-test-harness'
 project(':stockio-service').projectDir = file('stockio-service')
 project(':stockio-api').projectDir = file('stockio-api')
+project(':stockio-test-harness').projectDir = file('stockio-test-harness')

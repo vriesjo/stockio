@@ -56,12 +56,25 @@ Requests time out after 180 seconds, but processing may continue server-side;
 retrying without editing reuses the same request ID. Automatic retries are
 disabled. The service owns allocation, persistence, projections, and backorders.
 
-Run browser tests from the UI directory with `npm run test:e2e`. They start
+Browser tests now live in [`stockio-test-harness/e2e/`](../stockio-test-harness/e2e/).
+Install the harness dependencies and run `make test-e2e` from the repository
+root, or `npm run test:e2e` from `stockio-test-harness`. They build/start
 Next.js and their own mock backend; `stockio-service` is not required.
-`playwright.config.ts` defaults `STOCKIO_API_URL` to the mock server on
-`127.0.0.1:18182`, including IntelliJ launches. For direct IDE launches,
-run `npm run build` first because Playwright starts the production UI.
-Do not point these mock-backed tests at the real service on `8080`.
+`stockio-test-harness/e2e/playwright.config.ts` defaults `STOCKIO_API_URL` to
+`127.0.0.1:18182`, including IntelliJ launches. Do not point these mock-backed
+tests at the real service on `8080`.
+
+### Test harness and synthetic traffic
+
+The [`stockio-test-harness`](../stockio-test-harness/README.md) module contains
+browser tests (`e2e/`), future performance-test guidance (`performance/`),
+and a standalone synthetic allocation publisher (`publisher/`).
+Starting this service no longer publishes fake requests. To generate test
+traffic explicitly after the service schema/catalogue and RabbitMQ topology
+exist, run `make run-publisher` in another terminal. It uses its own read-only
+JDBC catalogue connection (`HARNESS_DB_*`) and the existing shared request DTOs;
+it has no dependency on service implementation classes. Use dedicated
+non-production infrastructure: consumed messages create real reservations.
 
 ### Local embedding model
 

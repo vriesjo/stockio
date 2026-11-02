@@ -4,7 +4,7 @@
 - **Backend:** Spring Boot (Kotlin)
 - **Frontend:** React, NextJs
 - **Database:** PostgreSQL (Spring Data JPA, Flyway, pgvector)
-- **Testing:** JUnit, Testcontainers, Mockito
+- **Testing:** JUnit, Testcontainers, Mockito, Playwright
 - **Build:** Gradle
 
 ## Overview
@@ -31,12 +31,13 @@ to read and replace snapshots in the same transaction. Snapshots are not JPA-man
 
 ## Modules and technology
 
-The Gradle build includes two modules:
+The Gradle build includes three modules:
 
 | Module | Purpose |
 | --- | --- |
 | `:stockio-service` (`stockio-service/`) | Spring Boot application, MCP tools, REST API, allocation workflows, persistence, CSV import, and Excel generation. |
 | `:stockio-api` (`stockio-api/`) | Shared Kotlin DTO library and OpenAPI specifications/generation tasks consumed by the service; also contains the independently run Next.js UI. It has no Spring application entry point. |
+| `:stockio-test-harness` (`stockio-test-harness/`) | Test-only tooling: mock-backed Playwright tests in `e2e/`, future performance guidance in `performance/`, and an independently run JDBC/RabbitMQ sample publisher with tests in `publisher/`. Depends on API DTOs, not the service. |
 
 The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL with pgvector, Flyway, RabbitMQ, JobRunr, Apache POI, HikariCP, and Spring Boot Actuator. Natural-language product allocation also uses the Tavily search API and Ollama embeddings. Allocation work is parallelized across SKUs with Kotlin coroutines.
 
@@ -51,7 +52,8 @@ flowchart LR
     API -->|"Application data and JobRunr storage"| DB[("PostgreSQL + pgvector")]
     API -->|"Product lookup"| Tavily["Tavily Search API"]
     API -->|"Embeddings"| Ollama["Ollama"]
-    API -->|"Publish allocation requests"| Rabbit["RabbitMQ"]
+    Harness["Test harness publisher (opt-in)"] -->|"Read catalogue SKUs through JDBC"| DB
+    Harness -->|"Publish synthetic allocation requests"| Rabbit["RabbitMQ"]
     Rabbit -->|"Deliver allocation requests"| API
     API -->|"Read"| CSV["Configured allocation CSV"]
     API -->|"Write .xlsx"| Reports["Report directory"]
@@ -73,7 +75,8 @@ IDE/`:stockio-service:bootRun` respectively. There is no Spring frontend backend
 child JVM, fat-JAR startup dependency, bundled UI/service JAR, or browser CORS
 requirement. `stockio-api` builds a normal Kotlin DTO JAR, retains OpenAPI
 generation tasks, and is a compile/runtime library dependency of the service;
-only `stockio-service` applies the Spring Boot application plugin.
+`stockio-service` and the separate test-harness publisher apply the Spring Boot
+application plugin; the API library does not.
 The Spring Boot BOM's Kotlin version is explicitly aligned with the Kotlin
 plugin so its compiler/build-tools dependencies are not downgraded in the
 non-Boot library module.
@@ -90,6 +93,22 @@ service MCP tools remain registered.
 See the [feature specification](./specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client),
 [Scenario 12](./scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http),
 and [issue handoff](./issues/feature-frontend-axios-service-client.md).
+
+### Test harness boundary
+
+`stockio-test-harness` owns browser tests and the synthetic publisher rather
+than shipping them as UI or service runtime code. Its npm package owns
+Playwright configuration/dependencies and starts the existing UI against a
+dedicated localhost mock. Its non-web Spring Boot publisher reads only SKUs
+from the service-owned `products` table through a read-only harness datasource,
+uses shared `stockio-api` DTOs and compatible JSON, and requires explicit
+enablement. It does not import service repositories, entities, or application
+services, migrate databases, or declare consumer topology. `performance/`
+contains guidance only; no performance runner is implemented.
+
+See [Scenario 13](./scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness),
+the [feature specification](./specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness),
+and [harness commands/configuration](../../stockio-test-harness/README.md).
 
 ## C4 - level 3 component diagram
 
@@ -162,7 +181,7 @@ flowchart LR
             PersistenceAdapters["Spring Data JPA + JdbcTemplate<br/>PostgreSQL entities, locks, snapshots, pgvector"]
             SearchAdapter["Tavily / Ollama HTTP clients<br/>Timeouts and response validation"]
             JobAdapter["JobRunr integration<br/>Execution, retries, job storage"]
-            AmqpAdapter["AllocationRequestPublisher / Rabbit configuration<br/>Demo requests and queue bindings"]
+            AmqpAdapter["Rabbit configuration<br/>Consumer exchange, queue and dead-letter bindings"]
             FileAdapter["CSV reader / Apache POI<br/>Filesystem import and .xlsx reports"]
         end
     end
@@ -325,8 +344,9 @@ flowchart TB
     Vectors --> DB
 ```
 
-The optional demo publisher is another RabbitMQ producer inside the service; its
-behavior is described in the [RabbitMQ flow](#rabbitmq-intake-and-retry-flow).
+The optional demo publisher is a separate `stockio-test-harness` process, not
+part of the service; its behavior is described in the
+[RabbitMQ flow](#rabbitmq-intake-and-retry-flow).
 These components run within one Spring Boot application, not as separately
 deployed services.
 
@@ -844,7 +864,12 @@ against JobRunr's actual lambda parser by the mocked listener tests and can fail
 during enqueue. A single executor invocation is the supported scheduling shape;
 successful unit tests alone do not prove durable fallback acceptance.
 
-The optional `AllocationRequestPublisher` emits sample requests at a fixed interval when enabled. In the current `application.yml`, it is enabled by default with a one-second interval; disable it in non-demo deployments with `ALLOCATION_RABBITMQ_PUBLISHER_ENABLED=false`.
+The optional harness `AllocationRequestPublisher` emits sample requests at a
+fixed interval only when explicitly enabled. Its own `application.yml` defaults
+`ALLOCATION_RABBITMQ_PUBLISHER_ENABLED` to `false` and the interval to one second.
+`make run-publisher` explicitly enables it. Service startup no longer generates
+synthetic traffic. Catalogue SKUs are read through a harness-only JDBC
+connection; the service still owns schema migrations and consumer topology.
 
 Its sample shipments arrive one to three days ahead, and generated orders are
 due three days ahead with matched quantities. This makes inbound supply eligible
@@ -997,7 +1022,7 @@ receipt commit and enqueue can lose the trigger, and enqueue failure cannot
 roll back the receipt. A later ledger run sees those lines as already received
 and need not recreate the trigger. Manual fulfillment remains a recovery option.
 
-`StockLedgerSyncJob` registers the stable JobRunr recurring ID `sync-stock-ledger`. The default five-field cron `0 0,12 * * *` runs at midnight and noon UTC. The configured zone also supplies the shared business `Clock`, including REST date validation, sample publishing, CSV imports, expiry, and projection dates. Each scheduled invocation selects today after acquiring the ledger lock, so delayed retries do not reuse yesterday's allocation date.
+`StockLedgerSyncJob` registers the stable JobRunr recurring ID `sync-stock-ledger`. The default five-field cron `0 0,12 * * *` runs at midnight and noon UTC. The configured zone also supplies the service's shared business `Clock`, including REST date validation, CSV imports, expiry, and projection dates. The separate harness publisher creates its own clock using the same zone setting. Each scheduled invocation selects today after acquiring the ledger lock, so delayed retries do not reuse yesterday's allocation date.
 
 Allocation and explicit backorder fulfillment refresh forecasts but never trigger physical synchronization. Ledger sync still rebuilds its own projection under the same transaction and lock immediately before applying it: an earlier forecast may contain expired or changed holds. Until sync runs, arrived supply remains inbound and due confirmed deliveries remain reserved in live stock. Expected arrival and due delivery are still date-driven assumptions, not warehouse event confirmations.
 
@@ -1318,8 +1343,10 @@ Flyway migrations V1-V16 create and evolve these tables, seed products, add dail
 | `ALLOCATION_RABBITMQ_ROUTING_KEY` | `allocation.request` | Allocation request routing key. |
 | `ALLOCATION_RABBITMQ_REQUEST_QUEUE` | `stockio.allocation.requests` | Allocation request queue. |
 | `ALLOCATION_RABBITMQ_DEAD_LETTER_QUEUE` | `stockio.allocation.dead` | Queue for rejected requests. |
-| `ALLOCATION_RABBITMQ_PUBLISHER_ENABLED` | `true` | Enables the demo request publisher in the current application config. |
-| `ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL` | `1000` | Demo publisher interval in milliseconds. |
+| `ALLOCATION_RABBITMQ_PUBLISHER_ENABLED` | `false` | Harness-only opt-in synthetic publishing; not a service property. |
+| `ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL` | `1000` | Harness-only publisher interval/initial delay in milliseconds. |
+| `HARNESS_DB_URL` | `jdbc:postgresql://localhost:5437/logistics` | Harness-only read-only catalogue JDBC URL; the service owns migrations. |
+| `HARNESS_DB_USERNAME` / `HARNESS_DB_PASSWORD` | `logistics` / `logistics` | Harness-only local defaults; prefer SELECT-only catalogue credentials. |
 | `JOBRUNR_DASHBOARD_PORT` | `8181` | JobRunr dashboard port. |
 | `STOCKIO_API_URL` | `http://127.0.0.1:8080` | Next.js server-side Axios base URL for the independently running service. |
 

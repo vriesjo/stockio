@@ -1,0 +1,18 @@
+{
+  "name": "stockio-test-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}

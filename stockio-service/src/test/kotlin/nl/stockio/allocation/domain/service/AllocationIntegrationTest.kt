@@ -97,7 +97,6 @@ import org.testcontainers.junit.jupiter.Testcontainers
     properties = [
         "spring.rabbitmq.listener.simple.auto-startup=false",
         "jobrunr.dashboard.enabled=false",
-        "stockio.allocation.rabbitmq.publisher.enabled=false",
         "stockio.allocation.ledger-sync.enabled=false",
         "stockio.allocation.reservation.expiry-interval=1d",
         "stockio.allocation.reservation.expiry-batch-size=2"

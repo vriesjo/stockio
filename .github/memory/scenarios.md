@@ -289,7 +289,7 @@ and independently synchronizes the physical stock ledger.
 - A Spring Boot producer starter provides the typed publisher and is registered through `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`
 - The starter uses the host application's Spring AMQP `RabbitTemplate` and externalized properties for the exchange and routing key
 - Auto-configuration is opt-in and backs off when the host application supplies its own publisher or message converter
-- The scheduled sample-request generator remains application-specific; listener, queue, dead-letter, and JobRunr behavior remain in the Stockio service
+- The scheduled sample-request generator remains in `stockio-test-harness/publisher` with JDBC catalogue lookup and opt-in scheduling; listener, queue, dead-letter, and JobRunr behavior remain in the Stockio service
 
 ### Acceptance Criteria
 - An independent Spring Boot application can import the published producer starter and allocation-contract artifacts without depending on `stockio-service`
@@ -334,3 +334,33 @@ and independently synchronizes the physical stock ledger.
 - Unreachable upstream and timeout conditions return non-success responses (`502` and `504` respectively); timeout messaging warns that allocation may still complete
 - No automatic retry occurs; unchanged manual retries preserve `requestId`, and editing an attempted request generates a new ID
 - The service's shared DTO compilation and OpenAPI interface generation still work after bridge removal; `ProductAllocationTools.kt` and `allocate_product_by_name` are removed while unrelated MCP tools remain available
+
+## Scenario 13: Run Tests and Synthetic Traffic from a Separate Harness
+
+**Status:** Implemented.
+
+### Gherkin description
+**Given** `stockio-test-harness` contains `e2e/`, `performance/`, and `publisher/` \
+**When** a developer runs its browser tests or explicitly enables its allocation publisher \
+**Then** Playwright exercises the Next.js UI against an isolated mock backend \
+**And** the standalone publisher reads catalogue SKUs through its own JDBC connection and publishes compatible allocation requests to RabbitMQ \
+**And** starting `stockio-service` alone never starts a synthetic publisher \
+**And** `performance/` is reserved for future tooling rather than claiming an implemented load test
+
+### High-level technical analysis
+- The harness is a separate Gradle module and npm package; publisher sources/resources/tests live under `publisher/`, and Playwright configuration/specs live under `e2e/`
+- The publisher depends on shared `stockio-api` DTOs, Spring JDBC, and RabbitMQ, not on service repositories, entities, application services, or migrations
+- A read-only harness datasource selects SKUs from the existing `products` table; the service remains responsible for creating and migrating that schema
+- Preserve five paired random orders/shipments, unique request/document/line IDs, configured business dates, delivery eligibility, exchange/routing key, and JSON contract
+- Publisher scheduling is opt-in in the harness; queue/dead-letter topology, listener behavior, allocation rules, and JobRunr remain in `stockio-service`
+- Browser tests retain their localhost mock and request-identity/error/rendering assertions; the UI no longer owns Playwright dependencies or test files
+- Performance tooling, workloads, and thresholds are deliberately deferred
+
+### Acceptance Criteria
+- The requested three directories are present and the harness has independent build/run instructions
+- Existing browser coverage runs from the harness without a real service, using the existing UI and mock allocation endpoint
+- Explicit harness publisher startup reads the configured catalogue and emits the same flat shared allocation contract
+- Publisher tests cover valid paired supply/demand, empty/failing catalogue reads, JDBC lookup, and JSON/date compatibility without importing service code
+- Disabled harness publishing and standalone service startup generate no synthetic allocation traffic
+- Service consumption/topology and application tests remain independent of harness dependencies
+- No performance runner or load-generation guarantee is introduced
