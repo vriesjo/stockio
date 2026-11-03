@@ -39,6 +39,8 @@ import nl.stockio.reservation.domain.job.ReservationExpiryJob
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
 import nl.stockio.allocation.domain.worker.AllocationSkuWorker
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
+import nl.stockio.stock.domain.processor.StockLedgerSkuWorker
+import nl.stockio.stock.domain.port.StockLedgerRunRepository
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.infra.AllocationRecordJpaRepository
 import nl.stockio.allocation.infra.AllocationRunJpaRepository
@@ -198,6 +200,12 @@ class AllocationIntegrationTest {
     private lateinit var stockLedgerProcessor: StockLedgerProcessor
 
     @Autowired
+    private lateinit var stockLedgerSkuWorker: StockLedgerSkuWorker
+
+    @Autowired
+    private lateinit var ledgerRunRepository: StockLedgerRunRepository
+
+    @Autowired
     private lateinit var stockProjectionProcessor: StockProjectionProcessor
 
     @Autowired
@@ -219,6 +227,10 @@ class AllocationIntegrationTest {
     fun clearDatabase() {
         Mockito.`when`(clock.zone).thenReturn(ZoneId.systemDefault())
         setNow(Instant.now().truncatedTo(ChronoUnit.MICROS))
+        jdbcTemplate.update("UPDATE stock_ledger_coordinator SET run_id = NULL, owner = NULL, lease_until = NULL WHERE id = 1")
+        jdbcTemplate.update("DELETE FROM stock_receipt_followup")
+        jdbcTemplate.update("DELETE FROM stock_ledger_work")
+        jdbcTemplate.update("DELETE FROM stock_ledger_run")
         jdbcTemplate.update(
             """UPDATE stock_ledger_sync_status SET last_success_at = NULL, snapshot_date = NULL,
                 sku_count = NULL, lot_snapshot_count = NULL, monitoring_started_at = CURRENT_TIMESTAMP WHERE id = 1"""
@@ -704,9 +716,11 @@ class AllocationIntegrationTest {
             inboundShipments = listOf(singleLineShipment("ROLLBACK-SYNC", "MAKI-ZALM", 5, today))
         ))
         val snapshots = snapshotRepository.findDailyByDate(today)
+        val owner = UUID.randomUUID()
+        val run = ledgerRunRepository.begin(today, owner, clock.instant())
         Assertions.assertThrows(IllegalStateException::class.java) {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                ledgerSyncJob.execute()
+                stockLedgerSkuWorker.process(run, owner, "MAKI-ZALM")
                 throw IllegalStateException("Roll back enclosing transaction")
             }
         }
@@ -714,6 +728,8 @@ class AllocationIntegrationTest {
         Assertions.assertFalse(inboundSupplyRepository.findAll().single().received)
         Assertions.assertTrue(stockRepository.findAll().isEmpty())
         Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+        Assertions.assertEquals(0, ledgerRunRepository.getProgress()!!.completedSkus)
+        Assertions.assertTrue(ledgerRunRepository.pendingReceipts(100).isEmpty())
     }
 
     @Test
@@ -1064,7 +1080,8 @@ class AllocationIntegrationTest {
         val dailySnapshot = snapshotRepository.findDailyByDate(today).single()
         val lotSnapshot = snapshotRepository.findLotsByDate(today).single()
         TransactionTemplate(transactionManager).executeWithoutResult {
-            snapshotRepository.replaceFrom(
+            snapshotRepository.replaceSkuFrom(
+                "MAKI-ZALM",
                 yesterday,
                 listOf(
                     dailySnapshot.copy(id = UUID.randomUUID(), snapshotDate = yesterday),
@@ -1106,7 +1123,8 @@ class AllocationIntegrationTest {
             TransactionTemplate(transactionManager).executeWithoutResult {
                 stockRepository.findById(stock.id).orElseThrow().quantityOnHand = 8
                 stockRepository.flush()
-                snapshotRepository.replaceFrom(
+                snapshotRepository.replaceSkuFrom(
+                    "MAKI-ZALM",
                     today,
                     dailySnapshots.map { it.copy(closingStock = 8) },
                     lotSnapshots.map { it.copy(closingStock = 8, quantityReserved = 9) }
@@ -1845,7 +1863,7 @@ class AllocationIntegrationTest {
     }
 
     @Test
-    fun `independent registrations overlap while excluding the projection writer`() {
+    fun `independent registrations overlap without acquiring the retired projection gate`() {
         val today = LocalDate.now()
         val first = reservationRequest("INDEPENDENT-A", 2).copy(
             inboundShipments = listOf(singleLineShipment("INDEPENDENT-SHIP-A", "MAKI-ZALM", 5, today))
@@ -1868,11 +1886,9 @@ class AllocationIntegrationTest {
                     }
                 }.get(10, TimeUnit.SECONDS)
                 executor.submit {
-                    Assertions.assertThrows(PessimisticLockingFailureException::class.java) {
-                        TransactionTemplate(transactionManager).executeWithoutResult {
-                            jdbcTemplate.execute("SET LOCAL lock_timeout = '200ms'")
-                            stockProjectionLockRepository.acquire()
-                        }
+                    TransactionTemplate(transactionManager).executeWithoutResult {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '200ms'")
+                        stockProjectionLockRepository.acquire()
                     }
                 }.get(10, TimeUnit.SECONDS)
             }
@@ -2139,6 +2155,222 @@ class AllocationIntegrationTest {
         Assertions.assertEquals("LEGACY-SHIP", record.sources.single().shipmentId)
         Assertions.assertEquals("LEGACY-SHIP", record.sources.single().shipmentLineId)
         Assertions.assertEquals(2, record.allocatedFromInbound)
+    }
+
+    @Test
+    fun `projection waits for its SKU allocation but unrelated SKU projection can commit`() {
+        val today = LocalDate.now(clock)
+        stockRepository.saveAll(listOf(
+            StockEntity(sku = "MAKI-ZALM", lotId = "SCOPED-Z", receivedDate = today, quantityOnHand = 10),
+            StockEntity(sku = "MAKI-TONIJN", lotId = "SCOPED-T", receivedDate = today, quantityOnHand = 7)
+        ))
+        val request = reservationRequest("SCOPED-ORDER", 3)
+        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        documentService.initialize(run.id, request)
+        val executor = Executors.newFixedThreadPool(2)
+        val backend = ArrayBlockingQueue<Int>(1)
+        lateinit var waiting: Future<*>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                allocationSkuWorker.allocateNewDemand(run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines())
+                val holder = currentBackendPid()
+                waiting = executor.submit {
+                    TransactionTemplate(transactionManager).executeWithoutResult {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                        backend.put(currentBackendPid())
+                        stockProjectionProcessor.processSku(today, "MAKI-ZALM")
+                    }
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+                executor.submit {
+                    stockProjectionProcessor.processSku(today, "MAKI-TONIJN")
+                }.get(5, TimeUnit.SECONDS)
+                Assertions.assertEquals(7, snapshotRepository.findDailyBySkuAndDate("MAKI-TONIJN", today).single().closingStock)
+            }
+            waiting.get(10, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(3, snapshotRepository.findLotsBySkuAndDate("MAKI-ZALM", today).single().quantityReserved)
+    }
+
+    @Test
+    fun `ledger commits an independent SKU while another allocation holds its SKU lock`() {
+        val today = LocalDate.now(clock)
+        stockRepository.saveAll(listOf(
+            StockEntity(sku = "MAKI-ZALM", lotId = "LEDGER-Z", receivedDate = today, quantityOnHand = 10),
+            StockEntity(sku = "MAKI-TONIJN", lotId = "LEDGER-T", receivedDate = today, quantityOnHand = 7)
+        ))
+        val request = reservationRequest("LEDGER-OVERLAP", 3)
+        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        documentService.initialize(run.id, request)
+        val executor = Executors.newSingleThreadExecutor()
+        lateinit var ledger: Future<*>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                allocationSkuWorker.allocateNewDemand(run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines())
+                ledger = executor.submit { stockLedgerProcessor.processToday() }
+                Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted {
+                    Assertions.assertEquals(1, ledgerRunRepository.getProgress()?.completedSkus)
+                }
+                Assertions.assertFalse(ledger.isDone)
+                Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+                Assertions.assertEquals(7, snapshotRepository.findDailyBySkuAndDate("MAKI-TONIJN", today).single().closingStock)
+            }
+            ledger.get(10, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals("COMPLETED", ledgerRunRepository.getProgress()!!.status)
+        Assertions.assertEquals(3, stockRepository.findAllBySku("MAKI-ZALM").single().quantityReserved)
+    }
+
+    @Test
+    fun `scoped horizons and empty replacement never alter another SKU forecast`() {
+        val today = LocalDate.now(clock)
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            inboundShipments = listOf(
+                singleLineShipment("HORIZON-T", "MAKI-TONIJN", 5, today.plusDays(3)),
+                singleLineShipment("HORIZON-Z", "MAKI-ZALM", 4, today)
+            )
+        ))
+        stockProjectionProcessor.process(today)
+        val other = snapshotRepository.findDailyBySkuAndWarehouse("MAKI-TONIJN", "MAIN")
+        Assertions.assertEquals(4, other.size)
+        Assertions.assertEquals(1, snapshotRepository.findDailyBySkuAndWarehouse("MAKI-ZALM", "MAIN").size)
+        inboundSupplyRepository.deleteById("HORIZON-Z")
+
+        stockProjectionProcessor.processSku(today, "MAKI-ZALM")
+
+        Assertions.assertTrue(snapshotRepository.findDailyBySkuAndWarehouse("MAKI-ZALM", "MAIN").isEmpty())
+        Assertions.assertTrue(snapshotRepository.findLotsBySkuAndDate("MAKI-ZALM", today).isEmpty())
+        Assertions.assertEquals(other, snapshotRepository.findDailyBySkuAndWarehouse("MAKI-TONIJN", "MAIN"))
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `partial ledger work resumes or reconciles on a new date without duplicate receipts`(afterMidnight: Boolean) {
+        Mockito.`when`(clock.zone).thenReturn(ZoneId.of("UTC"))
+        setNow(Instant.parse("2026-10-20T10:00:00Z"))
+        val today = LocalDate.now(clock)
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            inboundShipments = listOf(
+                singleLineShipment("PARTIAL-T", "MAKI-TONIJN", 5, today),
+                singleLineShipment("PARTIAL-Z", "MAKI-ZALM", 4, today)
+            )
+        ))
+        val conflict = inboundSupplyRepository.findById("PARTIAL-Z").orElseThrow()
+        stockRepository.save(
+            StockEntity(sku = "MAKI-ZALM", lotId = conflict.lotId, receivedDate = today, quantityOnHand = 1)
+        )
+
+        Assertions.assertThrows(IllegalArgumentException::class.java) { stockLedgerProcessor.processToday() }
+        val partial = ledgerRunRepository.getProgress()!!
+        Assertions.assertEquals("PARTIAL", partial.status)
+        Assertions.assertEquals(2, partial.totalSkus)
+        Assertions.assertEquals(1, partial.completedSkus)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+        Assertions.assertTrue(inboundSupplyRepository.findById("PARTIAL-T").orElseThrow().received)
+        Assertions.assertFalse(inboundSupplyRepository.findById("PARTIAL-Z").orElseThrow().received)
+        Assertions.assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM stock_receipt_followup", Int::class.java))
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/stock/ledger/status"))
+            .andExpect(MockMvcResultMatchers.jsonPath("$.progress.status").value("PARTIAL"))
+            .andExpect(MockMvcResultMatchers.jsonPath("$.progress.completedSkus").value(1))
+
+        stockRepository.deleteAll(stockRepository.findAllBySku("MAKI-ZALM"))
+        if (afterMidnight) setNow(Instant.parse("2026-10-21T00:01:00Z"))
+        val result = stockLedgerProcessor.processToday()
+        val complete = ledgerRunRepository.getProgress()!!
+        Assertions.assertEquals("COMPLETED", complete.status)
+        Assertions.assertEquals(2, complete.completedSkus)
+        Assertions.assertEquals(5, stockRepository.findAllBySku("MAKI-TONIJN").single().quantityOnHand)
+        Assertions.assertEquals(4, stockRepository.findAllBySku("MAKI-ZALM").single().quantityOnHand)
+        Assertions.assertEquals(LocalDate.now(clock), result.snapshotDate)
+        if (afterMidnight) {
+            Assertions.assertNotEquals(partial.runId, complete.runId)
+            Assertions.assertEquals("SUPERSEDED", jdbcTemplate.queryForObject(
+                "SELECT status FROM stock_ledger_run WHERE id = ?", String::class.java, partial.runId
+            ))
+        } else {
+            Assertions.assertEquals(partial.runId, complete.runId)
+        }
+    }
+
+    @Test
+    fun `expired coordinator is fenced before applying work and committed work survives lost aggregation`() {
+        val today = LocalDate.now(clock)
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            inboundShipments = listOf(singleLineShipment("FENCED-RECEIPT", "MAKI-ZALM", 5, today))
+        ))
+        val previousOwner = UUID.randomUUID()
+        val first = ledgerRunRepository.begin(today, previousOwner, clock.instant())
+        jdbcTemplate.update("UPDATE stock_ledger_coordinator SET lease_until = ?", java.sql.Timestamp.from(clock.instant().minusSeconds(1)))
+        val owner = UUID.randomUUID()
+        val resumed = ledgerRunRepository.begin(today, owner, clock.instant())
+        Assertions.assertEquals(first.id, resumed.id)
+        Assertions.assertThrows(RuntimeException::class.java) {
+            stockLedgerSkuWorker.process(first, previousOwner, "MAKI-ZALM")
+        }
+        Assertions.assertTrue(stockRepository.findAll().isEmpty())
+        stockLedgerSkuWorker.process(resumed, owner, "MAKI-ZALM")
+        Assertions.assertEquals(1, ledgerRunRepository.getProgress()!!.completedSkus)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+        ledgerRunRepository.fail(resumed.id, owner, "Crash before parent aggregation", clock.instant())
+
+        stockLedgerProcessor.processToday()
+
+        Assertions.assertEquals(5, stockRepository.findAll().single().quantityOnHand)
+        Assertions.assertEquals(resumed.id, ledgerRunRepository.getProgress()!!.runId)
+        Assertions.assertEquals("COMPLETED", ledgerRunRepository.getProgress()!!.status)
+    }
+
+    @Test
+    fun `expiry waits for the full sorted SKU set and releases every hold atomically`() {
+        val today = LocalDate.now(clock)
+        stockRepository.saveAll(listOf(
+            StockEntity(sku = "MAKI-ZALM", lotId = "EXPIRY-Z", receivedDate = today, quantityOnHand = 5),
+            StockEntity(sku = "MAKI-TONIJN", lotId = "EXPIRY-T", receivedDate = today, quantityOnHand = 5)
+        ))
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            demandOrders = listOf(DemandOrder("EXPIRY-SORTED", "Expiry", 1, today, listOf(
+                DemandOrderLine("EXPIRY-Z", "MAKI-ZALM", 2, today),
+                DemandOrderLine("EXPIRY-T", "MAKI-TONIJN", 3, today)
+            )))
+        ))
+        setNow(claimRepository.findById("EXPIRY-SORTED").orElseThrow().reservationExpiresAt!!)
+        val executor = Executors.newSingleThreadExecutor()
+        val backend = ArrayBlockingQueue<Int>(1)
+        lateinit var expiry: Future<Int>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                jdbcTemplate.queryForObject(
+                    "SELECT sku FROM allocation_sku_lock WHERE sku = 'MAKI-ZALM' FOR UPDATE", String::class.java
+                )
+                val holder = currentBackendPid()
+                expiry = executor.submit<Int> {
+                    TransactionTemplate(transactionManager).execute {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                        backend.put(currentBackendPid())
+                        expiryService.expireBatch()
+                    }!!
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+                Assertions.assertEquals(OrderReservationStatus.PENDING_CONFIRMATION,
+                    claimRepository.findById("EXPIRY-SORTED").orElseThrow().orderReservationStatus)
+                Assertions.assertEquals(5, stockRepository.findAll().sumOf { it.quantityReserved })
+            }
+            Assertions.assertEquals(1, expiry.get(10, TimeUnit.SECONDS))
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(0, stockRepository.findAll().sumOf { it.quantityReserved })
+        Assertions.assertEquals(0, stockReservationRepository.count())
+        Assertions.assertEquals(OrderReservationStatus.EXPIRED,
+            claimRepository.findById("EXPIRY-SORTED").orElseThrow().orderReservationStatus)
     }
 
     private fun currentBackendPid(): Int =

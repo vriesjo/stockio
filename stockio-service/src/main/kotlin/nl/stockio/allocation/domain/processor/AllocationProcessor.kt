@@ -12,7 +12,7 @@ import org.springframework.stereotype.Service
 
 /**
  * Refreshes forecasts after the allocation workers commit, without synchronizing physical stock.
- * No outer transaction spans the parallel workers or upgrades their shared projection lock.
+ * No outer transaction spans the parallel workers. Each refresh takes its SKU lock.
  * A projection failure is retryable: the allocation service reuses its committed run.
  */
 @Service
@@ -24,7 +24,8 @@ class AllocationProcessor(
     fun process(command: BackorderAllocationRequest): AllocationRunResult {
         val run = backorderAllocationService.allocate(command)
         try {
-            projectionProcessor.process(command.asOfDate)
+            projectionProcessor.process(command.asOfDate, run.allocations.map { it.sku } +
+                command.skuScope.orEmpty() + command.inboundShipments.flatMap { it.lines }.map { it.sku })
         } catch (exception: IllegalArgumentException) {
             throw AllocationProjectionException(run.runId, exception)
         }
@@ -37,7 +38,9 @@ class AllocationProcessor(
             AllocationRunType.BACKORDER_FULFILLMENT -> allocationService.allocateOpenBackorders(request)
         }
         try {
-            projectionProcessor.process(request.asOfDate)
+            projectionProcessor.process(request.asOfDate, run.allocations.map { it.sku } +
+                request.demandOrders.flatMap { it.lines }.map { it.sku } +
+                request.inboundShipments.flatMap { it.lines }.map { it.sku })
         } catch (exception: IllegalArgumentException) {
             throw AllocationProjectionException(run.runId, exception)
         }

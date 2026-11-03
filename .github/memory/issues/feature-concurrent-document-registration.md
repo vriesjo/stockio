@@ -10,6 +10,11 @@
 
 ## Context
 
+This is the completed registration baseline. Its shared/exclusive gate has been
+superseded by the [per-SKU protocol](./feature-per-sku-stock-processing.md).
+The historical requirements below remain unchanged; identity, SKU and run-row
+protections are retained by the follow-up.
+
 Globally exclusive registration serializes unrelated requests. Simply changing
 that lock to shared is unsafe: check-then-save document creation can race,
 assigned-ID JPA merges can reparent lines, and inbound amendments can race with
@@ -131,3 +136,11 @@ before other backpressure changes.
 - Projection rebuilding, ledger/expiry exclusivity, worker/pool sizes,
   request contracts, admission control, and the user's controller edit remain
   unchanged.
+
+## Separate follow-up
+
+[Per-SKU stock processing](./feature-per-sku-stock-processing.md) is a new
+completed feature, not a reopening of this registration baseline. It implements scoped
+projection/ledger work, whole-order expiry coordination, durable partial-run
+recovery, and removal of gate acquisition from all participating writers.
+Deploy the replacement protocol across all writers together.

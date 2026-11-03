@@ -45,6 +45,7 @@ interface StockProjectionLockJpaRepository : StockProjectionLockRepository, JpaR
 
 interface StockJpaRepository : StockRepository, JpaRepository<StockEntity, UUID> {
     override fun findAll(): List<StockEntity>
+    override fun findAllBySku(sku: String): List<StockEntity>
     override fun <S : StockEntity> saveAll(entities: Iterable<S>): List<S>
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
@@ -59,6 +60,8 @@ interface AllocationJobResultJpaRepository : AllocationJobResultRepository, JpaR
 
 interface StockReservationJpaRepository : StockReservationRepository, JpaRepository<StockReservationEntity, UUID> {
     override fun findAll(): List<StockReservationEntity>
+    @Query("select r from StockReservationEntity r join StockEntity s on s.id = r.stockId where s.sku = :sku")
+    override fun findAllBySku(@Param("sku") sku: String): List<StockReservationEntity>
     override fun deleteAll(entities: Iterable<StockReservationEntity>)
     override fun <S : StockReservationEntity> saveAll(entities: Iterable<S>): List<S>
 
@@ -126,8 +129,8 @@ class StockLedgerSyncStatusJdbcTemplateRepository(private val jdbcTemplate: Jdbc
  * and batch-inserts their successors without managing snapshot entities. No persistence-context
  * clearing is needed, so unrelated JPA-managed business entities remain attached.
  *
- * JDBC uses the same datasource and transaction as the JPA business operations. [replaceFrom]
- * requires an existing transaction and the caller must hold the exclusive projection lock.
+ * JDBC uses the same datasource and transaction as the JPA business operations. [replaceSkuFrom]
+ * requires an existing transaction and the caller must hold that SKU's lock.
  * Snapshot replacement and participating business changes commit or roll back together.
  */
 @Repository
@@ -137,17 +140,21 @@ class StockSnapshotRepositoryJdbcTemplate(
 ) : StockSnapshotRepository {
 
     @Transactional(propagation = Propagation.MANDATORY)
-    override fun replaceFrom(
+    override fun replaceSkuFrom(
+        sku: String,
         startDate: LocalDate,
         dailySnapshots: List<StockDailySnapshot>,
         lotSnapshots: List<StockDailyLotSnapshot>
     ) {
+        require(dailySnapshots.all { it.sku == sku } && lotSnapshots.all { it.sku == sku }) {
+            "Replacement snapshots must belong to SKU '$sku'."
+        }
         require(dailySnapshots.all { it.snapshotDate >= startDate } &&
             lotSnapshots.all { it.snapshotDate >= startDate }) {
             "Replacement snapshots must not precede the replacement start date."
         }
-        jdbcTemplate.update("DELETE FROM stock_daily_lot_snapshots WHERE snapshot_date >= ?", startDate)
-        jdbcTemplate.update("DELETE FROM stock_daily_snapshots WHERE snapshot_date >= ?", startDate)
+        jdbcTemplate.update("DELETE FROM stock_daily_lot_snapshots WHERE sku = ? AND snapshot_date >= ?", sku, startDate)
+        jdbcTemplate.update("DELETE FROM stock_daily_snapshots WHERE sku = ? AND snapshot_date >= ?", sku, startDate)
         jdbcTemplate.batchUpdate(
             """
                 INSERT INTO stock_daily_snapshots (
@@ -206,6 +213,18 @@ class StockSnapshotRepositoryJdbcTemplate(
             "SELECT * FROM stock_daily_lot_snapshots WHERE snapshot_date = ? ORDER BY sku, warehouse_code, lot_id",
             lotRowMapper,
             snapshotDate
+        )
+
+    override fun findDailyBySkuAndDate(sku: String, snapshotDate: LocalDate): List<StockDailySnapshot> =
+        jdbcTemplate.query(
+            "SELECT * FROM stock_daily_snapshots WHERE sku = ? AND snapshot_date = ? ORDER BY warehouse_code",
+            dailyRowMapper, sku, snapshotDate
+        )
+
+    override fun findLotsBySkuAndDate(sku: String, snapshotDate: LocalDate): List<StockDailyLotSnapshot> =
+        jdbcTemplate.query(
+            "SELECT * FROM stock_daily_lot_snapshots WHERE sku = ? AND snapshot_date = ? ORDER BY warehouse_code, lot_id",
+            lotRowMapper, sku, snapshotDate
         )
 
     override fun findDailyBySkuAndWarehouse(sku: String, warehouseCode: String): List<StockDailySnapshot> =

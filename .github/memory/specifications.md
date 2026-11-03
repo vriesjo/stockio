@@ -316,6 +316,10 @@ Replace globally exclusive document registration with shared projection
 coordination and narrower identity/SKU/supply protection. Keep exclusive
 projection, ledger, and expiry behavior and all existing allocation contracts.
 
+This completed feature records the registration baseline. Its shared/exclusive
+gate is superseded by the [per-SKU protocol](#feature-coordinate-stock-processing-through-a-per-sku-protocol);
+document identity, sorted inbound SKU and run-row protections remain in force.
+
 ### Functional Requirements (FR)
 
 | ID | Title | Description |
@@ -344,4 +348,60 @@ projection, ledger, and expiry behavior and all existing allocation contracts.
 
 - [Scenario 14: Register Independent Allocation Documents Concurrently](./scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
 - [Feature issue: concurrent document registration](./issues/feature-concurrent-document-registration.md)
+- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+
+## Feature: Coordinate stock processing through a per-SKU protocol
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Concurrent document registration](#feature-allow-concurrent-allocation-document-registration)
+- **Bounded Context:** Allocation, Reservations & Stock Ledger
+
+### Overview
+
+Replace the global shared/exclusive projection gate only after allocation,
+registration, scoped projection, ledger, and expiry follow an equivalent
+database-backed SKU protocol. Permit unrelated SKUs to progress concurrently,
+preserve atomic whole-order expiry, and expose recoverable partial ledger-run
+progress. Allocation remains separate from physical ledger synchronization.
+The implementation preserves allocation/forecast and expiry failure boundaries,
+uses SKU-local horizons, persists partial ledger progress, reconciles stale-date
+runs through today's manifest, and requires coordinated all-writer deployment.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Common SKU protocol | All participating writers acquire existing database SKU locks before decision reads; acquire any required sorted document locks before sorted SKU locks, then run/lifecycle and business-row locks. Use SKU-wide scope across warehouses initially. |
+| FR-02 | Scoped projection | Read and replace only the selected SKU's projection data, including removal of obsolete/empty scopes, under its SKU lock; keep the first version synchronous without asynchronous forecast publication. |
+| FR-03 | Atomic SKU ledger | Recompute the selected SKU's projection and apply its receipts, deliveries, and reservation conversions in one protected transaction; do not apply a previously published forecast to live stock. Preserve retry-safe movements and allocation/ledger separation. |
+| FR-04 | Whole-order lifecycle | Discover expiry candidates without taking lifecycle locks first; protect document identity, lock all immutable order SKUs in sorted order, recheck lifecycle/deadline, and release holds plus mark expiry atomically. Never acquire additional unordered SKUs from inside a ledger worker. |
+| FR-05 | Recoverable coordination | Persist a frozen current-day manifest and per-SKU checkpoints; resume incomplete current-day work, reconcile superseded old-date runs through today's manifest, expose partial progress in existing status reads, and advance global success only after full completion. |
+| FR-06 | Durable receipt follow-up | Persist receipt-triggered backorder work in the receipt transaction through an outbox or equivalent durable mechanism, with idempotent dispatch and consumption. |
+| FR-07 | Safe cutover | Introduce and validate scoped processing while retaining the global gate; remove reliance on it only after every deployed participating writer follows the SKU protocol. Preserve existing identity constraints and replay safety. |
+| FR-08 | Verification and visibility | Cover independent/hot SKUs, multi-SKU lifecycle, snapshot scoping, crashes/retries, date boundaries, and rollout; measure completed throughput, latency, lock/pool waits, and ledger backlog without claiming a preset capacity. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Consistency boundaries | Guarantee per-SKU mutation consistency and atomic whole-order expiry, not a single allocation/project/ledger lifecycle transaction or an atomic whole-catalogue ledger run. |
+| NFR-02 | Bounded execution | Bound coordinator fan-out against the combined database budget; keep transactions free of remote calls and broker/job scheduling side effects that belong in durable follow-up. |
+| NFR-03 | Explicit compatibility | Preserve FIFO, eligibility, quantity, ownership, receipt, and reservation rules; approve changes to failure semantics, projection horizon, result/status contracts, and freshness before cutover. |
+| NFR-04 | Limited scope | Do not add rate limiting, HTTP admission control, virtual threads, R2DBC, SKU/warehouse partitioning, confirmation endpoints, or asynchronous forecast/version publication in the first version. |
+
+### Plan
+
+1. Resolve transaction/failure compatibility, ledger-run API/status, date/cutoff, work discovery, and projection-horizon decisions; baseline the current implementation.
+2. Introduce SKU-scoped reads and snapshot replacement plus per-SKU projection tests while retaining global coordination.
+3. Implement the common lock hierarchy and whole-order expiry protocol, including cleanup/retry coordination for ledger workers encountering overdue holds.
+4. Add per-SKU ledger transactions, durable run/progress metadata, and receipt follow-up; keep existing global protection during migration.
+5. Validate every participating writer, replay/crash behavior, mixed-version deployment constraints, and realistic contention; remove the gate only after the coordinated cutover is approved.
+6. Measure performance and remaining bottlenecks, then synchronize interfaces, architecture, scenarios, specifications, issue, run guidance, and active context.
+
+### Resources
+
+- [Scenario 15: Process Stock Operations Concurrently by SKU](./scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
+- [Feature issue: per-SKU stock processing](./issues/feature-per-sku-stock-processing.md)
+- [Completed registration baseline](./issues/feature-concurrent-document-registration.md)
 - [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)

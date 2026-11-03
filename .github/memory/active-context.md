@@ -1,5 +1,27 @@
 # Active Context
 
+## Feature: Coordinate stock processing through a per-SKU protocol
+
+- **Specification:** [Feature specification](./specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Scenario:** [Scenario 15](./scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
+- **Issue:** [Feature issue](./issues/feature-per-sku-stock-processing.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Complete, at the user's request.
+
+### Steps worked on
+- Approved compatible allocation/forecast and expiry failure boundaries, SKU-local horizons, current-day manifests, partial progress and coordinated deployment.
+- Implemented scoped query/replacement paths and removed production acquisition of the global projection gate; all writers follow sorted document/SKU/run-or-lifecycle ordering.
+- Added V18 run/work/coordinator/outbox state and scoped-read indexes. Sequential ledger work commits fresh projections, physical changes, checkpoints and receipt follow-up atomically per SKU.
+- Added fenced renewable ownership, incomplete-work recovery, stale-date reconciliation, and additive progress through the existing ledger-status endpoint. Coordinators never hold metadata while waiting for SKUs.
+- Whole-order expiry locks all immutable SKUs before lifecycle revalidation and atomically releases holds plus refreshes affected forecasts; ledger retries cleanup outside its worker transaction.
+- Receipt scheduling is durable and retryable outside business transactions. Allocation remains separate from physical ledger synchronization.
+- Verified the full service suite: 135 passing tests, including PostgreSQL concurrency, partial/crash/date recovery, owner fencing, legacy migrations and schema validation; OpenAPI and documentation checks pass. Updated architecture, README and linked scenarios/specifications/issues.
+
+### Next possible steps (suggestions)
+- Deploy only with a coordinated stop/migrate/deploy/restart of all service instances, consumers and JobRunr writers; mixed versions are unsafe.
+- Run representative throughput/tail-latency and lock/pool profiling before tuning budgets or selecting separate admission control. No capacity benchmark or 1,000-request-per-second guarantee is claimed.
+
 ## Feature: Allow concurrent allocation document registration
 
 - **Specification:** [Feature specification](./specifications.md#feature-allow-concurrent-allocation-document-registration)

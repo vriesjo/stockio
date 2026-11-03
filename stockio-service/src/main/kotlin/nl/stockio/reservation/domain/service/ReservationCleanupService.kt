@@ -3,22 +3,24 @@ package nl.stockio.reservation.domain.service
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.time.Clock
 import java.time.Instant
+import java.time.LocalDate
 import java.util.UUID
 import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
+import nl.stockio.allocation.domain.port.AllocationDocumentLockRepository
+import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
 import nl.stockio.allocation.domain.port.DemandOrderLineRepository
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.DemandOrderLineEntity
 import nl.stockio.reservation.domain.port.InboundReservationRepository
 import nl.stockio.reservation.domain.port.InboundSupplyRepository
-import nl.stockio.stock.domain.port.StockProjectionLockRepository
 import nl.stockio.stock.domain.port.StockRepository
 import nl.stockio.stock.domain.port.StockReservationRepository
 import nl.stockio.stock.infra.StockEntity
 import nl.stockio.stock.infra.StockReservationEntity
+import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import org.springframework.stereotype.Service
-import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -28,9 +30,9 @@ private val logger = KotlinLogging.logger {}
 /**
  * Releases one bounded batch of expired, unconfirmed order reservations.
  *
- * Requires an existing transaction and acquires the exclusive stock-projection lock before
- * selecting pending order claims whose deadline is at or before the current clock instant.
- * The lock serializes cleanup with allocation, projection rebuilding, and ledger synchronization.
+ * Discovers candidates without lifecycle locks, then locks sorted document identities and all
+ * immutable order SKUs before rechecking the lifecycle/deadline. All holds, lifecycle updates,
+ * and affected forecasts commit or roll back together.
  *
  * For each selected order, decreases the reserved counters on its current stock lots and
  * unreceived inbound shipments, deletes its reservation rows and remaining open backorder,
@@ -43,12 +45,10 @@ private val logger = KotlinLogging.logger {}
  * making committed cleanup safe to retry. Cleanup statistics are logged only after commit.
  *
  * [expireDueBatch] returns the number of expired orders, or zero when none are due. This service
- * neither schedules cleanup nor rebuilds projections: callers must rebuild projections in the
- * same transaction so saved snapshots cannot reintroduce released holds.
+ * does not schedule cleanup. It rebuilds affected projections in the cleanup transaction.
  */
 @Service
 class ReservationCleanupService(
-    private val stockProjectionLockRepository: StockProjectionLockRepository,
     private val claimRepository: AllocationOrderClaimRepository,
     private val lineRepository: DemandOrderLineRepository,
     private val stockRepository: StockRepository,
@@ -57,14 +57,32 @@ class ReservationCleanupService(
     private val inboundReservationRepository: InboundReservationRepository,
     private val backorderRepository: OpenBackorderRepository,
     private val properties: ReservationProperties,
-    private val clock: Clock
+    private val clock: Clock,
+    private val documentLockRepository: AllocationDocumentLockRepository,
+    private val skuLockRepository: AllocationSkuLockRepository,
+    private val projectionProcessor: StockProjectionProcessor
 ) {
-    @Transactional(propagation = Propagation.MANDATORY)
+    @Transactional
     fun expireDueBatch(): Int {
-        stockProjectionLockRepository.acquire()
+        return expireOrders(claimRepository.findExpiredOrderIds(clock.instant(), properties.expiryBatchSize))
+    }
+
+    @Transactional
+    fun expireOrders(candidateIds: Collection<String>): Int {
+        if (candidateIds.isEmpty()) return 0
+        candidateIds.distinct().map { "order:$it" }.sorted().forEach { key ->
+            documentLockRepository.insertIfMissing(key)
+            checkNotNull(documentLockRepository.lockByKey(key)) { "Could not lock document '$key'." }
+        }
+        val candidateLines = lineRepository.findAllByOrderIdInOrderByOrderIdAscSequenceNumberAsc(candidateIds)
+        val skus = candidateLines.map { it.sku }.distinct().sorted()
+        skus.forEach { sku ->
+            skuLockRepository.insertIfMissing(sku)
+            checkNotNull(skuLockRepository.lockBySku(sku)) { "Could not lock SKU '$sku'." }
+        }
         val now = clock.instant()
-        // Select and lock a batch of expired claims, or return early if none are due.
-        val claims = claimRepository.lockExpiredBatch(now, properties.expiryBatchSize)
+        val claims = candidateIds.distinct().sorted().mapNotNull { claimRepository.lockByOrderId(it) }
+            .filter { it.orderReservationStatus == OrderReservationStatus.PENDING_CONFIRMATION && !it.canAllocate(now) }
         if (claims.isEmpty()) return 0
 
         validateClaims(claims, now)
@@ -107,6 +125,7 @@ class ReservationCleanupService(
             it.expiredAt = now
         }
         claimRepository.flush()
+        skus.forEach { projectionProcessor.processSku(LocalDate.now(clock), it) }
 
         val releasedStockQuantity = stockReservations.sumOf { it.quantity.toLong() }
         val releasedInboundQuantity = inboundReservations.sumOf { it.quantity.toLong() }

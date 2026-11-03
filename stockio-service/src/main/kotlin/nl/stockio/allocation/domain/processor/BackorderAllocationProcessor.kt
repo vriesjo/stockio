@@ -20,7 +20,8 @@ class BackorderAllocationProcessor(
     fun process(command: BackorderAllocationRequest): AllocationRunResult {
         val run = backorderAllocationService.allocate(command)
         try {
-            projectionProcessor.process(command.asOfDate)
+            projectionProcessor.process(command.asOfDate, run.allocations.map { it.sku } +
+                command.skuScope.orEmpty() + command.inboundShipments.flatMap { it.lines }.map { it.sku })
         } catch (exception: IllegalArgumentException) {
             throw AllocationProjectionException(run.runId, exception)
         }

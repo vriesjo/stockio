@@ -9,6 +9,7 @@ import nl.stockio.stock.domain.service.StockLedgerService
 import nl.stockio.stock.domain.service.StockLedgerHealthIndicator
 import nl.stockio.stock.infra.StockLedgerSyncState
 import nl.stockio.stock.infra.StockLedgerSyncStatusJdbcTemplateRepository
+import nl.stockio.stock.domain.port.StockLedgerRunRepository
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -54,6 +55,7 @@ class LedgerSyncStatusServiceTest {
     }
 
     private fun service(now: String, enabled: Boolean = true) = StockLedgerService(
-        repository, StockLedgerSyncProperties(enabled = enabled), Clock.fixed(Instant.parse(now), ZoneOffset.UTC)
+        repository, StockLedgerSyncProperties(enabled = enabled), Clock.fixed(Instant.parse(now), ZoneOffset.UTC),
+        mock(StockLedgerRunRepository::class.java)
     )
 }

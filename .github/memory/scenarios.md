@@ -109,7 +109,7 @@ and independently synchronizes the physical stock ledger.
 
 ### High-level technical analysis
 - MCP tool: `allocate_open_backorders`
-- Automatic trigger: `StockLedgerProcessor` after a successful transaction marks inbound supply as received
+- Automatic trigger: `StockLedgerSkuWorker` records durable follow-up with each committed physical receipt
 - Background execution: a dedicated JobRunr backorder-fulfillment job
 - Application path: `BackorderAllocationJob` -> `AllocationProcessor` -> `BackorderAllocationService`, accepting an internal `BackorderAllocationRequest`
 - Command data: `requestId`, `asOfDate`, `trigger`, optional `skuScope`, and inbound shipments for manual registration
@@ -118,11 +118,11 @@ and independently synchronizes the physical stock ledger.
 - The MCP tool maps its external `AllocationRequest` to the same internal command with trigger `MANUAL`
 - Idempotency and concurrency protection prevent duplicate fulfillment for the same received-supply event or SKU scope
 - Receipt request/job IDs are derived from the date and sorted received shipment-line IDs
-- The after-commit callback is not durable: a crash before enqueue can lose the trigger, and enqueue failure cannot undo the receipt. There is no transactional outbox or automatic reconstruction of a missing enqueue
+- `stock_receipt_followup` survives a crash or enqueue outage; the dispatcher retries with stable IDs immediately after complete synchronization and through a recurring minute-based job
 - The current request fingerprint excludes internal `skuScope` and `trigger`; it must not be treated as validation of every internal command field
 
 ### Acceptance Criteria
-- When the post-commit callback runs and enqueue succeeds, newly received supply schedules fulfillment only after the ledger transaction commits
+- Newly received supply records retryable follow-up atomically; fulfillment is scheduled only after its receipt transaction commits
 - Registering expected inbound supply alone does not enqueue a fulfillment job
 - The job identifies and processes only SKUs affected by newly received supply when a scope is available
 - Fulfilled and partially fulfilled quantities are reported with their allocation sources
@@ -162,15 +162,17 @@ and independently synchronizes the physical stock ledger.
 ### Gherkin description
 **Given** a current-day stock projection containing inventory, reservations, inbound receipts, and confirmed deliveries \
 **When** the client invokes `process_stock_ledger`, or the recurring stock-ledger job runs \
-**Then** Stockio expires overdue unconfirmed reservations, rebuilds today's projection, and synchronizes it to live stock in one transaction \
+**Then** Stockio expires overdue unconfirmed reservations and atomically rebuilds and synchronizes each intended SKU \
 **And** arrived inbound supply is received only once \
 **And** due deliveries are consumed only for confirmed orders \
-**And** an invalid or non-current snapshot date is rejected without applying partial changes
+**And** invalid dates are rejected before work starts, while processing failures expose resumable partial progress
 
 ### High-level technical analysis
 - MCP tool: `process_stock_ledger`
 - Service: `StockLedgerProcessor`
-- The processor acquires the stock projection lock, cleans up expired holds, rebuilds lot-level and aggregate snapshots, applies due receipts and confirmed deliveries, and records synchronization status
+- The coordinator freezes the current-day SKU manifest; each worker takes its SKU lock, rebuilds scoped snapshots, applies due movements, and commits its checkpoint and receipt follow-up together
+- Whole-order cleanup acquires sorted document/all-SKU locks separately before worker retry; it never expands a ledger worker's lock set
+- Partial current-day runs resume incomplete work; previous-day runs are superseded and reconciled through a fresh current-day manifest
 - The recurring `StockLedgerSyncJob` runs the same synchronization independently on its configured schedule
 - This flow is separate from allocation and is the only flow that applies projected movements to physical live stock
 
@@ -180,7 +182,8 @@ and independently synchronizes the physical stock ledger.
 - Expired holds are removed before the synchronized projection is calculated
 - Arrived shipments are marked received and are not received again on retry
 - Only confirmed orders with due deliveries reduce live stock
-- The transaction fails atomically when snapshot or reservation invariants are inconsistent
+- A failing SKU rolls back its changes and checkpoint; previously committed SKUs remain visible and are not replayed
+- Full manifest completion alone advances global success/freshness and returns the aggregate synchronous result
 
 ## Scenario 7: Monitor Stock-Ledger Freshness
 
@@ -370,6 +373,10 @@ and independently synchronizes the physical stock ledger.
 
 **Status:** Implemented.
 
+Historical registration baseline: the gate requirements below were subsequently
+replaced by [Scenario 15](#scenario-15-process-stock-operations-concurrently-by-sku).
+Identity, SKU, run and supply protections remain active.
+
 ### Gherkin description
 **Given** concurrent allocation requests with independent order and shipment identities \
 **When** their documents are registered before SKU allocation \
@@ -393,3 +400,33 @@ and independently synchronizes the physical stock ledger.
 - An amendment waiting behind allocation revalidates the committed reserved quantity and cannot reduce expected supply below it or overwrite it
 - Opposite input orders for overlapping inbound SKUs do not cause opposite lock acquisition
 - Existing retry/idempotency, immutable shipment membership, received-supply restrictions, expiry, ledger, and projection behavior remain valid
+
+## Scenario 15: Process Stock Operations Concurrently by SKU
+
+**Status:** Implemented.
+
+### Gherkin description
+**Given** allocation and stock-maintenance work for independent SKUs \
+**When** allocation, scoped projection, ledger synchronization, or reservation expiry execute concurrently \
+**Then** unrelated SKUs can progress without the global projection gate \
+**And** operations affecting the same SKU observe protected committed state and cannot over-reserve or duplicate movements \
+**And** expiry of a multi-SKU order releases all its holds and changes its lifecycle atomically \
+**And** a ledger run reports recoverable per-SKU progress rather than claiming success while intended work is incomplete
+
+### High-level technical analysis
+- Reuse database SKU locks across warehouses, with sorted document locks when needed before sorted SKU locks, followed by run/lifecycle and business rows
+- Scope projection reads and snapshot replacement to one SKU; ledger computes and applies its fresh SKU projection in the same transaction, separately from allocation
+- Expiry discovers candidates before locking, acquires all immutable order SKUs, and rechecks status/deadline; ledger defers and retries when whole-order cleanup is needed rather than expanding its lock set
+- Persist the current-day manifest, per-SKU checkpoints and receipt follow-up; expose additive progress in the existing status endpoint and record global freshness only after complete success
+- All participating writers use the SKU protocol; deploy them together through a coordinated stop/migrate/deploy/restart with no mixed versions
+- The first version keeps synchronous projections and does not add admission control, non-blocking persistence, confirmation interfaces, or a full-catalogue atomicity guarantee
+
+### Acceptance Criteria
+- An allocation for SKU 1 does not block ledger/projection work for unrelated SKU 2 solely through a global gate
+- Competing allocation, amendment, ledger, and expiry work for the same SKU preserves quantities, reservation sums, receipt state, and replay safety
+- Scoped snapshot replacement cannot delete another SKU's forecasts and removes obsolete rows when its own output is empty
+- A multi-SKU order is never marked expired with unreleased holds elsewhere, and reversed SKU input does not create inverse lock acquisition
+- Ledger uses a fresh protected baseline, retries/crashes do not duplicate physical movements, and receipt follow-up survives an enqueue outage
+- Partial ledger execution remains visible and resumable without falsely advancing global success/freshness
+- Gate removal cannot overlap a deployed writer that still relies on global exclusivity
+- Exercise independent and hot SKUs; production capacity requires representative workload measurement, with no 1,000-request-per-second guarantee

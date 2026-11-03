@@ -505,6 +505,43 @@ components:
           format: date-time
         stale:
           type: boolean
+        progress:
+          allOf:
+            - $ref: '#/components/schemas/StockLedgerProgress'
+          nullable: true
+
+    StockLedgerProgress:
+      type: object
+      description: Durable progress of the latest frozen per-SKU ledger manifest; only full completion advances lastSuccessAt.
+      required: [runId, snapshotDate, status, totalSkus, completedSkus, createdAt]
+      properties:
+        runId:
+          type: string
+          format: uuid
+        snapshotDate:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [RUNNING, PARTIAL, COMPLETED, SUPERSEDED]
+        totalSkus:
+          type: integer
+        completedSkus:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        leaseUntil:
+          type: string
+          format: date-time
+          nullable: true
+        lastError:
+          type: string
+          nullable: true
 
     OrderReservationResponse:
       type: object

@@ -27,7 +27,6 @@ import nl.stockio.reservation.domain.port.InboundReservationRepository
 import nl.stockio.reservation.domain.port.InboundSupplyRepository
 import nl.stockio.reservation.infra.InboundReservationEntity
 import nl.stockio.reservation.infra.InboundSupplyEntity
-import nl.stockio.stock.domain.port.StockProjectionLockRepository
 import nl.stockio.stock.domain.port.StockRepository
 import nl.stockio.stock.domain.port.StockReservationRepository
 import nl.stockio.stock.infra.StockEntity
@@ -37,7 +36,6 @@ import org.springframework.transaction.annotation.Transactional
 
 @Service
 class AllocationSkuWorker(
-    private val stockProjectionLockRepository: StockProjectionLockRepository,
     private val allocationRunService: AllocationRunService,
     private val skuLockRepository: AllocationSkuLockRepository,
     private val skuOperationRepository: AllocationSkuOperationRepository,
@@ -184,7 +182,6 @@ class AllocationSkuWorker(
     }
 
     private fun lockSku(sku: String) {
-        stockProjectionLockRepository.acquireAllocationReadLock()
         skuLockRepository.insertIfMissing(sku)
         check(skuLockRepository.lockBySku(sku) != null) {
             "Could not acquire allocation lock for SKU '$sku'."

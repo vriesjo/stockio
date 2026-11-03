@@ -14,6 +14,7 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
+import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.OpenBackorderEntity
@@ -21,10 +22,11 @@ import nl.stockio.reservation.domain.port.InboundReservationRepository
 import nl.stockio.reservation.domain.port.InboundSupplyRepository
 import nl.stockio.reservation.infra.InboundReservationEntity
 import nl.stockio.reservation.infra.InboundSupplyEntity
-import nl.stockio.stock.domain.port.StockProjectionLockRepository
 import nl.stockio.stock.domain.port.StockRepository
 import nl.stockio.stock.domain.port.StockReservationRepository
 import nl.stockio.stock.domain.port.StockSnapshotRepository
+import nl.stockio.stock.domain.port.StockScopeRepository
+import org.springframework.transaction.PlatformTransactionManager
 import nl.stockio.stock.infra.StockDailyLotSnapshot
 import nl.stockio.stock.infra.StockDailySnapshot
 import nl.stockio.stock.infra.StockEntity
@@ -38,7 +40,7 @@ import org.junit.jupiter.params.provider.ValueSource
 class StockProjectionProcessorTest {
     private val today = LocalDate.of(2026, 10, 26)
     private val clock = Clock.fixed(today.atStartOfDay().toInstant(ZoneOffset.UTC), ZoneOffset.UTC)
-    private val lockRepository = mockk<StockProjectionLockRepository>()
+    private val lockRepository = mockk<AllocationSkuLockRepository>(relaxed = true)
     private val stockRepository = mockk<StockRepository>()
     private val stockReservationRepository = mockk<StockReservationRepository>()
     private val supplyRepository = mockk<InboundSupplyRepository>()
@@ -50,7 +52,6 @@ class StockProjectionProcessorTest {
     private val dailySnapshots = slot<List<StockDailySnapshot>>()
     private val lotSnapshots = slot<List<StockDailyLotSnapshot>>()
     private val processor = StockProjectionProcessor(
-        lockRepository,
         stockRepository,
         stockReservationRepository,
         supplyRepository,
@@ -58,38 +59,40 @@ class StockProjectionProcessorTest {
         backorderRepository,
         snapshotRepository,
         claimRepository,
-        clock
+        clock,
+        lockRepository,
+        mockk<StockScopeRepository>(relaxed = true),
+        mockk<PlatformTransactionManager>(relaxed = true)
     )
 
     @BeforeEach
     fun setUp() {
-        every { lockRepository.acquire() } just Runs
-        every { claimRepository.findAll() } returns emptyList()
-        every { stockRepository.findAll() } returns emptyList()
-        every { stockReservationRepository.findAll() } returns emptyList()
-        every { supplyRepository.findAll() } returns emptyList()
-        every { inboundReservationRepository.findAll() } returns emptyList()
-        every { backorderRepository.findAll() } returns emptyList()
+        every { claimRepository.findAllById(any()) } returns emptyList()
+        every { stockRepository.findAllBySku("SKU") } returns emptyList()
+        every { stockReservationRepository.findAllBySku("SKU") } returns emptyList()
+        every { supplyRepository.findAllBySku("SKU") } returns emptyList()
+        every { inboundReservationRepository.findAllBySku("SKU") } returns emptyList()
+        every { backorderRepository.findAllBySku("SKU") } returns emptyList()
         every {
-            snapshotRepository.replaceFrom(capture(startDate), capture(dailySnapshots), capture(lotSnapshots))
+            snapshotRepository.replaceSkuFrom("SKU", capture(startDate), capture(dailySnapshots), capture(lotSnapshots))
         } just Runs
     }
 
     @ParameterizedTest
     @ValueSource(longs = [-3, 0, 2])
     fun `clears empty forecasts from the requested date clamped to business today`(offset: Long) {
-        processor.process(today.plusDays(offset))
+        processor.processSku(today.plusDays(offset), "SKU")
 
         startDate.captured shouldBe today.plusDays(maxOf(offset, 0))
         dailySnapshots.captured shouldBe emptyList()
         lotSnapshots.captured shouldBe emptyList()
         verifyOrder {
-            lockRepository.acquire()
-            claimRepository.findAll()
-            stockRepository.findAll()
-            snapshotRepository.replaceFrom(any(), any(), any())
+            lockRepository.lockBySku("SKU")
+            claimRepository.findAllById(any())
+            stockRepository.findAllBySku("SKU")
+            snapshotRepository.replaceSkuFrom("SKU", any(), any(), any())
         }
-        verify(exactly = 1) { snapshotRepository.replaceFrom(any(), any(), any()) }
+        verify(exactly = 1) { snapshotRepository.replaceSkuFrom("SKU", any(), any(), any()) }
     }
 
     @Test
@@ -102,16 +105,16 @@ class StockProjectionProcessorTest {
         val pendingStock = stockReservation(stock, "PENDING", 2, pendingDate)
         val confirmedInbound = inboundReservation(supply, "CONFIRMED", 2, deliveryDate)
         val pendingInbound = inboundReservation(supply, "PENDING", 1, pendingDate)
-        every { stockRepository.findAll() } returns listOf(stock)
-        every { supplyRepository.findAll() } returns listOf(supply)
-        every { stockReservationRepository.findAll() } returns listOf(confirmedStock, pendingStock)
-        every { inboundReservationRepository.findAll() } returns listOf(confirmedInbound, pendingInbound)
-        every { claimRepository.findAll() } returns listOf(
+        every { stockRepository.findAllBySku("SKU") } returns listOf(stock)
+        every { supplyRepository.findAllBySku("SKU") } returns listOf(supply)
+        every { stockReservationRepository.findAllBySku("SKU") } returns listOf(confirmedStock, pendingStock)
+        every { inboundReservationRepository.findAllBySku("SKU") } returns listOf(confirmedInbound, pendingInbound)
+        every { claimRepository.findAllById(any()) } returns listOf(
             claim("CONFIRMED", OrderReservationStatus.CONFIRMED),
             claim("PENDING", OrderReservationStatus.PENDING_CONFIRMATION)
         )
 
-        processor.process(today)
+        processor.processSku(today, "SKU")
 
         val daily = dailySnapshots.captured
         daily.map { it.snapshotDate } shouldBe listOf(today, today.plusDays(1), deliveryDate)
@@ -143,33 +146,31 @@ class StockProjectionProcessorTest {
 
     @Test
     fun `aggregates lots by SKU and warehouse and adds only confirmed shortages in MAIN`() {
-        every { stockRepository.findAll() } returns listOf(
+        every { stockRepository.findAllBySku("SKU") } returns listOf(
             stock(5).apply { warehouseCode = "EAST"; lotId = "EAST-1" },
             stock(7).apply { warehouseCode = "EAST"; lotId = "EAST-2" },
-            stock(4),
-            stock(3).apply { sku = "OTHER"; warehouseCode = "EAST" }
+            stock(4)
         )
-        every { backorderRepository.findAll() } returns listOf(
+        every { backorderRepository.findAllBySku("SKU") } returns listOf(
             backorder("CONFIRMED", 2, today.plusDays(1)),
             backorder("PENDING", 100, today.plusDays(20))
         )
-        every { claimRepository.findAll() } returns listOf(
+        every { claimRepository.findAllById(any()) } returns listOf(
             claim("CONFIRMED", OrderReservationStatus.CONFIRMED),
             claim("PENDING", OrderReservationStatus.PENDING_CONFIRMATION)
         )
 
-        processor.process(today)
+        processor.processSku(today, "SKU")
 
         val daily = dailySnapshots.captured
-        daily.size shouldBe 6
+        daily.size shouldBe 4
         daily.map { Triple(it.sku, it.warehouseCode, it.snapshotDate) }.toSet() shouldBe
-            setOf("SKU" to "MAIN", "SKU" to "EAST", "OTHER" to "EAST")
+            setOf("SKU" to "MAIN", "SKU" to "EAST")
                 .flatMap { (sku, warehouse) ->
                     listOf(today, today.plusDays(1)).map { Triple(sku, warehouse, it) }
                 }.toSet()
         daily.filter { it.sku == "SKU" && it.warehouseCode == "EAST" }
             .map { it.closingStock } shouldBe listOf(12, 12)
-        daily.filter { it.sku == "OTHER" }.map { it.closingStock } shouldBe listOf(3, 3)
         val main = daily.filter { it.sku == "SKU" && it.warehouseCode == "MAIN" }
         main.map { it.closingStock } shouldBe listOf(4, 4)
         main.map { it.demandQuantity } shouldBe listOf(0, 2)
@@ -182,16 +183,16 @@ class StockProjectionProcessorTest {
     @Test
     fun `moves overdue arrivals deliveries and shortages to the projection start date`() {
         val supply = supply(quantity = 8, reserved = 3, arrivalDate = today.minusDays(2))
-        every { supplyRepository.findAll() } returns listOf(supply)
-        every { inboundReservationRepository.findAll() } returns listOf(
+        every { supplyRepository.findAllBySku("SKU") } returns listOf(supply)
+        every { inboundReservationRepository.findAllBySku("SKU") } returns listOf(
             inboundReservation(supply, "CONFIRMED", 3, today.minusDays(1))
         )
-        every { backorderRepository.findAll() } returns listOf(
+        every { backorderRepository.findAllBySku("SKU") } returns listOf(
             backorder("CONFIRMED", 2, today.minusDays(1))
         )
-        every { claimRepository.findAll() } returns listOf(claim("CONFIRMED", OrderReservationStatus.CONFIRMED))
+        every { claimRepository.findAllById(any()) } returns listOf(claim("CONFIRMED", OrderReservationStatus.CONFIRMED))
 
-        processor.process(today.minusDays(5))
+        processor.processSku(today.minusDays(5), "SKU")
 
         startDate.captured shouldBe today
         val daily = dailySnapshots.captured.single()
@@ -215,10 +216,10 @@ class StockProjectionProcessorTest {
             lotId = stock.lotId
             received = true
         }
-        every { stockRepository.findAll() } returns listOf(stock)
-        every { supplyRepository.findAll() } returns listOf(received)
+        every { stockRepository.findAllBySku("SKU") } returns listOf(stock)
+        every { supplyRepository.findAllBySku("SKU") } returns listOf(received)
 
-        processor.process(today)
+        processor.processSku(today, "SKU")
 
         val daily = dailySnapshots.captured.single()
         daily.snapshotDate shouldBe today
@@ -232,27 +233,27 @@ class StockProjectionProcessorTest {
     fun `rejects active demand without a valid order claim`(source: String, lifecycle: String) {
         val stock = stock(5, 2)
         val supply = supply(5, 2)
-        every { stockRepository.findAll() } returns listOf(stock)
-        every { supplyRepository.findAll() } returns listOf(supply)
+        every { stockRepository.findAllBySku("SKU") } returns listOf(stock)
+        every { supplyRepository.findAllBySku("SKU") } returns listOf(supply)
         if (lifecycle == "expired") {
-            every { claimRepository.findAll() } returns listOf(claim("ORDER", OrderReservationStatus.EXPIRED))
+            every { claimRepository.findAllById(any()) } returns listOf(claim("ORDER", OrderReservationStatus.EXPIRED))
         }
         when (source) {
-            "stock" -> every { stockReservationRepository.findAll() } returns
+            "stock" -> every { stockReservationRepository.findAllBySku("SKU") } returns
                 listOf(stockReservation(stock, "ORDER", 2, today))
-            "inbound" -> every { inboundReservationRepository.findAll() } returns
+            "inbound" -> every { inboundReservationRepository.findAllBySku("SKU") } returns
                 listOf(inboundReservation(supply, "ORDER", 2, today))
-            "backorder" -> every { backorderRepository.findAll() } returns listOf(backorder("ORDER", 2, today))
+            "backorder" -> every { backorderRepository.findAllBySku("SKU") } returns listOf(backorder("ORDER", 2, today))
         }
 
-        val exception = shouldThrow<IllegalStateException> { processor.process(today) }
+        val exception = shouldThrow<IllegalStateException> { processor.processSku(today, "SKU") }
 
         exception.message shouldBe if (lifecycle == "expired") {
             "Expired order 'ORDER' still has active reservations or backorders."
         } else {
             "Active reservation or backorder 'ORDER' has no allocation order claim."
         }
-        verify(exactly = 0) { snapshotRepository.replaceFrom(any(), any(), any()) }
+        verify(exactly = 0) { snapshotRepository.replaceSkuFrom("SKU", any(), any(), any()) }
     }
 
     @ParameterizedTest
@@ -261,45 +262,45 @@ class StockProjectionProcessorTest {
         val stockReservation = stockReservation(stock(5), "ORDER", 2, today)
         val inboundReservation = inboundReservation(supply(5), "ORDER", 2, today)
         if (source == "stock") {
-            every { stockReservationRepository.findAll() } returns listOf(stockReservation)
+            every { stockReservationRepository.findAllBySku("SKU") } returns listOf(stockReservation)
         } else {
-            every { inboundReservationRepository.findAll() } returns listOf(inboundReservation)
+            every { inboundReservationRepository.findAllBySku("SKU") } returns listOf(inboundReservation)
         }
 
-        val exception = shouldThrow<IllegalStateException> { processor.process(today) }
+        val exception = shouldThrow<IllegalStateException> { processor.processSku(today, "SKU") }
 
         exception.message shouldBe if (source == "stock") {
             "Stock reservation '${stockReservation.id}' references missing stock."
         } else {
             "Inbound reservation '${inboundReservation.id}' references missing supply."
         }
-        verify(exactly = 0) { snapshotRepository.replaceFrom(any(), any(), any()) }
+        verify(exactly = 0) { snapshotRepository.replaceSkuFrom("SKU", any(), any(), any()) }
     }
 
     @Test
     fun `rejects unreceived supply that conflicts with an existing stock lot`() {
         val stock = stock(5)
-        every { stockRepository.findAll() } returns listOf(stock)
-        every { supplyRepository.findAll() } returns listOf(supply(3).apply { lotId = stock.lotId })
+        every { stockRepository.findAllBySku("SKU") } returns listOf(stock)
+        every { supplyRepository.findAllBySku("SKU") } returns listOf(supply(3).apply { lotId = stock.lotId })
 
-        shouldThrow<IllegalArgumentException> { processor.process(today) }.message shouldBe
+        shouldThrow<IllegalArgumentException> { processor.processSku(today, "SKU") }.message shouldBe
             "Inbound shipment 'SHIPMENT' conflicts with an existing stock lot."
-        verify(exactly = 0) { snapshotRepository.replaceFrom(any(), any(), any()) }
+        verify(exactly = 0) { snapshotRepository.replaceSkuFrom("SKU", any(), any(), any()) }
     }
 
     @ParameterizedTest
     @CsvSource("5, 2, 3", "2, 3, 3")
     fun `rejects confirmed deliveries exceeding reserved or on-hand stock`(onHand: Int, reserved: Int, quantity: Int) {
         val stock = stock(onHand, reserved)
-        every { stockRepository.findAll() } returns listOf(stock)
-        every { stockReservationRepository.findAll() } returns listOf(
+        every { stockRepository.findAllBySku("SKU") } returns listOf(stock)
+        every { stockReservationRepository.findAllBySku("SKU") } returns listOf(
             stockReservation(stock, "CONFIRMED", quantity, today)
         )
-        every { claimRepository.findAll() } returns listOf(claim("CONFIRMED", OrderReservationStatus.CONFIRMED))
+        every { claimRepository.findAllById(any()) } returns listOf(claim("CONFIRMED", OrderReservationStatus.CONFIRMED))
 
-        shouldThrow<IllegalArgumentException> { processor.process(today) }.message shouldBe
+        shouldThrow<IllegalArgumentException> { processor.processSku(today, "SKU") }.message shouldBe
             "Projected allocation exceeds stock for lot '${stock.lotId}' on $today."
-        verify(exactly = 0) { snapshotRepository.replaceFrom(any(), any(), any()) }
+        verify(exactly = 0) { snapshotRepository.replaceSkuFrom("SKU", any(), any(), any()) }
     }
 
     private fun stock(onHand: Int, reserved: Int = 0) = StockEntity(

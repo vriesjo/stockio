@@ -23,6 +23,7 @@ interface InboundShipmentJpaRepository : InboundShipmentRepository, JpaRepositor
 @ConditionalOnProperty(prefix = "stockio.reservation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface InboundSupplyJpaRepository : InboundSupplyRepository, JpaRepository<InboundSupplyEntity, String> {
     override fun findAll(): List<InboundSupplyEntity>
+    override fun findAllBySku(sku: String): List<InboundSupplyEntity>
     override fun findAllByShipmentId(shipmentId: String): List<InboundSupplyEntity>
     override fun findAllById(ids: Iterable<String>): List<InboundSupplyEntity>
     override fun <S : InboundSupplyEntity> saveAll(entities: Iterable<S>): List<S>
@@ -50,6 +51,11 @@ interface InboundSupplyJpaRepository : InboundSupplyRepository, JpaRepository<In
 @ConditionalOnProperty(prefix = "stockio.reservation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface InboundReservationJpaRepository : InboundReservationRepository, JpaRepository<InboundReservationEntity, UUID> {
     override fun findAll(): List<InboundReservationEntity>
+    @Query(
+        "select r from InboundReservationEntity r join InboundSupplyEntity s " +
+            "on s.shipmentLineId = r.shipmentLineId where s.sku = :sku"
+    )
+    override fun findAllBySku(@Param("sku") sku: String): List<InboundReservationEntity>
     override fun deleteAll(entities: Iterable<InboundReservationEntity>)
     override fun <S : InboundReservationEntity> saveAll(entities: Iterable<S>): List<S>
 

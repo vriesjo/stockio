@@ -18,6 +18,8 @@ import org.springframework.data.repository.query.Param
 interface AllocationOrderClaimRepository {
 
     fun findAll(): List<AllocationOrderClaimEntity>
+    fun findExpiredOrderIds(now: Instant, batchSize: Int): List<String>
+    fun lockByOrderId(orderId: String): AllocationOrderClaimEntity?
     fun lockExpiredBatch(now: Instant, batchSize: Int): List<AllocationOrderClaimEntity>
     fun findOldestOverdueDeadline(now: Instant): Instant?
     fun findById(@Param("id") id: String): Optional<AllocationOrderClaimEntity>
@@ -76,6 +78,7 @@ interface AllocationSourceRepository {
 
 interface DemandOrderLineRepository {
 
+    fun findDistinctOrderIdsBySku(sku: String): List<String>
     fun findAllByOrderIdInOrderByOrderIdAscSequenceNumberAsc(orderIds: Collection<String>): List<DemandOrderLineEntity>
     fun findAllById(ids: Iterable<String>): List<DemandOrderLineEntity>
     fun <S : DemandOrderLineEntity> saveAll(entities: Iterable<S>): List<S>
@@ -84,6 +87,7 @@ interface DemandOrderLineRepository {
 interface OpenBackorderRepository {
 
     fun findAll(): List<OpenBackorderEntity>
+    fun findAllBySku(sku: String): List<OpenBackorderEntity>
     fun <S : OpenBackorderEntity> save(entity: S): S
     fun <S : OpenBackorderEntity> saveAll(entities: Iterable<S>): List<S>
     fun delete(entity: OpenBackorderEntity)

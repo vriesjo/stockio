@@ -103,7 +103,7 @@ for the pull result before using equivalent-product matching.
 | --- | --- |
 | `allocation_and_stock_projection` | Allocate new orders by priority/FIFO and refresh forecasts without changing physical stock. Eligible inbound supply must arrive by the delivery deadline; unfilled quantities become backorders. |
 | `allocate_open_backorders` | Fulfill persisted backorders by priority/FIFO using eligible inventory and arrived inbound supply, then refresh forecasts without synchronizing stock. |
-| `process_stock_ledger` | Manually expire overdue holds, rebuild today's forecast, and apply due receipts/confirmed deliveries to live stock in one transaction. |
+| `process_stock_ledger` | Rebuild/apply today's movements atomically per SKU, with whole-order expiry and durable partial-run recovery. |
 | `generate_excel_report` | Write a workbook with allocation details, source allocations, native pivot tables, and a formula-based SKU/status summary under `~/itzitzo-mcp/reports` by default. Set `REPORT_DIR` to override the output directory. |
 
 ## REST API
@@ -123,8 +123,10 @@ removes the recurring schedule but does not cancel already queued/running work.
 The zone also configures the shared business clock. Manual synchronization remains
 available through `process_stock_ledger`.
 
-`GET /api/logistics/stock-ledger/status` exposes the last committed synchronization
-and its freshness deadline. Actuator's `stockLedger` health component becomes
+`GET /api/stock/ledger/status` exposes the last complete synchronization,
+freshness deadline, and additive `progress` for the latest durable run (status,
+total/completed SKU counts, owner lease, and last error). A partial run never
+advances global success. Actuator's `stockLedger` health component becomes
 `DOWN` after the next expected cron occurrence plus
 `ALLOCATION_LEDGER_SYNC_FRESHNESS_TOLERANCE` (default `1h`) is missed. Configure
 operational monitoring against health/status to alert on stale stock processing.
@@ -190,24 +192,46 @@ their holds expire unless confirmed; only confirmed orders project outgoing
 deliveries and shortages. Unreceived persisted shipments remain available to later
 allocation runs.
 
-Document registration uses a shared projection gate and sorted database locks
+Document registration uses sorted database locks
 for order/shipment header and line identities, including new identities.
 Independent registrations can overlap. Inbound amendments also acquire sorted
 SKU locks and lock existing supply rows before validation, so they cannot
 overwrite concurrent reservations or reduce supply below committed holds.
 The run lock follows SKU acquisition to avoid blocking workers while waiting
 for their SKU. These locks are transaction-scoped and work across service
-instances; Flyway V17 adds the retained identity-lock table. Projection,
-ledger, and expiry operations remain globally exclusive. This is not admission
-control and does not remove the per-request projection rebuild.
+instances; Flyway V17 adds the retained identity-lock table. Projection and
+ledger acquire the same SKU lock before reading protected state. Expiry locks
+the whole immutable order SKU set in sorted order, then releases all holds and
+refreshes affected forecasts atomically. Production paths no longer acquire
+the global projection gate. Allocation commits before its retryable synchronous
+scoped forecast refresh; horizons are SKU-local and cross-SKU reads are not
+point-in-time snapshots. This is not admission control.
 
 The recurring ledger job, or manual `process_stock_ledger`, independently applies
-today's movements. It first cleans up expiry and rebuilds its projection under the
-same exclusive lock and transaction rather than trusting a saved forecast. Due
+today's movements through a frozen date/SKU manifest and sequential per-SKU
+transactions, rather than trusting saved forecasts. Overdue whole-order cleanup
+runs outside a ledger worker before retry. Due
 confirmed deliveries are consumed; arrived inbound holds become stock holds when
 still pending or needed for future delivery. Receipt/delivery state makes retries
 safe. PostgreSQL persists all operational data, forecasts, and sync status; Flyway
-applies schema migrations on startup.
+applies schema migrations on startup. V18 adds ledger run/work/coordinator
+metadata and a durable receipt-follow-up outbox. Committed work is skipped on
+current-day recovery; unfinished old-date runs are superseded and reconciled
+through a new current-day manifest. New SKUs enter the next run. Synchronous
+results are returned only after full completion.
+
+Receipt follow-up is persisted with the physical receipt and dispatched outside
+transactions, immediately after complete synchronization and by the recurring
+`dispatch-stock-receipt-followups` job every minute. Enqueue outages leave it
+pending; stable job/request identities make duplicate dispatch harmless.
+
+**Deployment:** stop all service instances, consumers and JobRunr writers;
+migrate/deploy every instance, then restart together. Do not mix old globally
+exclusive writers with the new SKU protocol. The ledger coordinator uses a
+renewable five-minute owner lease with transactional fencing after SKU locking.
+Concurrent sync callers wait without an outer database transaction/connection;
+the coordinator cannot be invoked inside an existing transaction. No measured
+production throughput guarantee or new admission limits are implied.
 
 ### Example `calculate_allocation` prompt + input:
 

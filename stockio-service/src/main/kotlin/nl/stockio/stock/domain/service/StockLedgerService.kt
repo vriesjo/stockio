@@ -6,6 +6,8 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import nl.stockio.stock.infra.StockLedgerSyncStatusJdbcTemplateRepository
+import nl.stockio.stock.domain.port.StockLedgerProgress
+import nl.stockio.stock.domain.port.StockLedgerRunRepository
 import org.jobrunr.scheduling.cron.CronExpression
 import org.springframework.boot.actuate.health.Health
 import org.springframework.boot.actuate.health.HealthIndicator
@@ -24,14 +26,16 @@ data class StockLedgerSyncStatus(
     val lotSnapshotCount: Int?,
     val nextExpectedAt: Instant,
     val staleAfter: Instant,
-    val stale: Boolean
+    val stale: Boolean,
+    val progress: StockLedgerProgress? = null
 )
 
 @Service
 class StockLedgerService(
     private val repository: StockLedgerSyncStatusJdbcTemplateRepository,
     private val properties: StockLedgerSyncProperties,
-    private val clock: Clock
+    private val clock: Clock,
+    private val runRepository: StockLedgerRunRepository
 ) {
     fun getStatusLastSyncRun(): StockLedgerSyncStatus {
         val syncState = repository.getSyncStatus()
@@ -48,7 +52,8 @@ class StockLedgerService(
             lotSnapshotCount = syncState.lotSnapshotCount,
             nextExpectedAt = nextExpected,
             staleAfter = staleAfter,
-            stale = properties.enabled && clock.instant() > staleAfter
+            stale = properties.enabled && clock.instant() > staleAfter,
+            progress = runRepository.getProgress()
         )
     }
 }

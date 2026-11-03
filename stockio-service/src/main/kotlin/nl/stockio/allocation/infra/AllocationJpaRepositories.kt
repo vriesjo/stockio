@@ -101,6 +101,16 @@ interface AllocationSkuOperationJpaRepository : AllocationSkuOperationRepository
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface AllocationOrderClaimJpaRepository : AllocationOrderClaimRepository, JpaRepository<AllocationOrderClaimEntity, String> {
     override fun findAll(): List<AllocationOrderClaimEntity>
+    @Query(
+        value = "SELECT order_id FROM demand_order WHERE reservation_status = 'PENDING_CONFIRMATION' " +
+            "AND reservation_expires_at <= :now ORDER BY reservation_expires_at, order_id LIMIT :batchSize",
+        nativeQuery = true
+    )
+    override fun findExpiredOrderIds(@Param("now") now: Instant, @Param("batchSize") batchSize: Int): List<String>
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select c from AllocationOrderClaimEntity c where c.orderId = :orderId")
+    override fun lockByOrderId(@Param("orderId") orderId: String): AllocationOrderClaimEntity?
 
     @Query(
         value = """
@@ -132,6 +142,8 @@ interface AllocationOrderClaimJpaRepository : AllocationOrderClaimRepository, Jp
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface DemandOrderLineJpaRepository : DemandOrderLineRepository, JpaRepository<DemandOrderLineEntity, String> {
+    @Query("select distinct l.orderId from DemandOrderLineEntity l where l.sku = :sku")
+    override fun findDistinctOrderIdsBySku(@Param("sku") sku: String): List<String>
     override fun findAllById(ids: Iterable<String>): List<DemandOrderLineEntity>
     override fun findAllByOrderIdInOrderByOrderIdAscSequenceNumberAsc(orderIds: Collection<String>): List<DemandOrderLineEntity>
 }
@@ -139,6 +151,7 @@ interface DemandOrderLineJpaRepository : DemandOrderLineRepository, JpaRepositor
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface OpenBackorderJpaRepository : OpenBackorderRepository, JpaRepository<OpenBackorderEntity, String> {
     override fun findAll(): List<OpenBackorderEntity>
+    override fun findAllBySku(sku: String): List<OpenBackorderEntity>
     override fun <S : OpenBackorderEntity> save(entity: S): S
     override fun <S : OpenBackorderEntity> saveAll(entities: Iterable<S>): List<S>
     override fun delete(entity: OpenBackorderEntity)

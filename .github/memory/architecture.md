@@ -395,12 +395,12 @@ deployed services.
 | --- | --- |
 | `StockController` | Exposes ledger-freshness reads. |
 | `StockProjectionProcessor` | Rebuilds aggregate and lot-level daily projections from the live stock baseline and persisted reservations. |
-| `StockLedgerProcessor` | Expires overdue holds, rebuilds today's projection, and synchronizes it to live stock. |
+| `StockLedgerProcessor` / `StockLedgerSkuWorker` | Coordinate durable current-day manifests and atomically rebuild/apply/checkpoint one SKU at a time. |
 | `StockLedgerSyncJob` | Independently schedules ledger synchronization twice daily by default. |
 | `StockLedgerService` | Reads ledger freshness without changing stock. |
-| `StockProjectionLockRepository` | Acquires the shared/exclusive database coordination lock; the caller must already have a transaction. |
+| `StockReceiptFollowupDispatcher` | Dispatches transactionally persisted receipt follow-up immediately after full sync and through a retryable recurring job. |
 | `StockSnapshotRepository` | Reads and replaces derived snapshots through JDBC in the caller's transaction. |
-| Stock repository ports and JPA/JDBC adapters | Persist live stock, projection locks, snapshots, and synchronization status. |
+| Stock repository ports and JPA/JDBC adapters | Persist live stock, scoped snapshots, ledger manifests/checkpoints, receipt follow-up, and synchronization status. |
 
 The repository interfaces in `allocation/domain/port`, `reservation/domain/port`,
 `stock/domain/port`, and `product/domain/port` are the outbound ports shown in the diagram. Their
@@ -722,16 +722,17 @@ sequenceDiagram
         Job->>Service: expireBatch()
         Note over Service,DB: One transaction per batch, including forecast replacement
         Service->>Cleanup: expireDueBatch()
-        Cleanup->>DB: Acquire exclusive projection lock
-        Cleanup->>DB: Lock overdue pending headers, bounded by order count
+        Cleanup->>DB: Discover overdue header IDs without lifecycle locks
+        Cleanup->>DB: Lock sorted document keys, then every order SKU in sorted order
+        Cleanup->>DB: Lock headers and recheck deadlines/status
         Cleanup->>DB: Load all selected orders' lines and current reservation sources
         Cleanup->>DB: Release reserved counters and delete holds and backorders
         Cleanup->>DB: Mark headers EXPIRED and flush lifecycle changes
-        Cleanup-->>Service: Number of expired orders
         opt At least one order expired
-            Service->>Projection: process(today)
-            Projection->>DB: Replace forecast in the same transaction
+            Cleanup->>Projection: processSku(today, sku) for each affected SKU
+            Projection->>DB: Replace scoped forecasts in the same transaction
         end
+        Cleanup-->>Service: Number of expired orders
         Note over Service,DB: Commit releases locks and triggers cleanup success logs
         Service-->>Job: Batch count
     end
@@ -897,15 +898,15 @@ sequenceDiagram
     participant Snapshots as StockSnapshotRepository
     participant DB as PostgreSQL
 
-    Caller->>Projection: process(asOfDate)
-    Projection->>Operational: Acquire exclusive projection lock
-    Operational->>DB: Read live lots, unreceived supply, claims and active demand
+    Caller->>Projection: processSku(asOfDate, sku)
+    Projection->>Operational: Acquire SKU lock
+    Operational->>DB: Read selected SKU lots, supply, claims and active demand
     DB-->>Projection: Current operational baseline
     Projection->>Projection: Validate sources, lifecycle, lot identities and balances
     Projection->>Projection: Start at max(asOfDate, business today)
     Projection->>Projection: Simulate arrivals, holds and confirmed demand by day
-    Projection->>Snapshots: replaceFrom(startDate, aggregateSnapshots, lotSnapshots)
-    Snapshots->>DB: Delete lot and aggregate snapshots from startDate onward
+    Projection->>Snapshots: replaceSkuFrom(sku, startDate, aggregateSnapshots, lotSnapshots)
+    Snapshots->>DB: Delete only this SKU's snapshots from startDate onward
     Snapshots->>DB: Batch insert replacement rows through JDBC
     Note over Projection,DB: Replacement and caller's changes share the transaction
     Projection-->>Caller: Forecast rebuilt without physical stock or lifecycle changes
@@ -927,7 +928,7 @@ demand_qty = allocated_qty + shortage_qty
 
 The day's closing balance becomes the next day's opening balance. A confirmed backorder contributes to `shortage_qty` on its required delivery date but does not reduce physical stock. Only confirmed stock and inbound reservations reduce physical stock on their effective delivery date; pending reservations remain holds.
 
-The horizon ends at the latest unreceived arrival, confirmed reservation delivery,
+Each SKU's horizon ends at its latest unreceived arrival, confirmed reservation delivery,
 or confirmed backorder date, and includes at least the start date. Overdue events
 are applied at the start, not reconstructed in the past. Pending delivery dates
 do not extend the horizon, and future TTL release is not simulated. Earlier
@@ -962,7 +963,8 @@ inbound_quantity_available = expected_quantity - quantity_reserved
 ### Ledger synchronization flow
 
 Ledger synchronization runs independently of allocation. Both scheduled and
-manual entry points use the same processor and atomic synchronization logic.
+manual entry points use the same coordinator and atomic per-SKU synchronization.
+There is no whole-catalogue transaction or point-in-time read guarantee.
 
 ```mermaid
 sequenceDiagram
@@ -983,31 +985,31 @@ sequenceDiagram
     else Manual invocation
         Trigger->>Ledger: process(request with optional snapshotDate)
     end
-    Ledger->>DB: Acquire exclusive projection lock
-    Ledger->>Ledger: Resolve business today under lock and reject another explicit date
-    Note over Ledger,DB: One transaction holds the lock through cleanup, projection and sync
-    loop Until no overdue order batch remains
-        Ledger->>Cleanup: expireDueBatch()
-        Cleanup->>DB: Release overdue holds and persist expired lifecycle
+    Ledger->>DB: Begin/resume durable manifest for today's business date
+    loop Incomplete SKUs in sorted order
+        Ledger->>DB: Lock SKU, fence coordinator owner, lock work checkpoint
+        opt Overdue whole-order lifecycle found
+            Note over Ledger,DB: Roll back SKU attempt and release its locks
+            Ledger->>Cleanup: expireOrders(orderIds)
+            Cleanup->>DB: Lock all order SKUs, expire and refresh atomically
+            Note over Ledger,DB: Retry SKU after cleanup commits
+        end
+        Ledger->>Projection: processSku(today, sku)
+        Projection->>Snapshots: Replace selected SKU forecast in transaction
+        Ledger->>Snapshots: Read fresh scoped daily/lot snapshots
+        Ledger->>Ledger: Validate balances and current business date
+        Ledger->>DB: Apply receipts, confirmed deliveries and hold conversions
+        Ledger->>DB: Persist receipt follow-up and successful SKU checkpoint
+        Note over Ledger,DB: Commit one SKU; failed work rolls back and remains resumable
     end
-    Ledger->>Projection: process(today)
-    Projection->>Snapshots: Replace current/future forecast in same transaction
-    Ledger->>Snapshots: Read freshly generated daily and lot snapshots
-    Snapshots->>DB: Read JDBC snapshot rows
-    Ledger->>Ledger: Verify aggregate balances equal lot totals
-    Ledger->>DB: Apply physical lot quantities and reserved counters
-    Ledger->>DB: Consume due confirmed stock holds
-    Ledger->>DB: Convert retained inbound holds to stock holds
-    Ledger->>DB: Remove arrived inbound holds and mark supply received
     Ledger->>Status: Record successful sync timestamp, date and counts
-    Status->>DB: Update singleton sync status in the ledger transaction
-    Note over Ledger,DB: Commit all changes together or roll everything back
+    Status->>DB: Complete parent only after all manifest work is committed
     opt Newly received shipment lines
-        Ledger->>Runtime: After commit: enqueue stable command/job IDs for received SKUs
+        Ledger->>Runtime: Dispatch durable follow-up with stable command/job IDs
         Runtime->>Backorders: execute(BackorderAllocationRequest)
         Backorders->>Backorders: Allocate existing backorders and refresh projection
     end
-    Ledger->>Ledger: Emit structured success log after commit
+    Ledger->>Ledger: Log completed counts and elapsed time
     alt Scheduled invocation
         Ledger-->>Job: Sync result
         Job-->>Trigger: Execution completed
@@ -1016,7 +1018,13 @@ sequenceDiagram
     end
 ```
 
-`process_stock_ledger` accepts only today's `snapshotDate`; when omitted, it selects today using the business clock after acquiring the lock. Under one exclusive lock and transaction, it drains overdue reservation cleanup, rebuilds today's projection, and validates aggregate balances against lot-level balances. A freshly calculated empty projection is valid. Synchronization updates live lot quantities/reservations, removes due confirmed stock reservations, marks arrived shipments as received, and converts remaining inbound holds to stock reservations. Pending reservations are retained even when their delivery date has passed.
+`process_stock_ledger` accepts only today's `snapshotDate`; omission resolves it
+from the business clock. The coordinator freezes that date and a durable SKU
+manifest, then processes one SKU at a time. Each worker locks its SKU before
+decision reads, rebuilds its forecast, validates balances, applies physical
+movements and checkpoints atomically. Empty output is valid. Pending holds are
+retained even after delivery dates; overdue pending orders instead require
+independent atomic whole-order cleanup before retrying the worker.
 
 The sync transaction does not recalculate allocations or accept explicit
 warehouse movements. After committing newly received supply, it enqueues
@@ -1024,15 +1032,16 @@ affected-SKU backorder fulfillment as separate work. Repeating sync is safe
 because delivered reservations and received shipments are no longer projected
 as new movements.
 
-The callback derives stable request and job UUIDs from the snapshot date and
-sorted received shipment-line IDs. It is not a durable outbox: a crash between
-receipt commit and enqueue can lose the trigger, and enqueue failure cannot
-roll back the receipt. A later ledger run sees those lines as already received
-and need not recreate the trigger. Manual fulfillment remains a recovery option.
+`stock_receipt_followup` records stable request IDs derived from the date and
+sorted received shipment-line IDs inside each receipt transaction. Dispatch
+runs outside that transaction, immediately after complete synchronization and
+through the minute-based `dispatch-stock-receipt-followups` recurring job.
+Enqueue outages retain pending rows; duplicate dispatch reuses stable job and
+allocation-request IDs. Receipt commits do not depend on scheduler availability.
 
-`StockLedgerSyncJob` registers the stable JobRunr recurring ID `sync-stock-ledger`. The default five-field cron `0 0,12 * * *` runs at midnight and noon UTC. The configured zone also supplies the service's shared business `Clock`, including REST date validation, CSV imports, expiry, and projection dates. The separate harness publisher creates its own clock using the same zone setting. Each scheduled invocation selects today after acquiring the ledger lock, so delayed retries do not reuse yesterday's allocation date.
+`StockLedgerSyncJob` registers the stable JobRunr recurring ID `sync-stock-ledger`. The default five-field cron `0 0,12 * * *` runs at midnight and noon UTC. The configured zone also supplies the service's shared business `Clock`, including REST date validation, CSV imports, expiry, and projection dates. The separate harness publisher creates its own clock using the same zone setting. Each invocation resolves today's date; unfinished previous-day manifests become `SUPERSEDED` and a fresh current-day manifest reconciles their committed effects without replaying old forecasts.
 
-Allocation and explicit backorder fulfillment refresh forecasts but never trigger physical synchronization. Ledger sync still rebuilds its own projection under the same transaction and lock immediately before applying it: an earlier forecast may contain expired or changed holds. Until sync runs, arrived supply remains inbound and due confirmed deliveries remain reserved in live stock. Expected arrival and due delivery are still date-driven assumptions, not warehouse event confirmations.
+Allocation and explicit backorder fulfillment refresh forecasts but never trigger physical synchronization. Each ledger SKU worker rebuilds its own projection under the same SKU lock and transaction immediately before applying it: an earlier forecast may contain expired or changed holds. Until sync runs, arrived supply remains inbound and due confirmed deliveries remain reserved in live stock. Expected arrival and due delivery are still date-driven assumptions, not warehouse event confirmations.
 
 The default schedule normally allows up to roughly twelve hours of physical
 ledger lag; it does not slow down allocation or the one-minute expiry sweep.
@@ -1245,28 +1254,27 @@ the same ID/payload resumes or returns the existing run; conflicting reuse is
 rejected. Per-SKU operation results and document ownership prevent duplicate
 reservations.
 
-`StockProjectionLockRepository` coordinates participating paths through the
-singleton `stock_projection_lock` row (`id = 1`), not a lock on stock row 1.
-SKU workers and document initialization hold its shared lock; projection,
-expiry, and ledger sync use the exclusive lock. Callers must have an active
-transaction, and a missing lock row is an error. No registration/worker
-transaction upgrades its shared lock to exclusive.
+All participating writers use database-backed SKU coordination across warehouses.
+The former `stock_projection_lock` row and adapter remain for migration history
+and legacy lock tests, but no production workflow acquires that gate.
 
-Registration acquires the shared gate, all namespaced document keys in sorted
-order, all inbound SKU locks in sorted order, the run row, and then business
-rows. Acquiring SKU locks before the run row prevents a retry waiting on a
-worker while holding a run lock that could block that worker's foreign-key
-checks. Workers keep shared-gate -> SKU -> business-row ordering. Exclusive
-operations acquire their gate before business locks. Run completion does not
-acquire document or SKU locks.
+Registration acquires sorted namespaced document keys, sorted inbound SKU locks,
+the run row, and then business rows. SKU workers and scoped projection acquire
+their SKU before decision reads. Expiry acquires sorted order document keys,
+all immutable order SKUs in sorted order, lifecycle rows, then business rows.
+Never expand a held SKU set out of order or acquire document locks after SKUs.
+Acquiring SKU locks before run/lifecycle rows avoids blocking a worker's foreign
+key checks while waiting for its SKU. Run completion acquires no SKU locks.
 
 Document lock rows are lazily inserted with `ON CONFLICT DO NOTHING`, then
 locked transactionally; they remain stored like SKU lock rows. Namespaces keep
 order, order-line, shipment, and shipment-line identities distinct. Different
 document/SKU scopes can register concurrently; shared identities or inbound
 SKUs still serialize. Database row locks coordinate multiple service instances.
-This does not remove full projection rebuilds, bound waiting work, or increase
-the configured database/worker budgets.
+Projection reads/replaces only the selected SKU, even when output is empty.
+Allocation remains committed before its separate retryable synchronous forecast
+refresh. Expiry and affected forecasts share one transaction. SKU horizons are
+local; cross-SKU reads can combine independently committed versions.
 
 SKU concurrency is limited by `stockio.allocation.max-concurrent-skus` (default
 `4`), configured through `ALLOCATION_MAX_CONCURRENT_SKUS`. The limit applies to
@@ -1275,26 +1283,35 @@ separate new-demand and backorder services or application instances. Each SKU
 uses its own transaction; forecast replacement begins after the allocation
 transactions finish.
 
-**Shared gate versus business-row protection**
+**Ledger coordination is not a stock-projection gate**
 
-`PESSIMISTIC_READ` on the projection-lock row allows multiple shared holders;
-`PESSIMISTIC_WRITE` conflicts with both shared and exclusive holders. These locks
-remain held until transaction commit or rollback. "Read" describes the lock on
-the coordination row, not a read-only business transaction: shared holders can
-update orders, supply, and reservations under the narrower document/SKU/supply
-locks. Shared gate holders do not need to serialize their commits merely
-because they lock the same coordination row.
+`stock_ledger_coordinator` admits one sequential ledger coordinator across
+instances using a five-minute renewable owner lease. Competing callers wait
+outside transactions without reserving a connection. Workers acquire their
+SKU first, then lock/check the coordinator owner and work checkpoint; no
+coordinator/run row is held while waiting for a SKU. The owner check fences
+stale coordinators after takeover, and its transaction-scoped row lock prevents
+takeover during a physical SKU commit. Allocation, projection and expiry never
+acquire this ledger-only metadata row.
+
+The manifest includes stock, supply, reservations, shortages and old forecast
+scopes. New scopes wait for the next run. Successful work and physical effects
+commit together; current-day retries skip completed checkpoints. Parent success
+and freshness advance only after all intended work completes. The existing
+ledger status response adds `progress` with counts, status, lease and last error.
+Expired-date work cannot be applied; the next current-day manifest reconciles
+committed receipts/deliveries. Physical replay safety still depends on receipt
+flags, stable lots and consumed reservation rows.
 
 **Example: concurrent A(order 1, SKU 1), B(order 2, SKU 2), C(order 3, SKU 1)**
 
-Assume distinct request, order, and line identities, order-only requests with
-no inbound amendments, and no exclusive operation intervening. All three can
-hold the shared projection gate simultaneously. If A wins the SKU 1 lock:
+Assume distinct request, order, and line identities and order-only requests
+without inbound amendments. If A wins the SKU 1 lock:
 
 | Phase | A: order 1, SKU 1 | B: order 2, SKU 2 | C: order 3, SKU 1 |
 | --- | --- | --- | --- |
 | Document registration | Can register independently. | Can register independently. | Can register independently, despite sharing SKU 1 with A. |
-| SKU allocation | Holds the shared gate and SKU 1 lock; allocates supply. | Holds the shared gate and SKU 2 lock; proceeds independently. | Holds the shared gate but waits for SKU 1. |
+| SKU allocation | Holds SKU 1; allocates supply. | Holds SKU 2; proceeds independently. | Waits for SKU 1. |
 | After A commits its SKU transaction | Releases that transaction's locks. | Can commit its SKU transaction independently. | Acquires SKU 1, reads availability including A's committed reservations, then allocates and commits. |
 
 A and C cannot concurrently modify the same SKU through the allocation workers.
@@ -1307,12 +1324,15 @@ order-only documents can register concurrently even when their demand uses the
 same SKU. Registration, per-SKU allocation, run completion, and projection are
 separate transaction phases, not one transaction covering the entire request.
 
-After allocation, projection requires the exclusive gate. It waits for active
-shared holders, including a worker waiting for its SKU lock, and excludes new
-shared holders while it owns the gate. Exclusive operations can therefore add
-pauses between the phases above; this example is not a guaranteed execution
-schedule. The shared gate enables concurrency but does not remove projection
-serialization or connection-pool pressure from lock waits.
+Subsequent projection or ledger work for SKU 1 takes the same SKU lock, while
+SKU 2 can progress independently. Whole-order expiry may legitimately lock
+several SKUs together. Hot-SKU lock waits can still occupy pooled connections;
+this is not admission control or a throughput guarantee.
+
+Deploy this protocol through a coordinated stop/migrate/deploy/restart of all
+writers, including consumers and JobRunr workers. Mixed-version operation with
+old globally exclusive writers is unsupported. See the
+[implemented feature](./issues/feature-per-sku-stock-processing.md).
 
 Stable recurring IDs register one shared schedule definition across pods;
 database locks and lifecycle checks make overlapping executions/retries safe.
@@ -1353,19 +1373,22 @@ historical combined allocation/sync job results.
 | `allocation_record` | Per-order-line allocation and backorder results. |
 | `allocation_source` | Lot/shipment source detail for each allocation record. |
 | `open_backorder` | Current unfulfilled quantity by order line. |
-| `allocation_sku_lock` | Per-SKU serialization for allocation workers and inbound registration/amendments. |
+| `allocation_sku_lock` | Common SKU serialization for allocation, amendments, projection, ledger and whole-order expiry. |
 | `allocation_document_lock` | Namespaced header/line identity locks, including absent business identities, retained across registrations. |
 | `allocation_sku_operation` | Per-run, per-SKU result used to resume work safely. |
 | `demand_order` | Order header, original-run ownership, and shared confirmation/expiry lifecycle. |
 | `demand_order_line` | Immutable line identity, SKU, requested quantity, delivery date, and document position. |
 | `stock_daily_snapshots` | Aggregate daily stock trajectory. |
 | `stock_daily_lot_snapshots` | Lot-level daily balances and reservations used by the ledger sync. |
-| `stock_projection_lock` | Database row lock coordinating allocation, projection, and synchronization. |
+| `stock_projection_lock` | Retained legacy gate; no production workflow acquires it. |
 | `stock_ledger_sync_status` | Monitoring baseline and last committed manual/scheduled ledger success. |
+| `stock_ledger_run` / `stock_ledger_work` | Frozen run dates/manifests, partial outcomes and atomic per-SKU checkpoints. |
+| `stock_ledger_coordinator` | Renewable fenced owner lease for ledger-only execution; never held while acquiring SKUs. |
+| `stock_receipt_followup` | Durable, idempotently dispatched receipt-triggered backorder work. |
 | `allocation_job_result` | Serialized `{jobId, allocationRun}` completion for executor calls, including synchronous RabbitMQ execution. |
 | `flyway_schema_history` | Flyway migration metadata. |
 
-Flyway migrations V1-V17 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, enable pgvector product-resolution storage, add order-reservation expiry, migrate single-line documents to header/line relationships, and persist ledger-sync freshness. V15 preserves lifecycle timestamps, legacy line mappings, and received lots, and rejects inconsistent legacy reservation data. V17 adds the document identity-lock table without changing business data or keys. Hibernate validates the migrated JPA schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
+Flyway migrations V1-V18 create and evolve these tables, seed products, add daily projections and concurrency support, remove the retired stock-ledger tables, enable pgvector product-resolution storage, add order-reservation expiry, migrate single-line documents to header/line relationships, and persist ledger-sync freshness. V15 preserves lifecycle timestamps, legacy line mappings, and received lots, and rejects inconsistent legacy reservation data. V17 adds document identity locks; V18 adds ledger run/work/coordinator state, receipt follow-up, and a SKU index on order lines. Both are additive. Hibernate validates the migrated JPA schema at startup; it does not create or alter tables. The local Compose and PostgreSQL Testcontainers images include pgvector.
 
 ## Configuration and operations
 

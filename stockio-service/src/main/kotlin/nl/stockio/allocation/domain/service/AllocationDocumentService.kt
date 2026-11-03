@@ -16,7 +16,6 @@ import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.AllocationRunEntity
 import nl.stockio.allocation.infra.DemandOrderLineEntity
 import nl.stockio.reservation.domain.service.ReservationProperties
-import nl.stockio.stock.domain.port.StockProjectionLockRepository
 import nl.stockio.util.requestHash
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
@@ -24,10 +23,10 @@ import org.springframework.transaction.annotation.Transactional
 /**
  * Registers order headers, demand lines, and inbound supply before per-SKU allocation starts.
  *
- * [initialize] acquires the shared projection gate, sorted document identity locks, sorted inbound
+ * [initialize] acquires sorted document identity locks, sorted inbound
  * SKU locks, and then the run row before validating its contract version, identity, and payload hash.
  * Independent registrations can overlap; conflicting identities and supply amendments serialize.
- * Projection, ledger synchronization, and expiry retain the exclusive gate.
+ * Projection, ledger synchronization, allocation and expiry use the same SKU lock protocol.
  *
  * For new-demand runs, each new order is claimed by the run and its lines are stored in request
  * order. One reservation deadline is created per order using [Clock] and the configured TTL;
@@ -45,7 +44,6 @@ import org.springframework.transaction.annotation.Transactional
  */
 @Service
 class AllocationDocumentService(
-    private val stockProjectionLockRepository: StockProjectionLockRepository,
     private val documentLockRepository: AllocationDocumentLockRepository,
     private val skuLockRepository: AllocationSkuLockRepository,
     private val allocationRunRepository: AllocationRunRepository,
@@ -57,7 +55,6 @@ class AllocationDocumentService(
 ) {
     @Transactional
     fun initialize(runId: UUID, request: AllocationRequest) {
-        stockProjectionLockRepository.acquireAllocationReadLock()
         lockDocuments(request)
         lockInboundSkus(request)
 
