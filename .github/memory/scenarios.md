@@ -430,3 +430,36 @@ Identity, SKU, run and supply protections remain active.
 - Partial ledger execution remains visible and resumable without falsely advancing global success/freshness
 - Gate removal cannot overlap a deployed writer that still relies on global exclusivity
 - Exercise independent and hot SKUs; production capacity requires representative workload measurement, with no 1,000-request-per-second guarantee
+
+## Scenario 16: Reject Allocation Work When Execution Capacity Is Exhausted
+
+**Status:** Implemented; enforcement is opt-in with explicit limits.
+
+### Gherkin description
+**Given** allocation admission is enabled with approved execution and request-size limits \
+**And** every allocation execution permit on this service instance is occupied \
+**When** a valid client attempts another inline allocation \
+**Then** the service rejects that attempt promptly with HTTP 503 and a capacity-error code before allocation business writes \
+**And** accepted executions retain their permits until allocation, synchronous projection and applicable completion persistence finish or fail \
+**And** oversized requests are rejected distinctly before allocation or asynchronous enqueue \
+**And** background capacity rejection preserves recoverable work without a fallback enqueue storm or immediate retry loop
+
+### High-level technical analysis
+- Apply one non-waiting per-instance guard to shared allocation orchestration, not only controllers or individual SKU workers
+- Include optional execution-result persistence inside the guarded scope; reuse the same boundary for direct processors and background execution without nested permits
+- Preserve existing SKU transactions and synchronous forecast recovery; do not hold an outer database transaction across parallel workers
+- Validate bounded request shape before writes/fan-out and asynchronous enqueue; enforce approved ingress byte limits before deserialization where supported
+- Map typed overload separately from validation/business errors in HTTP, MCP, RabbitMQ and JobRunr; approve durable deferral before enabling enforcement
+- Expose low-cardinality admission/outcome/phase metrics through existing Micrometer infrastructure; durable backlog and global database budgets remain separate
+
+### Acceptance Criteria
+- At most the configured number of allocation orchestrations are admitted per instance across participating entry points; no permit-wait queue is introduced
+- Saturated inline HTTP attempts return 503 with a stable capacity code and perform no allocation run, document, reservation, backorder or completion writes for that attempt
+- A permit remains occupied during blocked projection and completion persistence and is released exactly once after success, exception or actual cancellation completion
+- An unchanged retry after committed allocation and failed projection preserves idempotency and refreshes forecasts without duplicate reservations
+- Exact request limits are accepted, over-limit requests are rejected before writes/enqueue, and limit bypass through internal or non-HTTP entry points is covered
+- RabbitMQ capacity rejection does not trigger generic JobRunr fallback or unintended dead-lettering; JobRunr deferral does not claim successful allocation or exhaust business retries unnoticed
+- Metrics identify admission pressure and processing outcomes with bounded labels, and status/health/ledger/expiry paths are not subjected to the allocation request guard
+- Multi-instance checks show independent limits rather than a claimed distributed cap; production limits require representative workload evidence
+
+Implemented feature: [Fail-fast allocation admission](./issues/feature-fail-fast-allocation-admission.md).

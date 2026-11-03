@@ -93,6 +93,15 @@ stockio:
       type: jpa
     csv-path: ${ALLOCATION_CSV_PATH:docs/allocations.csv}
     max-concurrent-skus: ${ALLOCATION_MAX_CONCURRENT_SKUS:4}
+    admission:
+      enabled: ${ALLOCATION_ADMISSION_ENABLED:false}
+      max-in-flight: ${ALLOCATION_ADMISSION_MAX_IN_FLIGHT:0}
+      max-orders: ${ALLOCATION_ADMISSION_MAX_ORDERS:0}
+      max-shipments: ${ALLOCATION_ADMISSION_MAX_SHIPMENTS:0}
+      max-demand-lines: ${ALLOCATION_ADMISSION_MAX_DEMAND_LINES:0}
+      max-inbound-lines: ${ALLOCATION_ADMISSION_MAX_INBOUND_LINES:0}
+      max-distinct-skus: ${ALLOCATION_ADMISSION_MAX_DISTINCT_SKUS:0}
+      max-request-bytes: ${ALLOCATION_ADMISSION_MAX_REQUEST_BYTES:0}
     rabbitmq:
       exchange: ${ALLOCATION_RABBITMQ_EXCHANGE:stockio.allocation.exchange}
       routing-key: ${ALLOCATION_RABBITMQ_ROUTING_KEY:allocation.request}

@@ -1,5 +1,28 @@
 # Active Context
 
+## Feature: Bound allocation execution with a fail-fast bulkhead
+
+- **Specification:** [Feature specification](./specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead)
+- **Scenario:** [Scenario 16](./scenarios.md#scenario-16-reject-allocation-work-when-execution-capacity-is-exhausted)
+- **Issue:** [Feature issue](./issues/feature-fail-fast-allocation-admission.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Complete, at the user's request.
+
+### Steps worked on
+- Inspected shared and alternate allocation processors, result persistence, product resolution, HTTP/MCP/RabbitMQ/JobRunr callers, existing validation, Axios forwarding and Micrometer infrastructure.
+- Approved opt-in enforcement with explicit positive concurrency/count/byte limits, distinct 503/400/413 errors, recoverable background deferral, unchanged request dates/holds and pre-enable queue reconciliation. Priority remains unset.
+- Implemented one non-waiting semaphore guard through scoped projection and optional completion persistence; the alternate backorder processor delegates without nested permits or an outer transaction.
+- Added raw HTTP/RabbitMQ byte bounds, canonical DTO and aggregate shape checks, pre-enqueue validation, MCP coverage, bounded-label Micrometer measurements and separately configured streamed UI byte enforcement.
+- Added enabled RabbitMQ one-consumer/prefetch-1/AUTO-ack backoff retaining the original message and JobRunr same-job scheduled capacity retries that do not consume the three business retries.
+- Verified the full service suite and final affected semaphore/executor/MCP/consumer/PostgreSQL checks, OpenAPI validation/generation, 22 UI tests and UI typechecking. No production capacity or live broker-outage/delivery-timeout benchmark is claimed.
+- Synchronized the implemented scenario/specification/issue, architecture, service configuration guidance and backpressure design. Existing staged changes remain preserved.
+
+### Next possible steps (suggestions)
+- Select measured limits, drain/reconcile incompatible queued work, deploy updated adapters and enable explicitly; configure the same flag/byte limit in the separate UI.
+- Exercise broker delivery-timeout/outage behavior on dedicated infrastructure and monitor admission rejection, queue age, history growth, database waits and maintenance freshness.
+- Database-wide budgets, bounded durable intake, traffic fairness and end-to-end product-resolution admission remain separate features.
+
 ## Feature: Coordinate stock processing through a per-SKU protocol
 
 - **Specification:** [Feature specification](./specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)

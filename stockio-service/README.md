@@ -64,6 +64,65 @@ Next.js and their own mock backend; `stockio-service` is not required.
 `127.0.0.1:18182`, including IntelliJ launches. Do not point these mock-backed
 tests at the real service on `8080`.
 
+### Opt-in allocation admission
+
+Allocation has a per-instance **semaphore bulkhead**, not a new thread pool.
+It rejects promptly before allocation writes when all execution permits are
+occupied, retaining each accepted permit through scoped projection and
+applicable completion persistence. It is disabled by default.
+
+Set `ALLOCATION_ADMISSION_ENABLED=true` and supply every limit below; missing
+or nonpositive limits fail service startup. There are no recommended production
+values. Their `0` configuration fallbacks mean unset, not an enabled limit.
+
+| Environment variable | Limit |
+| --- | --- |
+| `ALLOCATION_ADMISSION_MAX_IN_FLIGHT` | Concurrent allocation orchestrations per instance, shared by new demand/backorders and HTTP/MCP/RabbitMQ/JobRunr execution. |
+| `ALLOCATION_ADMISSION_MAX_ORDERS` | Incoming demand orders. |
+| `ALLOCATION_ADMISSION_MAX_SHIPMENTS` | Incoming shipments. |
+| `ALLOCATION_ADMISSION_MAX_DEMAND_LINES` | Total demand lines across orders. |
+| `ALLOCATION_ADMISSION_MAX_INBOUND_LINES` | Total inbound lines across shipments. |
+| `ALLOCATION_ADMISSION_MAX_DISTINCT_SKUS` | Union of incoming demand, supply and explicitly supplied internal SKU scope. |
+| `ALLOCATION_ADMISSION_MAX_REQUEST_BYTES` | Raw HTTP/RabbitMQ and canonical DTO byte bound; positive and below `2147483647`. |
+
+Set the same enable flag and byte limit in the separate Next.js process
+(`.env.local`) to bound its streamed body before Axios. The service bounds
+known/unknown-length HTTP bodies before JSON parsing. Canonical DTO validation
+also covers MCP/internal calls after transport deserialization; it does not
+bound the MCP transport itself. Raw and canonical representations must both
+fit, so JSON whitespace/default-field differences can affect acceptance.
+
+Inline capacity rejection returns `503` with
+`code: ALLOCATION_CAPACITY_EXHAUSTED`; count limits return `400`; byte limits
+return `413` with `code: ALLOCATION_REQUEST_TOO_LARGE`. Retry an uncertain
+allocation unchanged, preserving `requestId`. No `Retry-After`, automatic UI
+retry or implicit asynchronous fallback is added. Product resolution and its
+cache/external calls occur before this allocation guard; cached job completions
+can still be read while saturated.
+
+When enabled, RabbitMQ uses one consumer with prefetch 1 and AUTO acknowledgment.
+It keeps a capacity-rejected message unacknowledged and backs off that consumer
+thread for 5-10 seconds without an allocation permit or database connection; shutdown explicitly
+requests requeue. This is not a new broker queue or a JobRunr fallback.
+Broker delivery timeouts/durability still apply. JobRunr capacity failures
+schedule the same job after a jittered 5-10 seconds (plus polling), without
+using its three ordinary business retries. Job history/queue age can still grow.
+Drain/reconcile oversized queued work before enabling: invalid messages/jobs
+are not silently grandfathered. Business dates and reservation TTL are unchanged.
+
+Actuator exposes `stockio.allocation.admission.enabled`, `.limit`, `.active`,
+`.attempts`, `stockio.allocation.request.rejected`,
+`stockio.allocation.execution.duration` and `stockio.allocation.phase.duration`.
+Tags contain only bounded run type, outcome, phase and rejection reason.
+Correlate these with Hikari/lock waits and completed throughput; configure
+histograms/collection separately to measure p95/p99.
+
+This does not cap async HTTP enqueue backlog, all database transactions, total
+replica capacity, persisted forecast/backorder work, or ledger/expiry resource
+use. Choose limits under representative load and budget all replicas against
+the database. See the [feature](../.github/memory/issues/feature-fail-fast-allocation-admission.md)
+and [design guide](../docs/system_design_backpressure_admission_control.md).
+
 ### Test harness and synthetic traffic
 
 The [`stockio-test-harness`](../stockio-test-harness/README.md) module contains

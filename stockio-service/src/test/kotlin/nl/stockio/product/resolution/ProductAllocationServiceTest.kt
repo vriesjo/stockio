@@ -413,7 +413,12 @@ class ProductAllocationServiceTest {
             processingService = AllocationProcessor(
                 allocationService,
                 mock(StockProjectionProcessor::class.java),
-                mock(BackorderAllocationService::class.java)
+                mock(BackorderAllocationService::class.java),
+                nl.stockio.allocation.domain.service.AllocationAdmission(
+                    nl.stockio.allocation.domain.service.AllocationAdmissionProperties(),
+                    io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+                ),
+                mock(nl.stockio.allocation.domain.service.AllocationRequestLimits::class.java)
             ),
             properties = ProductResolutionProperties()
         )

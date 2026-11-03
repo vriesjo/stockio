@@ -19,6 +19,8 @@ import nl.stockio.allocation.domain.service.AllocationJobRunrService
 import nl.stockio.reservation.domain.service.OrderReservationService
 import nl.stockio.stock.domain.service.StockLedgerService
 import nl.stockio.stock.domain.service.StockLedgerSyncStatus
+import nl.stockio.allocation.domain.api.exception.CustomerExceptionHandler
+import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
@@ -144,5 +146,20 @@ class AllocationControllerTest {
                 ledgerSyncStatusService = stockLedgerService,
                 clock = clock
             )
-        ).build()
+        ).setControllerAdvice(CustomerExceptionHandler()).build()
+
+    @Test
+    fun `inline capacity rejection returns 503 rather than acceptance or async fallback`() {
+        val request = AllocationRequest(UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND)
+        val executor = io.mockk.mockk<AllocationJobExecutor>()
+        io.mockk.every { executor.executeSync(any(), request) } throws AllocationCapacityExceededException()
+        val mvc = createMockMvc(executor, mock(AllocationJobRunrService::class.java),
+            mock(OrderReservationService::class.java), mock(StockLedgerService::class.java))
+        mvc.perform(post("/api/allocation/jobs?async=false").contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(request)))
+            .andExpect(status().isServiceUnavailable)
+            .andExpect(jsonPath("$.code").value("ALLOCATION_CAPACITY_EXHAUSTED"))
+            .andExpect(header().doesNotExist("Location"))
+        io.mockk.verify(exactly = 0) { executor.executeAsync(any()) }
+    }
 }

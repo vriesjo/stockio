@@ -9,6 +9,7 @@ import nl.stockio.api.dto.AllocationCompletionResult
 import nl.stockio.api.dto.AllocationJobAccepted
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.allocation.domain.processor.AllocationProcessor
+import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
 import nl.stockio.stock.infra.AllocationJobResultEntity
 import org.jobrunr.jobs.annotations.Job
@@ -31,7 +32,8 @@ class AllocationJobExecutor(
     private val allocationProcessor: AllocationProcessor,
     private val jobResultRepository: AllocationJobResultRepository,
     private val jobScheduler: JobScheduler,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val limits: AllocationRequestLimits
 ) {
 
     /**
@@ -48,6 +50,7 @@ class AllocationJobExecutor(
      * @return the job ID for status polling and request ID for correlation, not an allocation result.
      */
     fun executeAsync(request: AllocationRequest): AllocationJobAccepted {
+        limits.validate(request)
         val event = AllocationRequestEvent(UUID.randomUUID(), request)
         logger.info { "Enqueueing allocation job ${event.jobId} for request ${event.request.requestId}" }
         jobScheduler.enqueue(event.jobId) {
@@ -69,14 +72,12 @@ class AllocationJobExecutor(
      * @param request allocation request to be processed.
      * @return the allocation completion result, either retrieved from storage or newly computed.
      */
-    @Job(name = "Execute Allocation Request", retries = 3)
+    @Job(name = "Execute Allocation Request", retries = 3, jobFilters = [AllocationCapacityRetryFilter::class])
     fun executeSync(jobId: UUID, request: AllocationRequest): AllocationCompletionResult {
         jobResultRepository.findById(jobId).orElse(null)?.let {
             return objectMapper.readValue(it.resultJson, AllocationCompletionResult::class.java)
         }
-        val allocationRun = allocationProcessor.process(request)
-        val completionResult = complete(jobId, allocationRun)
-        return completionResult
+        return allocationProcessor.process(request) { allocationRun -> complete(jobId, allocationRun) }
     }
 
     fun complete(

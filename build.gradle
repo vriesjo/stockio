@@ -91,6 +91,7 @@ project(":stockio-api") {
             OrderReservationResponse: 'nl.stockio.api.dto.OrderReservationResponse',
             OrderReservationLine: 'nl.stockio.api.dto.OrderReservationLine',
             OrderReservationStatus: 'nl.stockio.api.dto.OrderReservationStatus',
+            AdmissionErrorResponse: 'kotlin.collections.Map',
             ErrorResponse: 'kotlin.collections.Map'
         ])
         globalProperties.set([
@@ -185,6 +186,7 @@ project(":stockio-api") {
             ProductCandidate: 'nl.stockio.api.dto.ProductCandidate',
             ProductSource: 'nl.stockio.api.dto.ProductSource',
             AllocationRunResult: 'nl.stockio.api.dto.AllocationRunResult',
+            AdmissionErrorResponse: 'kotlin.collections.Map',
             ErrorResponse: 'kotlin.collections.Map'
         ])
         globalProperties.set([

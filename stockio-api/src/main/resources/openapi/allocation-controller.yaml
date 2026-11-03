@@ -23,6 +23,10 @@ paths:
         the allocation run ID as `jobId` without creating a JobRunr job, so the
         returned `Location` is not a valid job-status polling URL for that
         branch.
+        When opt-in allocation admission is enabled, configured request-shape
+        limits apply before enqueue or execution. Inline execution can be
+        rejected with 503 before allocation writes; asynchronous acceptance
+        does not reserve an execution permit or bound the durable backlog.
       parameters:
         - name: async
           in: query
@@ -50,7 +54,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/AllocationJobAccepted'
         '400':
-          description: The request is invalid or `asOfDate` is not the current business date.
+          description: The request is invalid, exceeds configured count limits, or `asOfDate` is not the current business date.
+        '413':
+          description: The request exceeds the enabled allocation byte limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdmissionErrorResponse'
+        '503':
+          description: Inline allocation capacity is exhausted; this attempt made no allocation writes. Retry unchanged later.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdmissionErrorResponse'
         '500':
           description: Processing or enqueue failed, or an unexpected server error occurred.
 
@@ -137,6 +153,20 @@ paths:
 
 components:
   schemas:
+    AdmissionErrorResponse:
+      type: object
+      required:
+        - code
+        - error
+      properties:
+        code:
+          type: string
+          enum:
+            - ALLOCATION_CAPACITY_EXHAUSTED
+            - ALLOCATION_REQUEST_TOO_LARGE
+        error:
+          type: string
+
     AllocationRequest:
       type: object
       required:

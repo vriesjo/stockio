@@ -1283,6 +1283,42 @@ separate new-demand and backorder services or application instances. Each SKU
 uses its own transaction; forecast replacement begins after the allocation
 transactions finish.
 
+**Opt-in allocation admission**
+
+`stockio.allocation.admission.enabled` defaults to false. When enabled,
+`AllocationAdmission` uses a shared per-instance `Semaphore.tryAcquire()` before
+allocation writes. A permit spans allocation, synchronous affected-SKU projection
+and optional execution-result persistence through `AllocationProcessor`'s
+completion callback. The alternate backorder processor delegates to the same
+guard. There is no outer transaction, permit-wait queue or additional thread pool.
+
+All execution/count/byte limits are explicit and positive when enabled.
+Shape validation also precedes asynchronous enqueue. Service HTTP bodies and
+RabbitMQ messages have pre-JSON byte checks; the separate Next.js process needs
+the same opt-in flag and byte setting. Internal/MCP DTOs have bounded canonical
+serialization after transport deserialization, not a transport-level byte cap.
+Capacity HTTP errors are 503, count limits 400 and byte limits 413. MCP retains
+the coded retryable error. Existing success contracts and request identity remain.
+
+Enabled RabbitMQ intake uses one consumer, prefetch 1 and AUTO acknowledgments.
+Capacity backoff leaves the original message unacknowledged while the consumer
+waits 5-10 seconds without a database connection/permit; interruption/shutdown
+requests requeue. Capacity does not trigger generic JobRunr fallback.
+JobRunr's annotation-elected state filter durably schedules the same allocation/
+backorder job after 5-10 seconds plus polling, excluding capacity failures from
+its three ordinary business retries. No new queue/schema is introduced.
+
+Micrometer exposes configured/enabled/active admission, admitted/saturated
+attempts, shape rejections and execution/phase timers with bounded labels.
+Product resolution, cached result reads, ledger, expiry and status operations
+do not acquire allocation permits. This is not a distributed limiter,
+database-work budget, bounded durable backlog, maintenance reservation or
+forecast-cost bound. Reconcile oversized queued work before enabling; preserve
+dates/holds and monitor queue age, history growth, broker delivery timeout,
+Hikari waits and maintenance freshness. See the
+[feature](./issues/feature-fail-fast-allocation-admission.md) and
+[configuration guide](../../stockio-service/README.md#opt-in-allocation-admission).
+
 **Ledger coordination is not a stock-projection gate**
 
 `stock_ledger_coordinator` admits one sequential ledger coordinator across

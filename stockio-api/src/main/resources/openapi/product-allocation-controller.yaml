@@ -16,6 +16,9 @@ paths:
         Resolves the requested product against the active catalog and, when
         equivalent matching is enabled, may use external product evidence.
         A successful resolution is submitted to the shared allocation flow.
+        Opt-in allocation admission limits the allocation phase, not preceding
+        product resolution. Capacity rejection makes no allocation writes for
+        this attempt, but product-cache updates or earlier attempts may exist.
       requestBody:
         required: true
         content:
@@ -30,11 +33,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProductAllocationResponse'
         '400':
-          description: The request is invalid or cannot be processed.
+          description: The request is invalid, exceeds configured allocation count limits, or cannot be processed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The request exceeds the enabled allocation byte limit.
+          content:
+            application/json:
+              schema:
+                $ref: './allocation-controller.yaml#/components/schemas/AdmissionErrorResponse'
+        '503':
+          description: Allocation execution capacity is exhausted. Retry the request unchanged later.
+          content:
+            application/json:
+              schema:
+                $ref: './allocation-controller.yaml#/components/schemas/AdmissionErrorResponse'
         '500':
           description: An unexpected server error occurred.
 

@@ -350,6 +350,62 @@ document identity, sorted inbound SKU and run-row protections remain in force.
 - [Feature issue: concurrent document registration](./issues/feature-concurrent-document-registration.md)
 - [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
 
+## Feature: Bound allocation execution with a fail-fast bulkhead
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md#cross-cutting-concurrency-idempotency-and-rollout), [Per-SKU stock processing](#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Bounded Context:** Allocation Application Orchestration & Ingress Adapters
+
+### Overview
+
+Bound admitted allocation orchestrations per service instance before allocation
+business writes, retaining capacity through synchronous projection and applicable
+execution-result persistence. Reject saturated inline HTTP with 503, bound
+incoming request shape, and expose tuning metrics. Include explicit background
+overload handling so RabbitMQ/JobRunr cannot bypass admission or amplify retries.
+Implementation is approved with opt-in enforcement and explicit operator-supplied
+limits, distinct 503/400/413 errors, recoverable background deferral, unchanged
+dates/holds and pre-enable reconciliation of existing oversized work.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Shared fail-fast admission | Use one configurable per-instance allocation execution limit across participating entry points; attempt admission without a waiting queue and before allocation run/document/reservation writes. |
+| FR-02 | Complete permit lifetime | Retain one permit through allocation, synchronous affected-SKU projection and execution-result persistence where applicable; release exactly once only after the actual work stops, on success or failure. |
+| FR-03 | Explicit overload responses | Return HTTP 503 with a stable capacity-error code for rejected inline execution; provide distinct retryable MCP errors and safe durable-worker deferral without silently converting rejected HTTP work to asynchronous work. |
+| FR-04 | Bounded request shape | Enforce approved order/shipment counts, total demand/inbound line counts and distinct-SKU limits before allocation writes or task fan-out, including before HTTP asynchronous enqueue; define byte-size enforcement separately for each ingress. |
+| FR-05 | Safe background overload | Distinguish capacity rejection from invalid input and business failure; prevent RabbitMQ fallback enqueue storms, tight requeue loops, accidental dead-lettering and false JobRunr success on deferred work. |
+| FR-06 | Preserve recovery contracts | Preserve request identity, payload checks, per-SKU locks, partial-run recovery, synchronous projection and physical-ledger separation; do not extend reservation deadlines or silently retime delayed work. |
+| FR-07 | Admission visibility | Expose configured capacity, active permits, admitted/rejected attempts, shape-limit rejections, execution outcomes and duration, plus allocation/projection/completion phase durations, through existing Micrometer infrastructure. |
+| FR-08 | Controlled configuration and cutover | Validate enabled limits at startup, document per-instance scope and all participating callers, and enable enforcement only after adapter overload behavior and queued-work compatibility are approved and verified. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | No hidden waiting | Admission must not sleep or wait for a permit, hold a database connection while waiting, or create another unbounded application queue. |
+| NFR-02 | Existing consistency | Do not change transaction/lock ordering, FIFO allocation, forecast freshness, reservation quantities, or ledger/expiry semantics; a projection failure may still follow committed allocation. |
+| NFR-03 | Honest resource boundary | Bound allocation orchestrations per instance, not all HTTP work, database transactions, durable backlog or persisted-state projection cost; size limits from measurements rather than Hikari defaults. |
+| NFR-04 | Bounded observability | Use fixed low-cardinality metric labels; never use request/job/order IDs, SKUs, customer data, payloads or exception messages as metric tags. |
+| NFR-05 | Limited implementation | Reuse existing processors, validation, adapters, Micrometer and scheduling infrastructure; avoid a new limiter framework, database schema or scheduler unless the approved retry policy requires one. |
+
+### Plan
+
+1. Approve entry-point coverage, enablement, numerical execution/request limits, byte-limit ownership, retry/defer policies and treatment of already queued work; capture the baseline.
+2. Introduce validated admission/request-limit configuration, bounded shape validation, a typed capacity exception and a non-waiting application admission guard with Micrometer measurements.
+3. Wrap shared allocation orchestration through projection and optional completion persistence; route the alternate backorder processor through the same boundary without nested permits or an outer transaction.
+4. Integrate HTTP/MCP errors and pre-enqueue shape checks; implement and verify RabbitMQ/JobRunr overload handling before enabling the common guard, including receipt-triggered backorders.
+5. Add focused permit-lifetime, rejection, payload, adapter and concurrency/recovery checks; measure independent/hot SKUs, slow projection and background contention on dedicated test infrastructure.
+6. Document configured limits, error/retry contracts, metrics, queue-date caveats and rollout; synchronize architecture, scenarios, specification, issue, API documentation, service guidance and active context with the implemented behavior.
+
+### Resources
+
+- [Scenario 16: Reject Allocation Work When Execution Capacity Is Exhausted](./scenarios.md#scenario-16-reject-allocation-work-when-execution-capacity-is-exhausted)
+- [Feature issue: fail-fast allocation admission](./issues/feature-fail-fast-allocation-admission.md)
+- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+
 ## Feature: Coordinate stock processing through a per-SKU protocol
 
 - **Status:** Done

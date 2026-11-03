@@ -137,6 +137,9 @@ class AllocationIntegrationTest {
     private lateinit var allocationService: AllocationService
 
     @Autowired
+    private lateinit var backorderAllocationService: BackorderAllocationService
+
+    @Autowired
     private lateinit var allocationJobExecutor: AllocationJobExecutor
 
     @Autowired
@@ -572,6 +575,13 @@ class AllocationIntegrationTest {
 
     @Test
     fun `allocation projection failure can resume without duplicating committed reservations`() {
+        val admissionProperties = AllocationAdmissionProperties(true, 1, 2, 2, 3, 3, 2, 4096)
+        val registry = io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+        val admission = AllocationAdmission(admissionProperties, registry)
+        val limits = AllocationRequestLimits(admissionProperties, objectMapper, registry)
+        val guarded = AllocationProcessor(allocationService, stockProjectionProcessor, backorderAllocationService,
+            admission, limits)
+        val guardedExecutor = AllocationJobExecutor(guarded, jobResultRepository, jobScheduler, objectMapper, limits)
         val today = LocalDate.now()
         stockRepository.save(
             StockEntity(sku = "MAKI-ZALM", lotId = "ALLOCATION-RETRY-LOT", receivedDate = today, quantityOnHand = 5)
@@ -586,19 +596,41 @@ class AllocationIntegrationTest {
         )
         val request = reservationRequest("ALLOCATION-RETRY-ORDER", 3)
         Assertions.assertThrows(AllocationProjectionException::class.java) {
-            allocationJobExecutor.executeSync(request.requestId, request)
+            guardedExecutor.executeSync(request.requestId, request)
         }
+        Assertions.assertEquals(0.0, registry.get("stockio.allocation.admission.active").gauge().value())
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
         Assertions.assertFalse(jobResultRepository.existsById(request.requestId))
 
         inboundSupplyRepository.deleteById("ALLOCATION-RETRY-LINE")
-        val result = allocationJobExecutor.executeSync(request.requestId, request)
+        val result = guardedExecutor.executeSync(request.requestId, request)
         Assertions.assertEquals(3, result.allocationRun.allocations.single().allocatedFromInventory)
         Assertions.assertEquals(3, snapshotRepository.findLotsByDate(today).single().quantityReserved)
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
         Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+    }
+
+    @Test
+    fun `saturated admission rejects before persisted run document or reservation writes`() {
+        val properties = AllocationAdmissionProperties(true, 1, 1, 1, 1, 1, 1, 4096)
+        val registry = io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+        val admission = AllocationAdmission(properties, registry)
+        val limits = AllocationRequestLimits(properties, objectMapper, registry)
+        val guarded = AllocationProcessor(allocationService, stockProjectionProcessor, backorderAllocationService,
+            admission, limits)
+        val request = reservationRequest("ADMISSION-REFUSED", 1)
+        admission.execute(request.runType) {
+            Assertions.assertThrows(AllocationCapacityExceededException::class.java) { guarded.process(request) }
+            Assertions.assertEquals(0L, jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM allocation_run WHERE request_id = ?", Long::class.java, request.requestId) ?: -1L)
+            Assertions.assertFalse(claimRepository.existsById("ADMISSION-REFUSED"))
+            Assertions.assertEquals(0L, stockReservationRepository.count())
+            Assertions.assertEquals(0L, backorderRepository.count())
+        }
+        guarded.process(request)
+        Assertions.assertTrue(claimRepository.existsById("ADMISSION-REFUSED"))
     }
 
     @Test

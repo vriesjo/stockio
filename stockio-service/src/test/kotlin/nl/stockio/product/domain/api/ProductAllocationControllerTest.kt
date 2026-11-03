@@ -8,6 +8,9 @@ import nl.stockio.api.dto.ProductAllocationRequest
 import nl.stockio.api.dto.ProductAllocationResponse
 import nl.stockio.api.dto.ProductAllocationStatus
 import nl.stockio.product.domain.service.ProductAllocationService
+import nl.stockio.allocation.domain.api.exception.CustomerExceptionHandler
+import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
@@ -82,4 +85,21 @@ class ProductAllocationControllerTest {
         requiredDeliveryDate = LocalDate.parse("2026-10-20"),
         asOfDate = LocalDate.parse("2026-10-19")
     )
+
+    @Test
+    fun `capacity and byte errors remain distinct from the controllers input error handler`() {
+        for ((exception, expected, code) in listOf(
+            Triple(AllocationCapacityExceededException(), 503, "ALLOCATION_CAPACITY_EXHAUSTED"),
+            Triple(AllocationRequestTooLargeException(), 413, "ALLOCATION_REQUEST_TOO_LARGE")
+        )) {
+            val service = mock(ProductAllocationService::class.java)
+            `when`(service.allocate(request())).thenThrow(exception)
+            val mvc = MockMvcBuilders.standaloneSetup(ProductAllocationController(service))
+                .setControllerAdvice(CustomerExceptionHandler()).build()
+            mvc.perform(post("/api/products/allocate").contentType(MediaType.APPLICATION_JSON)
+                .content(jacksonObjectMapper().findAndRegisterModules().writeValueAsString(request())))
+                .andExpect(status().`is`(expected))
+                .andExpect(jsonPath("$.code").value(code))
+        }
+    }
 }

@@ -15,13 +15,17 @@ running instance has been upgraded.
 The [concurrent-registration feature](../.github/memory/issues/feature-concurrent-document-registration.md)
 implemented narrower registration. The per-SKU follow-up now also implements
 scoped projection, atomic SKU ledger work, whole-order expiry and durable receipt
-follow-up. Admission control remains a proposal.
+follow-up. The first allocation semaphore bulkhead is also implemented as an
+explicit opt-in; database-work budgets, rate limiting and bounded durable intake
+remain proposals.
 
 Related material:
 
 - [Stockio architecture](../.github/memory/architecture.md)
 - [System design: prevent duplicate allocation](./system_design_interview.md)
 - [Implemented feature: per-SKU stock processing](../.github/memory/issues/feature-per-sku-stock-processing.md)
+- [Feature: fail-fast allocation admission](../.github/memory/issues/feature-fail-fast-allocation-admission.md)
+- [Admission configuration](../stockio-service/README.md#opt-in-allocation-admission)
 
 ## 1. Current execution and bottlenecks
 
@@ -40,6 +44,7 @@ HTTP request
 
 | Boundary | Current behavior |
 | --- | --- |
+| Allocation admission | Disabled by default. When enabled with explicit positive execution/count/byte limits, a per-instance semaphore rejects without waiting before allocation writes and spans allocation, projection and applicable completion persistence. It is not a database-transaction semaphore or a new thread pool. |
 | SKU dispatcher | `AllocationService` uses `Dispatchers.IO.limitedParallelism(maxConcurrentSkus)`, default 4. Its limit is shared across new-demand requests in one instance, not per request. Each request still creates an `async` task for every SKU; limited execution is not a bounded waiting queue. |
 | Request thread | `runBlocking` keeps the calling HTTP thread occupied while awaiting SKU workers. |
 | SKU database locks | Allocation, amendments, projection, ledger and whole-order expiry use the same database SKU locks. No production path takes the retired global projection gate. Hot SKUs and overlapping multi-SKU expiry still serialize. |
@@ -49,8 +54,9 @@ HTTP request
 | Database pool | Hikari defaults to 10 connections and a 30,000 ms connection-acquisition timeout. Environment settings can override these defaults. |
 | Synchronous response | Processing runs inline but returns `202 Accepted` afterward. It does not create a JobRunr job or gain automatic JobRunr retries. Its returned job-status location is not pollable as a JobRunr job. |
 | Asynchronous response | `async=true` enqueues and returns after enqueue succeeds. Each submission receives a fresh job ID, even for the same logical `requestId`; business idempotency does not deduplicate queued jobs. No outstanding-work bound is enforced. |
-| RabbitMQ | The listener executes inline. A non-input processing exception normally enqueues JobRunr fallback; simply throwing a future overload exception would move backlog rather than apply backpressure. Prefetch/concurrency and broker queue-size policies are not explicitly bounded by this repository's listener configuration. |
-| Payload/work size | DTOs bound some string lengths and require nonempty line lists, but do not cap order/line counts, distinct SKUs, or projection horizon. One admitted request can therefore create substantial work. |
+| RabbitMQ | When admission is enabled, one consumer/prefetch 1/AUTO ack keeps capacity-rejected work unacknowledged during jittered 5-10-second consumer backoff. Genuine processing failures retain JobRunr fallback; capacity does not. No total broker backlog cap is enforced here. |
+| Payload/work size | Opt-in aggregate order/shipment/line/SKU and byte limits apply before writes/fan-out; shape checks also precede async enqueue. Raw HTTP/RabbitMQ bytes are checked before JSON, internal/MCP canonical DTO bytes after deserialization. Persisted-work cost and projection horizon remain unbounded by request shape. |
+| Background allocation jobs | Annotation-elected JobRunr filtering durably schedules the same saturated job after 5-10 seconds plus polling, excluding capacity failures from the three business retries. History/queue age can still grow. |
 
 The four-worker limit is not a global database connection budget: backorder
 allocation has its own dispatcher, other workflows also use the pool, and
@@ -59,7 +65,7 @@ additional application instances have their own limits.
 In particular, `maxConcurrentSkus=4` does not mean "at most four database
 transactions": registration, projection, backorder workers, ledger, expiry,
 status reads and JobRunr persistence also compete for connections. No shared
-execution bulkhead, request rate limiter, or database lock/statement timeout
+database-work budget, request rate limiter, or database lock/statement timeout
 policy is configured here. Hikari's connection-acquisition timeout does not
 bound a lock wait after a connection has been acquired.
 
@@ -80,6 +86,9 @@ Source references:
 - [AllocationJobExecutor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt)
 - [RabbitMQ listener and queue declarations](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/listener/AllocationRabbitListener.kt)
 - [Allocation request DTOs](../stockio-api/src/main/kotlin/nl/stockio/api/dto/AllocationRequest.kt)
+- [Semaphore and configuration](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationAdmission.kt)
+- [Request limits](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationRequestLimits.kt)
+- [Capacity retry filter](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationCapacityRetryFilter.kt)
 - [StockProjectionProcessor](../stockio-service/src/main/kotlin/nl/stockio/stock/domain/processor/StockProjectionProcessor.kt)
 - [Ledger coordinator](../stockio-service/src/main/kotlin/nl/stockio/stock/domain/processor/StockLedgerProcessor.kt)
 - [Receipt follow-up dispatcher](../stockio-service/src/main/kotlin/nl/stockio/stock/domain/job/StockReceiptFollowupDispatcher.kt)
@@ -112,12 +121,12 @@ must be measured together.
 Hot-SKU work must still fit within its serialized time budget. Increasing worker
 concurrency cannot make operations on the same SKU run in parallel.
 
-## 3. Proposed: combine rate limits and admission limits
+## 3. Admission layers: implemented and proposed
 
 | Control | Purpose | Proposed overload behavior |
 | --- | --- | --- |
 | Rate limit | Bound arrival rate, with a small burst allowance. Optionally enforce both caller and service budgets. | Return `429 Too Many Requests`, with retry guidance where meaningful. |
-| Synchronous in-flight limit | Cap accepted, still-executing synchronous allocations, even when processing slows. | Reject promptly with `503 Service Unavailable` when capacity is unavailable. Avoid another large waiting queue. |
+| Allocation in-flight limit (implemented, opt-in) | Cap executing allocation orchestrations across inline and background callers, through forecast/completion. | Inline HTTP returns `503 Service Unavailable`; background adapters defer. No permit wait queue. |
 | Bounded asynchronous backlog | Bound outstanding durable work and its age, not just HTTP connections. | Refuse new submissions when overloaded; return `202` only after successful durable enqueue. |
 | Worker concurrency budget | Bound active database-intensive execution, accounting for all entry points and background tasks. | Let only the bounded admitted backlog wait; do not use Hikari's pending borrowers as the work queue. |
 
@@ -126,7 +135,8 @@ can allow database occupancy to grow when execution slows; a concurrency
 bulkhead can still be flooded with rapid rejected attempts. Start by bounding
 admitted work, then add caller fairness/rate policies once identities and
 measured capacity are known. `429` describes a caller's rate policy; `503`
-describes unavailable execution capacity. Neither is implemented yet.
+describes unavailable execution capacity. The 503 semaphore policy is implemented
+when enabled; a 429 rate policy is not.
 
 Apply admission control before opening allocation transactions. Release permits
 on all completion/failure paths, but do not release an execution permit merely
@@ -209,8 +219,9 @@ and retry. An after-commit enqueue alone can fail after the mutation commits.
 The separate per-SKU feature implements synchronous scoped projection
 and fresh per-SKU ledger transactions, not asynchronous forecasts. It also
 covers whole-order expiry, partial ledger-run recovery, and a coordinated
-replacement of the global gate. Rate limiting, admission control, and
-asynchronous forecast publication remain separate.
+replacement of the global gate. Allocation admission is implemented separately
+as described above; rate limiting and asynchronous forecast publication remain
+separate proposals.
 
 ## 5. Threading and persistence options
 
@@ -221,44 +232,43 @@ asynchronous forecast publication remain separate.
 | Larger Hikari pool | May help when the database has unused capacity and useful independent work is connection-limited. | More connections waiting for the same lock can worsen contention. Tune after measuring lock waits and database capacity. |
 | More service replicas | Can increase capacity for genuinely independent work. | Each replica adds worker concurrency and connections; database SKU locks still serialize hot SKUs. Budget concurrency across replicas. |
 
-## 6. Proposed next implementation: bounded allocation execution
+## 6. Implemented first increment and proposed next steps
 
-**Recommendation:** add a small, configurable, fail-fast allocation bulkhead
-and bounded request shape before changing threading or increasing the pool.
-Instrument it and establish a workload baseline in the same increment. Keep
-the current SKU protocol and synchronous forecast semantics.
+The first increment implements configurable fail-fast allocation admission,
+request shape/byte limits and Micrometer measurements while preserving the SKU
+protocol and synchronous forecast semantics. Enforcement defaults to disabled;
+choose explicit positive limits from representative measurements before enabling.
+**Next recommendation:** baseline/tune that opt-in guard, then implement the
+shared database-work budget below before changing threading or increasing pools.
 
-### First increment: protect inline execution
+The [separate feature](../.github/memory/issues/feature-fail-fast-allocation-admission.md)
+details admission ownership through completion persistence, adapter policies,
+request limits and metrics. It does not select production limits or imply
+that a running instance has enabled enforcement.
 
-- Admit allocation orchestration before registration opens a business
-  transaction. Use a shared application-level boundary around allocation plus
-  its synchronous projection, not only an HTTP controller or the SKU dispatcher.
-  `AllocationProcessor` is the main shared path; audit the alternate
-  `BackorderAllocationProcessor` and any direct service callers so they cannot
-  bypass the policy or acquire it twice.
-- Use non-blocking `tryAcquire`-style admission, without an unbounded semaphore
-  wait queue. Hold an admitted-request permit through forecast completion and,
-  where applicable, execution-result persistence. Release it on success or
-  failure, even when allocation already committed.
-  A disconnect alone must not release a permit while work is still executing.
-- Cover REST allocation, resolved-product allocation, MCP, RabbitMQ, JobRunr
-  and receipt-triggered backorders. Translate a typed capacity rejection at
-  each adapter: synchronous HTTP `503`; an explicit retryable tool error for
-  MCP; controlled retry/pause/defer for durable workers. Keep input errors
-  distinct from overload. Ship RabbitMQ overload handling with this increment,
-  not after enabling a bulkhead that its current generic catch would bypass.
-- Bound orders, total demand/inbound lines, distinct SKUs, and allowed forecast
-  date span before creating per-SKU tasks. Also choose a request-body byte limit
-  at the HTTP/broker ingress. These are new compatibility policies requiring
-  approved limits, not existing DTO validation guarantees.
-- Product resolution can call Ollama/Tavily before allocation starts. Give that
-  front-door phase its own bounded external-call/request budget if protecting
-  the UI endpoint end to end; never hold a database-work permit across remote
-  calls.
-- Add admitted/active/rejected counts, permit hold time, completed request rate,
-  end-to-end p95/p99, SKU task waiting, projection duration, and Hikari
-  active/pending/timeouts. Existing metrics exposure and ledger completion logs
-  are useful starting points, not proof all these measurements already exist.
+### First increment: implemented allocation execution guard
+
+- `AllocationProcessor` uses one shared per-instance `Semaphore.tryAcquire()`;
+  the alternate backorder processor delegates to it. An optional completion
+  callback retains the permit through result persistence without nested permits
+  or an outer transaction.
+- HTTP/MCP/RabbitMQ/JobRunr and receipt backorders share the execution pool.
+  HTTP capacity errors are 503, count limits 400 and byte limits 413; unchanged
+  retries preserve request identity. No `Retry-After` or automatic UI retry is added.
+- Raw HTTP/RabbitMQ and canonical DTO byte bounds accompany incoming document,
+  line and distinct-SKU limits. Next.js needs the same flag/byte limit separately.
+  Forecast horizons and persisted backorder discovery are not truncated.
+- RabbitMQ backs off its bounded consumer while retaining the original
+  unacknowledged message. JobRunr schedules the same job durably without spending
+  business retries. Neither adapter turns capacity rejection into generic fallback.
+- Active/enabled/limit gauges, admission/shape counters and execution/phase timers
+  use bounded labels. Combine these with HTTP/Hikari metrics and database profiling;
+  configure histograms/collection separately for p95/p99. SKU waiting and queue-age
+  instrumentation are not implied by those meters.
+- Product resolution and its Ollama/Tavily/cache work remain outside the
+  allocation permit, as do cached completion reads, ledger, expiry and status.
+  Drain/reconcile oversized queued work before enabling. Broker delivery timeout
+  and growing JobRunr history remain operational considerations.
 
 This bounds outstanding orchestrations per instance, not all database activity.
 It is the first protective step, not a hard multi-instance database-capacity
@@ -314,13 +324,11 @@ in-memory counter is insufficient. If acceptance uses an outbox before JobRunr
 enqueue, status polling must represent that admitted-but-not-yet-enqueued state.
 Do not silently change the current `202`/job-status contract.
 
-RabbitMQ needs an explicit overload path before enabling the common bulkhead:
-the current generic catch would otherwise enqueue a JobRunr fallback. Configure
-consumer concurrency/prefetch and a deliberate broker backlog/overflow policy,
-and choose pause or delayed retry without a tight requeue loop. The current
-`default-requeue-rejected=false` also means simply throwing a new overload error
-is not a safe "retry later" policy. Do not rely on that setting for backpressure
-or discard valid work as if it were invalid input.
+Current opt-in RabbitMQ consumer backoff already prevents capacity-triggered
+JobRunr fallback and overrides no-requeue on shutdown/interruption. A bounded
+durable-intake feature must additionally choose a deliberate broker backlog/
+overflow and age policy; do not mistake one unacknowledged message per consumer
+for a bounded broker queue or discard valid overloaded work as invalid input.
 
 Receipt follow-up is durable, but dispatching up to 100 pending records per
 invocation is not a bound on JobRunr backlog. Include that producer and its
@@ -342,14 +350,14 @@ Adjust concurrency and pool size only while completed throughput, tail latency
 and maintenance freshness remain healthy. Add rate/caller-fairness policies,
 virtual threads, or projection coalescing as separate measured follow-ups.
 
-## 7. Decisions and verification before implementation
+## 7. Decisions and verification for follow-ups
 
 Choose the target completion rate, request-shape/date limits, burst duration,
 maximum waiting time, synchronous latency objective, backlog size/age, retry
 policy, multi-instance budget, maintenance shares and forecast freshness
-requirement. Decide the RabbitMQ overload/acknowledgment policy and asynchronous
-idempotency/status contract before implementing those adapters. No numerical
-admission limits or new API contracts are selected here.
+requirement. For bounded durable intake, decide broker overflow/age policies and
+the asynchronous idempotency/status contract; existing execution backoff does
+not supply that policy. No numerical production limits are selected here.
 
 Plan functional and load checks for:
 
@@ -367,7 +375,9 @@ Plan functional and load checks for:
 - Correct reservation quantities and consistent ledger/projection results under
   the proposed locking and refresh strategy.
 
-Existing PostgreSQL concurrency/recovery tests cover the per-SKU protocol, not
-these proposed admission guarantees or production performance targets. The
+Functional semaphore, byte/count, adapter and PostgreSQL rejection/recovery tests
+cover the implemented first increment. Atomic durable-intake reservations,
+database-work budgets, broker-outage scenarios and production performance targets
+remain separate verification work. The
 [`stockio-test-harness/performance/`](../stockio-test-harness/performance/README.md)
 area currently contains guidance only.
