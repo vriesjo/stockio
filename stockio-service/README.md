@@ -5,6 +5,7 @@ The Kotlin Spring Boot MCP server processes a lot-level stock ledger, allocates 
 ## Run
 
 Requirements: JDK 21, PostgreSQL, and RabbitMQ (or Docker Compose for local infrastructure).
+Kafka is optional and disabled by default.
 From the repository root, configure the connection and start the service:
 
 ```shell
@@ -64,6 +65,107 @@ Next.js and their own mock backend; `stockio-service` is not required.
 `127.0.0.1:18182`, including IntelliJ launches. Do not point these mock-backed
 tests at the real service on `8080`.
 
+### Opt-in allocation admission
+
+Allocation has a per-instance **semaphore bulkhead**, not a new thread pool.
+It rejects promptly before allocation writes when all execution permits are
+occupied, retaining each accepted permit through scoped projection and
+applicable completion persistence. It is disabled by default.
+
+Set `ALLOCATION_ADMISSION_ENABLED=true` and supply every limit below; missing
+or nonpositive limits fail service startup. There are no recommended production
+values. Their `0` configuration fallbacks mean unset, not an enabled limit.
+
+| Environment variable | Limit |
+| --- | --- |
+| `ALLOCATION_ADMISSION_MAX_IN_FLIGHT` | Concurrent allocation orchestrations per instance, shared by new demand/backorders and HTTP/MCP/RabbitMQ/JobRunr execution. |
+| `ALLOCATION_ADMISSION_MAX_ORDERS` | Incoming demand orders. |
+| `ALLOCATION_ADMISSION_MAX_SHIPMENTS` | Incoming shipments. |
+| `ALLOCATION_ADMISSION_MAX_DEMAND_LINES` | Total demand lines across orders. |
+| `ALLOCATION_ADMISSION_MAX_INBOUND_LINES` | Total inbound lines across shipments. |
+| `ALLOCATION_ADMISSION_MAX_DISTINCT_SKUS` | Union of incoming demand, supply and explicitly supplied internal SKU scope. |
+| `ALLOCATION_ADMISSION_MAX_REQUEST_BYTES` | Raw HTTP/RabbitMQ and canonical DTO byte bound; positive and below `2147483647`. |
+
+Set the same enable flag and byte limit in the separate Next.js process
+(`.env.local`) to bound its streamed body before Axios. The service bounds
+known/unknown-length HTTP bodies before JSON parsing. Canonical DTO validation
+also covers MCP/internal calls after transport deserialization; it does not
+bound the MCP transport itself. Raw and canonical representations must both
+fit, so JSON whitespace/default-field differences can affect acceptance.
+
+Inline capacity rejection returns `503` with
+`code: ALLOCATION_CAPACITY_EXHAUSTED`; count limits return `400`; byte limits
+return `413` with `code: ALLOCATION_REQUEST_TOO_LARGE`. Retry an uncertain
+allocation unchanged, preserving `requestId`. No `Retry-After`, automatic UI
+retry or implicit asynchronous fallback is added. Product resolution and its
+cache/external calls occur before this allocation guard; cached job completions
+can still be read while saturated.
+
+When enabled, RabbitMQ uses one consumer with prefetch 1 and AUTO acknowledgment.
+It keeps a capacity-rejected message unacknowledged and backs off that consumer
+thread for 5-10 seconds without an allocation permit or database connection; shutdown explicitly
+requests requeue. This is not a new broker queue or a JobRunr fallback.
+Broker delivery timeouts/durability still apply. JobRunr capacity failures
+schedule the same job after a jittered 5-10 seconds (plus polling), without
+using its three ordinary business retries. Job history/queue age can still grow.
+Drain/reconcile oversized queued work before enabling: invalid messages/jobs
+are not silently grandfathered. Business dates and reservation TTL are unchanged.
+
+### Opt-in Kafka allocation consumer
+
+The service can also consume `AllocationRequest` JSON from Kafka without
+replacing the RabbitMQ listener. The default local stack is optional; start it
+from the repository root with:
+
+```shell
+docker compose -f infra/docker/docker-compose.yml up -d zookeeper kafka schema-registry kafka-ui
+```
+
+Set `ALLOCATION_KAFKA_ENABLED=true` when starting the service to enable the
+listener. Its defaults are topic `stockio.allocation.requests`, group
+`stockio-allocation`, and dead-letter topic
+`stockio.allocation.requests.DLT`; configure `KAFKA_BOOTSTRAP_SERVERS` and
+`ALLOCATION_KAFKA_TOPIC`, `ALLOCATION_KAFKA_GROUP_ID`,
+`ALLOCATION_KAFKA_DEAD_LETTER_TOPIC`, `ALLOCATION_KAFKA_PARTITION_COUNT`,
+`ALLOCATION_KAFKA_LISTENER_CONCURRENCY`, `ALLOCATION_KAFKA_WORKER_COUNT`, and
+`ALLOCATION_KAFKA_CHANNEL_CAPACITY` for the deployment. Capacity retry delay
+defaults to 5-10 seconds; general error handling retries three times at one
+second before DLT recovery, configurable with `ALLOCATION_KAFKA_CAPACITY_BACKOFF_MIN`,
+`ALLOCATION_KAFKA_CAPACITY_BACKOFF_MAX`, `ALLOCATION_KAFKA_RETRY_BACKOFF`, and
+`ALLOCATION_KAFKA_RETRY_ATTEMPTS`. The local stack exposes Kafka on
+`localhost:9092`, Schema Registry on `localhost:8081`, and Kafka UI on
+`localhost:8082`; the consumer uses JSON strings and does not require Schema
+Registry.
+
+The listener calls the same synchronous allocation path as RabbitMQ, using
+`requestId` as the execution ID. A bounded Kotlin channel and fixed workers
+smooth short bursts; the shared allocation semaphore remains authoritative.
+Channel saturation suspends intake, and semaphore saturation retains the record
+with a 5-10 second backoff. Neither condition commits the record. Offsets become
+eligible only after execution or a successful durable JobRunr fallback. Invalid
+or oversized requests go directly to the DLT. Other synchronous failures first
+use the JobRunr fallback; failed fallback handoffs use Spring Kafka's configured
+retries before DLT recovery. Actuator exposes low-cardinality
+`stockio.allocation.kafka.records` counters, the `stockio.allocation.kafka.inflight`
+gauge, and `stockio.allocation.kafka.processing.duration` timer. Kafka and
+RabbitMQ may both deliver the same request, so retain the stable `requestId`;
+the database idempotency path does not guarantee single-flight behavior for
+simultaneous cross-broker duplicates. Tune partitions and concurrency from
+measured allocation/database capacity, not local channel size.
+
+Actuator exposes `stockio.allocation.admission.enabled`, `.limit`, `.active`,
+`.attempts`, `stockio.allocation.request.rejected`,
+`stockio.allocation.execution.duration` and `stockio.allocation.phase.duration`.
+Tags contain only bounded run type, outcome, phase and rejection reason.
+Correlate these with Hikari/lock waits and completed throughput; configure
+histograms/collection separately to measure p95/p99.
+
+This does not cap async HTTP enqueue backlog, all database transactions, total
+replica capacity, persisted forecast/backorder work, or ledger/expiry resource
+use. Choose limits under representative load and budget all replicas against
+the database. See the [feature](../.github/memory/issues/feature-fail-fast-allocation-admission.md)
+and [design guide](../docs/system_design_backpressure_admission_control.md).
+
 ### Test harness and synthetic traffic
 
 The [`stockio-test-harness`](../stockio-test-harness/README.md) module contains
@@ -103,7 +205,7 @@ for the pull result before using equivalent-product matching.
 | --- | --- |
 | `allocation_and_stock_projection` | Allocate new orders by priority/FIFO and refresh forecasts without changing physical stock. Eligible inbound supply must arrive by the delivery deadline; unfilled quantities become backorders. |
 | `allocate_open_backorders` | Fulfill persisted backorders by priority/FIFO using eligible inventory and arrived inbound supply, then refresh forecasts without synchronizing stock. |
-| `process_stock_ledger` | Manually expire overdue holds, rebuild today's forecast, and apply due receipts/confirmed deliveries to live stock in one transaction. |
+| `process_stock_ledger` | Rebuild/apply today's movements atomically per SKU, with whole-order expiry and durable partial-run recovery. |
 | `generate_excel_report` | Write a workbook with allocation details, source allocations, native pivot tables, and a formula-based SKU/status summary under `~/itzitzo-mcp/reports` by default. Set `REPORT_DIR` to override the output directory. |
 
 ## REST API
@@ -123,8 +225,10 @@ removes the recurring schedule but does not cancel already queued/running work.
 The zone also configures the shared business clock. Manual synchronization remains
 available through `process_stock_ledger`.
 
-`GET /api/logistics/stock-ledger/status` exposes the last committed synchronization
-and its freshness deadline. Actuator's `stockLedger` health component becomes
+`GET /api/stock/ledger/status` exposes the last complete synchronization,
+freshness deadline, and additive `progress` for the latest durable run (status,
+total/completed SKU counts, owner lease, and last error). A partial run never
+advances global success. Actuator's `stockLedger` health component becomes
 `DOWN` after the next expected cron occurrence plus
 `ALLOCATION_LEDGER_SYNC_FRESHNESS_TOLERANCE` (default `1h`) is missed. Configure
 operational monitoring against health/status to alert on stale stock processing.
@@ -190,13 +294,46 @@ their holds expire unless confirmed; only confirmed orders project outgoing
 deliveries and shortages. Unreceived persisted shipments remain available to later
 allocation runs.
 
+Document registration uses sorted database locks
+for order/shipment header and line identities, including new identities.
+Independent registrations can overlap. Inbound amendments also acquire sorted
+SKU locks and lock existing supply rows before validation, so they cannot
+overwrite concurrent reservations or reduce supply below committed holds.
+The run lock follows SKU acquisition to avoid blocking workers while waiting
+for their SKU. These locks are transaction-scoped and work across service
+instances; Flyway V17 adds the retained identity-lock table. Projection and
+ledger acquire the same SKU lock before reading protected state. Expiry locks
+the whole immutable order SKU set in sorted order, then releases all holds and
+refreshes affected forecasts atomically. Production paths no longer acquire
+the global projection gate. Allocation commits before its retryable synchronous
+scoped forecast refresh; horizons are SKU-local and cross-SKU reads are not
+point-in-time snapshots. This is not admission control.
+
 The recurring ledger job, or manual `process_stock_ledger`, independently applies
-today's movements. It first cleans up expiry and rebuilds its projection under the
-same exclusive lock and transaction rather than trusting a saved forecast. Due
+today's movements through a frozen date/SKU manifest and sequential per-SKU
+transactions, rather than trusting saved forecasts. Overdue whole-order cleanup
+runs outside a ledger worker before retry. Due
 confirmed deliveries are consumed; arrived inbound holds become stock holds when
 still pending or needed for future delivery. Receipt/delivery state makes retries
 safe. PostgreSQL persists all operational data, forecasts, and sync status; Flyway
-applies schema migrations on startup.
+applies schema migrations on startup. V18 adds ledger run/work/coordinator
+metadata and a durable receipt-follow-up outbox. Committed work is skipped on
+current-day recovery; unfinished old-date runs are superseded and reconciled
+through a new current-day manifest. New SKUs enter the next run. Synchronous
+results are returned only after full completion.
+
+Receipt follow-up is persisted with the physical receipt and dispatched outside
+transactions, immediately after complete synchronization and by the recurring
+`dispatch-stock-receipt-followups` job every minute. Enqueue outages leave it
+pending; stable job/request identities make duplicate dispatch harmless.
+
+**Deployment:** stop all service instances, consumers and JobRunr writers;
+migrate/deploy every instance, then restart together. Do not mix old globally
+exclusive writers with the new SKU protocol. The ledger coordinator uses a
+renewable five-minute owner lease with transactional fencing after SKU locking.
+Concurrent sync callers wait without an outer database transaction/connection;
+the coordinator cannot be invoked inside an existing transaction. No measured
+production throughput guarantee or new admission limits are implied.
 
 ### Example `calculate_allocation` prompt + input:
 

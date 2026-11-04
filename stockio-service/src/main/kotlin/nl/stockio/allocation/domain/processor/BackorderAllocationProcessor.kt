@@ -2,8 +2,6 @@ package nl.stockio.allocation.domain.processor
 
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
-import nl.stockio.allocation.domain.service.BackorderAllocationService
-import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import org.springframework.stereotype.Service
 
 /**
@@ -14,16 +12,7 @@ import org.springframework.stereotype.Service
  */
 @Service
 class BackorderAllocationProcessor(
-    private val projectionProcessor: StockProjectionProcessor,
-    private val backorderAllocationService: BackorderAllocationService
+    private val processor: AllocationProcessor
 ) {
-    fun process(command: BackorderAllocationRequest): AllocationRunResult {
-        val run = backorderAllocationService.allocate(command)
-        try {
-            projectionProcessor.process(command.asOfDate)
-        } catch (exception: IllegalArgumentException) {
-            throw AllocationProjectionException(run.runId, exception)
-        }
-        return run
-    }
+    fun process(command: BackorderAllocationRequest): AllocationRunResult = processor.process(command)
 }

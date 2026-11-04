@@ -9,7 +9,8 @@ import org.springframework.stereotype.Service
 class BackorderAllocationJob(
     private val processingService: AllocationProcessor
 ) {
-    @Job(name = "Fulfill open backorders after inbound receipt", retries = 3)
+    @Job(name = "Fulfill open backorders after inbound receipt", retries = 3,
+        jobFilters = [AllocationCapacityRetryFilter::class])
     fun execute(command: BackorderAllocationRequest) {
         processingService.process(command)
     }

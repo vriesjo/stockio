@@ -1,4 +1,8 @@
 spring:
+  server:
+    port: ${PORT:9091}
+  config:
+    import: optional:file:.env.test.harness[.properties]
   application:
     name: stockio-test-harness-publisher
   main:
@@ -19,6 +23,12 @@ spring:
     username: ${RABBITMQ_USERNAME:stockio}
     password: ${RABBITMQ_PASSWORD:stockio}
     virtual-host: ${RABBITMQ_VIRTUAL_HOST:/}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
 stockio:
   harness:
@@ -30,3 +40,8 @@ stockio:
       publisher:
         enabled: ${ALLOCATION_RABBITMQ_PUBLISHER_ENABLED:false}
         interval: ${ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL:1000}
+    kafka:
+      topic: ${ALLOCATION_KAFKA_TOPIC:stockio.allocation.requests}
+      publisher:
+        enabled: ${ALLOCATION_KAFKA_PUBLISHER_ENABLED:false}
+        interval: ${ALLOCATION_KAFKA_PUBLISHER_INTERVAL:1000}

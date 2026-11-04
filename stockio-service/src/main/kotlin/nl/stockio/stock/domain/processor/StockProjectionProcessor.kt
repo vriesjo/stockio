@@ -4,18 +4,21 @@ import java.time.Clock
 import java.time.LocalDate
 import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
+import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.reservation.domain.port.InboundReservationRepository
 import nl.stockio.reservation.domain.port.InboundSupplyRepository
-import nl.stockio.stock.domain.port.StockProjectionLockRepository
 import nl.stockio.stock.domain.port.StockRepository
 import nl.stockio.stock.domain.port.StockReservationRepository
 import nl.stockio.stock.domain.port.StockSnapshotRepository
+import nl.stockio.stock.domain.port.StockScopeRepository
 import nl.stockio.stock.infra.StockDailyLotSnapshot
 import nl.stockio.stock.infra.StockDailySnapshot
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 
 /**
  * Rebuilds daily stock forecasts from persisted inventory, inbound supply, and order commitments.
@@ -40,7 +43,6 @@ import org.springframework.transaction.annotation.Transactional
  */
 @Service
 class StockProjectionProcessor(
-    private val stockProjectionLockRepository: StockProjectionLockRepository,
     private val stockRepository: StockRepository,
     private val stockReservationRepository: StockReservationRepository,
     private val inboundSupplyRepository: InboundSupplyRepository,
@@ -48,14 +50,28 @@ class StockProjectionProcessor(
     private val backorderRepository: OpenBackorderRepository,
     private val snapshotRepository: StockSnapshotRepository,
     private val claimRepository: AllocationOrderClaimRepository,
-    private val clock: Clock
+    private val clock: Clock,
+    private val skuLockRepository: AllocationSkuLockRepository,
+    private val scopeRepository: StockScopeRepository,
+    transactionManager: PlatformTransactionManager
 ) {
+    private val transactions = TransactionTemplate(transactionManager)
+
+    fun process(asOfDate: LocalDate) {
+        process(asOfDate, scopeRepository.findSkus())
+    }
+
+    fun process(asOfDate: LocalDate, skus: Collection<String>) {
+        skus.distinct().sorted().forEach { sku ->
+            transactions.executeWithoutResult { processSku(asOfDate, sku) }
+        }
+    }
 
     /**
      * Replaces aggregate and lot-level snapshots from `max(asOfDate, today)` onward.
      *
-     * Acquires the exclusive stock-projection lock for the transaction before loading the
-     * baseline. Overdue arrivals and confirmed deliveries or shortages are moved to the start
+     * Acquires the selected SKU's lock before loading its baseline. Overdue arrivals and
+     * confirmed deliveries or shortages are moved to the start
      * date; historical stock is not reconstructed. The inclusive horizon ends at the latest
      * such event, or the start date if none exist. Pending order delivery dates do not extend it.
      *
@@ -70,14 +86,20 @@ class StockProjectionProcessor(
      * @param asOfDate requested projection start, clamped to today's date using the injected [Clock].
      */
     @Transactional
-    fun process(asOfDate: LocalDate) {
-        stockProjectionLockRepository.acquire()
+    fun processSku(asOfDate: LocalDate, sku: String) {
+        skuLockRepository.insertIfMissing(sku)
+        checkNotNull(skuLockRepository.lockBySku(sku)) { "Could not acquire allocation lock for SKU '$sku'." }
 
         val startDate = maxOf(asOfDate, LocalDate.now(clock))
-        val claims = claimRepository.findAll().associateBy { it.orderId }
+        val stockReservations = stockReservationRepository.findAllBySku(sku)
+        val inboundReservations = inboundReservationRepository.findAllBySku(sku)
+        val backorders = backorderRepository.findAllBySku(sku)
+        val orderIds = (stockReservations.map { it.orderId } + inboundReservations.map { it.orderId } +
+            backorders.map { it.orderId }).distinct()
+        val claims = claimRepository.findAllById(orderIds).associateBy { it.orderId }
 
-        val stocks = stockRepository.findAll()
-        val supplies = inboundSupplyRepository.findAll().filterNot { it.received }
+        val stocks = stockRepository.findAllBySku(sku)
+        val supplies = inboundSupplyRepository.findAllBySku(sku).filterNot { it.received }
         val stockById = stocks.associateBy { it.id }
         val supplyById = supplies.associateBy { it.shipmentLineId }
         val supplyByLot = supplies.associateBy { LotKey(it.sku, it.warehouseCode, it.lotId) }
@@ -114,7 +136,6 @@ class StockProjectionProcessor(
         }
 
         val allocatedByLotDate = mutableMapOf<LotDate, Int>()
-        val stockReservations = stockReservationRepository.findAll()
         // Only confirmed reservations contribute to projected allocations; unconfirmed reservations
         // remain reserved but do not reduce on-hand stock. Reservations for missing lots fail the rebuild
         // transaction, as do reservations for missing order claims or expired orders.
@@ -135,7 +156,6 @@ class StockProjectionProcessor(
         // Only confirmed inbound reservations contribute to projected allocations; unconfirmed reservations
         // remain reserved but do not reduce on-hand stock. Reservations for missing lots fail the rebuild
         // transaction, as do reservations for missing order claims or expired orders.
-        val inboundReservations = inboundReservationRepository.findAll()
         inboundReservations.forEach { reservation ->
             val supply = supplyById[reservation.shipmentLineId]
                 ?: throw IllegalStateException("Inbound reservation '${reservation.id}' references missing supply.")
@@ -151,7 +171,6 @@ class StockProjectionProcessor(
         }
 
         val backordersByDate = mutableMapOf<ScopeDate, Int>()
-        val backorders = backorderRepository.findAll()
         backorders.forEach { backorder ->
             if (isConfirmed(backorder.orderId, claims)) {
                 addQuantity(
@@ -246,7 +265,7 @@ class StockProjectionProcessor(
                 date = date.plusDays(1)
             }
         }
-        snapshotRepository.replaceFrom(startDate, dailySnapshots, lotSnapshots)
+        snapshotRepository.replaceSkuFrom(sku, startDate, dailySnapshots, lotSnapshots)
     }
 
     fun isConfirmed(orderId: String, claims: Map<String, AllocationOrderClaimEntity>): Boolean {

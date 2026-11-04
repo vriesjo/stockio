@@ -1,5 +1,115 @@
 # Active Context
 
+## Feature: Add a Kafka allocation consumer alongside RabbitMQ
+
+- **Specification:** [Feature specification](./specifications.md#feature-add-a-kafka-allocation-consumer-alongside-rabbitmq)
+- **Scenario:** [Scenario 18](./scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
+- **Issue:** [Feature issue](./issues/feature-concurrent-per-event-allocation.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Kafka consumer, bounded worker queue, opt-in configuration, local broker stack, and focused validation are complete.
+
+### Steps worked on
+- Followed the AGENTS.md feature workflow by checking the repository guidance, current memory, allocation listener/executor, dependencies, and worktree before editing.
+- Reframed the initial generic Fastned billing/Adyen/coroutines proposal as Stockio stock allocation through a Kafka adapter alongside the RabbitMQ consumer.
+- During analysis, documented shared `executeSync` delegation, stable identity, a bounded Kotlin `Channel` with fixed workers as a local burst buffer, the existing semaphore bulkhead as authoritative, offset safety, cross-broker duplicates, and the initial broker/retry decisions before implementation.
+- Approved the existing `AllocationRequest` JSON/request identity, RabbitMQ-equivalent capacity and JobRunr fallback behavior, dead-lettering for invalid records, and the user-provided Kafka Compose baseline.
+- Selected synchronous listener completion after verifying async-future listeners can process later records in a partition before earlier futures finish; bounded channel workers retain local buffering while consumer concurrency overlaps partitions.
+- Added Spring Kafka dependencies, disabled-by-default listener/container and DLT/topic configuration, bounded channel workers with capacity backoff and JobRunr fallback, local Kafka Compose services, and focused listener/queue tests.
+- Compiled the service, validated Compose configuration, and passed focused Kafka/RabbitMQ listener and queue tests plus embedded-broker offset-commit, invalid-record DLT-routing, and retry-exhaustion tests.
+- Added a PostgreSQL-backed concurrent same-request execution test that confirms one allocation and one persisted JobRunr completion; direct cross-broker single-flight behavior is not guaranteed.
+
+### Next possible steps (suggestions)
+- Tune worker and listener concurrency from measured production capacity; preserve the current RabbitMQ path and keep Kafka opt-in.
+- Exercise broker outage, shutdown, and consumer-rebalance behavior on dedicated infrastructure before production rollout.
+
+## Feature: Bound database work while preserving ledger and expiry headroom
+
+- **Specification:** [Feature specification](./specifications.md#feature-bound-database-work-while-preserving-ledger-and-expiry-headroom)
+- **Scenario:** [Scenario 17](./scenarios.md#scenario-17-preserve-maintenance-admission-under-database-work-pressure)
+- **Issue:** [Feature issue](./issues/feature-shared-database-work-budget.md)
+- **Status:** Draft
+- **Priority:** Not set
+- **Implementation started:** No. Analysis and proposed design only.
+
+### Steps worked on
+- Inspected current request admission, transaction/proxy boundaries, separate SKU dispatchers, projection, ledger metadata/cleanup handoff, expiry batches and result/outbox persistence.
+- Drafted linked requirements, scenario, component analysis and validation plan for a separate database-work budget with protected ledger/expiry shares.
+- Documented pre-transaction acquisition, joined-projection reuse, partial-commit saturation recovery, bypass borrowers and per-instance/replica limitations; runtime behavior remains unchanged.
+
+### Next possible steps (suggestions)
+- Baseline/tune the existing request bulkhead and confirm pool pressure or maintenance objectives justify the new layer.
+- Approve workload classification/shares, measured limits, rejection versus bounded waiting, adapter/maintenance retry policies and borrower/replica headroom before implementation.
+- Keep enforcement opt-in and avoid claiming physical connection reservations or bounded maintenance latency from local permits alone.
+
+## Feature: Bound allocation execution with a fail-fast bulkhead
+
+- **Specification:** [Feature specification](./specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead)
+- **Scenario:** [Scenario 16](./scenarios.md#scenario-16-reject-allocation-work-when-execution-capacity-is-exhausted)
+- **Issue:** [Feature issue](./issues/feature-fail-fast-allocation-admission.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Complete, at the user's request.
+
+### Steps worked on
+- Inspected shared and alternate allocation processors, result persistence, product resolution, HTTP/MCP/RabbitMQ/JobRunr callers, existing validation, Axios forwarding and Micrometer infrastructure.
+- Approved opt-in enforcement with explicit positive concurrency/count/byte limits, distinct 503/400/413 errors, recoverable background deferral, unchanged request dates/holds and pre-enable queue reconciliation. Priority remains unset.
+- Implemented one non-waiting semaphore guard through scoped projection and optional completion persistence; the alternate backorder processor delegates without nested permits or an outer transaction.
+- Added raw HTTP/RabbitMQ byte bounds, canonical DTO and aggregate shape checks, pre-enqueue validation, MCP coverage, bounded-label Micrometer measurements and separately configured streamed UI byte enforcement.
+- Added enabled RabbitMQ one-consumer/prefetch-1/AUTO-ack backoff retaining the original message and JobRunr same-job scheduled capacity retries that do not consume the three business retries.
+- Verified the full service suite and final affected semaphore/executor/MCP/consumer/PostgreSQL checks, OpenAPI validation/generation, 22 UI tests and UI typechecking. No production capacity or live broker-outage/delivery-timeout benchmark is claimed.
+- Synchronized the implemented scenario/specification/issue, architecture, service configuration guidance and backpressure design. Existing staged changes remain preserved.
+
+### Next possible steps (suggestions)
+- Select measured limits, drain/reconcile incompatible queued work, deploy updated adapters and enable explicitly; configure the same flag/byte limit in the separate UI.
+- Exercise broker delivery-timeout/outage behavior on dedicated infrastructure and monitor admission rejection, queue age, history growth, database waits and maintenance freshness.
+- Database-wide budgets, bounded durable intake, traffic fairness and end-to-end product-resolution admission remain separate features.
+
+## Feature: Coordinate stock processing through a per-SKU protocol
+
+- **Specification:** [Feature specification](./specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Scenario:** [Scenario 15](./scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
+- **Issue:** [Feature issue](./issues/feature-per-sku-stock-processing.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Complete, at the user's request.
+
+### Steps worked on
+- Approved compatible allocation/forecast and expiry failure boundaries, SKU-local horizons, current-day manifests, partial progress and coordinated deployment.
+- Implemented scoped query/replacement paths and removed production acquisition of the global projection gate; all writers follow sorted document/SKU/run-or-lifecycle ordering.
+- Added V18 run/work/coordinator/outbox state and scoped-read indexes. Sequential ledger work commits fresh projections, physical changes, checkpoints and receipt follow-up atomically per SKU.
+- Added fenced renewable ownership, incomplete-work recovery, stale-date reconciliation, and additive progress through the existing ledger-status endpoint. Coordinators never hold metadata while waiting for SKUs.
+- Whole-order expiry locks all immutable SKUs before lifecycle revalidation and atomically releases holds plus refreshes affected forecasts; ledger retries cleanup outside its worker transaction.
+- Receipt scheduling is durable and retryable outside business transactions. Allocation remains separate from physical ledger synchronization.
+- Verified the full service suite: 135 passing tests, including PostgreSQL concurrency, partial/crash/date recovery, owner fencing, legacy migrations and schema validation; OpenAPI and documentation checks pass. Updated architecture, README and linked scenarios/specifications/issues.
+
+### Next possible steps (suggestions)
+- Deploy only with a coordinated stop/migrate/deploy/restart of all service instances, consumers and JobRunr writers; mixed versions are unsafe.
+- Run representative throughput/tail-latency and lock/pool profiling before tuning budgets or selecting separate admission control. No capacity benchmark or 1,000-request-per-second guarantee is claimed.
+
+## Feature: Allow concurrent allocation document registration
+
+- **Specification:** [Feature specification](./specifications.md#feature-allow-concurrent-allocation-document-registration)
+- **Scenario:** [Scenario 14](./scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
+- **Issue:** [Feature issue](./issues/feature-concurrent-document-registration.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Complete, at the user's request.
+
+### Steps worked on
+- Traced registration, inbound amendments, SKU workers, run locks, schema constraints, and exclusive projection/ledger/expiry paths.
+- Selected a shared projection gate plus sorted namespaced identity-lock rows, existing sorted inbound SKU locks, run locking, and locked supply reads.
+- Identified that the run lock must follow inbound SKU acquisition to avoid blocking worker foreign-key checks while waiting for that worker.
+- Linked scope, scenario, requirements, issue, and deterministic PostgreSQL validation before code changes.
+- Added V17's namespaced document-lock table and the matching entity/port/JPA repository, following existing SKU-lock patterns.
+- Switched registration to the shared gate, sorted document/inbound SKU locks, then run protection; existing supply reads now use row locks before amendment checks.
+- Added eight real PostgreSQL concurrency cases covering independent overlap, exclusive exclusion, all four identity conflict types, supply amendments, same-run retries, and reversed SKU input.
+- Verified 90 affected tests, including all 51 allocation integration cases, Flyway/schema validation, and reservation/ledger/projection behavior. Updated architecture, README, scenarios, linked issue/specification, and system-design notes.
+- Preserved the existing controller edit. Admission control, full projection rebuilding, worker/pool sizes, and API contracts remain outside this change.
+
+### Next possible steps (suggestions)
+- No remaining implementation steps for registration. Measure remaining projection/lock contention before selecting separate admission-control or projection changes.
+
 ## Feature: Isolate browser tests and synthetic publishing in a test harness
 
 - **Specification:** [Feature specification](./specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
@@ -35,7 +145,7 @@
 ### Steps worked on
 - Traced browser fetch -> Next.js route -> Spring MCP bridge on `8082` -> stdio child JVM -> `allocate_product_by_name` -> `ProductAllocationService`.
 - Confirmed `POST /api/products/allocate` already calls the same service directly and returns plain `ProductAllocationResponse`.
-- Confirmed the user's choice: keep the same-origin Next.js route and place Axios there, calling the independently running service on `8080`; do not introduce browser CORS access.
+- Confirmed the user's choice: keep the same-origin Next.js route and place Axios there, calling the independently running service on `9090`; do not introduce browser CORS access.
 - Identified MCP-specific frontend parsing/fixtures and the shared Kotlin DTO/OpenAPI build responsibilities that must survive bridge removal.
 - Added the linked draft specification, planned scenario, issue analysis, and explicitly planned architecture boundary.
 - Clarified the requested removal of `ProductAllocationTools.kt` and `allocate_product_by_name`; unrelated MCP tools remain outside removal scope.

@@ -80,6 +80,59 @@ behavior.
 - [Feature issue: reusable RabbitMQ allocation producer starter](./issues/feature_rabbitmq_allocation_producer_starter.md)
 - [Architecture](./architecture.md)
 
+## Feature: Add a Kafka allocation consumer alongside RabbitMQ
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Allocation admission](#feature-bound-allocation-execution-with-a-fail-fast-bulkhead), [Per-SKU stock processing](#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Bounded Context:** Allocation Messaging & Ingress
+
+### Overview
+
+Add an opt-in Kafka consumer for Stockio allocation requests while retaining
+the current RabbitMQ consumer. The Kafka adapter should invoke the same
+synchronous allocation execution path and preserve stable request identity,
+bounded admission, and explicit offset/recovery semantics. This is a stock allocation workflow, not payment processing. Consume the existing
+`AllocationRequest` JSON with `requestId` as the stable job ID. Mirror
+RabbitMQ's capacity backoff, invalid-message dead-lettering, and durable JobRunr
+fallback for other failures. Keep Kafka disabled by default and merge the
+user-supplied local broker baseline into the existing Compose stack.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Kafka allocation adapter | Add a Kafka listener for the agreed allocation message contract and delegate to the existing allocation application path; keep broker-specific code outside allocation business logic. |
+| FR-02 | Stable execution identity | Derive the execution/job identity deterministically from the logical request so redelivery does not create a new logical allocation; define and test simultaneous duplicate behavior rather than relying only on the completion cache. |
+| FR-03 | Safe offset progress | Commit offsets only after successful allocation completion or after a durable fallback has accepted responsibility for the same request. |
+| FR-04 | Explicit failure policy | Distinguish capacity pressure, transient processing failures, malformed/permanent requests, and successful completion; use bounded-delay capacity backoff and finite retries/DLT for other failures. |
+| FR-05 | Bounded consumption | Use a bounded local Kotlin channel and fixed worker concurrency to smooth short bursts; keep the existing `AllocationAdmission` semaphore authoritative, preserve records on channel or semaphore saturation, and do not launch unbounded per-record coroutines or buffers. |
+| FR-06 | RabbitMQ coexistence | Keep the RabbitMQ listener and its contract operational; document behavior when both brokers deliver the same logical request. |
+| FR-07 | Operational visibility | Log and measure bounded-cardinality consumption outcomes, retries, capacity deferrals, and processing duration without using request or SKU identifiers as metric labels. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | At-least-once safety | Assume records can be redelivered; do not claim exactly-once stock allocation from Kafka offset transactions alone. |
+| NFR-02 | Bounded resource use | Bound the local channel and active workers; preserve the existing allocation admission and stock-coordination guarantees, and never treat in-memory channel enqueueing as durable acceptance. |
+| NFR-03 | Opt-in rollout | Kafka listener activation and connection settings must be explicit so introducing Kafka does not unexpectedly alter existing RabbitMQ operation. |
+| NFR-04 | Honest performance claims | Do not claim non-blocking processing, throughput improvement, or latency bounds without representative measurements. |
+
+### Plan
+
+1. Add opt-in Spring Kafka dependencies, typed service configuration, source and DLT topic declarations, and a raw-string consumer compatible with the existing `AllocationRequest` JSON contract.
+2. Implement synchronous listener completion backed by a bounded Kotlin channel and fixed workers; preserve per-partition order and commit offsets only after execution or durable JobRunr handoff.
+3. Mirror RabbitMQ's capacity backoff and JobRunr fallback behavior, dead-letter malformed/oversized requests, and preserve records on channel/bulkhead saturation.
+4. Merge the supplied local Kafka stack into the existing Docker Compose file and document disabled-by-default configuration and startup.
+5. Add focused listener, queue, retry/DLT, duplicate-delivery, context lifecycle, and broker-backed tests; measure before setting production concurrency or claiming throughput improvements.
+
+### Resources
+
+- [Scenario 18: Consume an Allocation Request from Kafka](./scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
+- [Feature issue: Kafka allocation consumer](./issues/feature-concurrent-per-event-allocation.md)
+- [Architecture](./architecture.md)
+
 ## Feature: Generate OpenAPI interfaces for REST controllers
 
 - **Status:** Done
@@ -212,7 +265,7 @@ existing MCP backorder tool remains available as a manual and recovery trigger.
 The frontend no longer requires a separate Spring MCP client application.
 The same-origin Next.js `POST /api/allocate` route uses
 a server-side Axios HTTP client to call the independently running
-`stockio-service` at `http://127.0.0.1:8080/api/products/allocate`. The existing
+`stockio-service` at `http://127.0.0.1:9090/api/products/allocate`. The existing
 REST controller calls `productAllocationService.allocate(request)` and the
 frontend consumes its plain JSON result, not an MCP envelope.
 `ProductAllocationTools.kt` and `allocate_product_by_name` are removed.
@@ -226,7 +279,7 @@ and scoped validation are complete; priority remains unset.
 | ID | Title | Description |
 | --- | --- | --- |
 | FR-01 | Same-origin frontend route | Keep browser submissions to Next.js `POST /api/allocate`; perform the service call inside that route, without a separate Spring frontend backend. |
-| FR-02 | Axios service client | Add Axios to the UI package and a small server-side TypeScript client using `STOCKIO_API_URL`, default `http://127.0.0.1:8080`, to POST flat `ProductAllocationRequest` JSON to `/api/products/allocate`. |
+| FR-02 | Axios service client | Add Axios to the UI package and a small server-side TypeScript client using `STOCKIO_API_URL`, default `http://127.0.0.1:9090`, to POST flat `ProductAllocationRequest` JSON to `/api/products/allocate`. |
 | FR-03 | Existing application use case | Use `ProductAllocationController.allocate` and its direct `productAllocationService.allocate(request)` delegation; do not invoke MCP or duplicate allocation logic in TypeScript. |
 | FR-04 | Plain REST result | Update frontend types and result parsing to consume plain `ProductAllocationResponse`, preserving domain outcomes, evidence, allocation quantities, line/source identities, skipped-expiry outcomes, and backorders. |
 | FR-05 | Explicit HTTP failures | Preserve upstream HTTP status and JSON bodies; show service validation errors, reject malformed successful payloads, and return explicit `502` connection and `504` timeout responses. |
@@ -249,7 +302,7 @@ and scoped validation are complete; priority remains unset.
 2. Update frontend request naming, plain REST response validation, service error display, and UI wording while retaining form validation, rendering, and manual retry identity.
 3. Remove the obsolete Spring MCP bridge runtime, bridge-only configuration/dependencies/tests, and `ProductAllocationTools.kt`; remove fat-JAR startup coupling, preserve shared DTO/OpenAPI build responsibilities and unrelated MCP tools, and verify service compilation.
 4. Update environment/run guidance and focused client, route, parser, and browser tests to use a mock service's `/api/products/allocate` endpoint and plain REST JSON.
-5. Run UI unit tests, type checking, production build, and the focused browser flow; validate/generate OpenAPI interfaces and compile/test the affected Kotlin service boundary, then smoke-test with only Next.js and `stockio-service:8080`.
+5. Run UI unit tests, type checking, production build, and the focused browser flow; validate/generate OpenAPI interfaces and compile/test the affected Kotlin service boundary, then smoke-test with only Next.js and `stockio-service:9090`.
 
 ### Resources
 
@@ -302,3 +355,219 @@ service but never depends on the executable service module.
 
 - [Scenario 13: Run Tests and Synthetic Traffic from a Separate Harness](./scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness)
 - [Feature issue: isolate test harness](./issues/feature-isolate-test-harness.md)
+
+## Feature: Allow concurrent allocation document registration
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md)
+- **Bounded Context:** Allocation & Reservation Concurrency
+
+### Overview
+
+Replace globally exclusive document registration with shared projection
+coordination and narrower identity/SKU/supply protection. Keep exclusive
+projection, ledger, and expiry behavior and all existing allocation contracts.
+
+This completed feature records the registration baseline. Its shared/exclusive
+gate is superseded by the [per-SKU protocol](#feature-coordinate-stock-processing-through-a-per-sku-protocol);
+document identity, sorted inbound SKU and run-row protections remain in force.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Shared registration gate | Allow independent document registrations to overlap under the existing shared projection lock while excluding exclusive projection, ledger, and expiry transactions. |
+| FR-02 | Document identity protection | Serialize competing order headers/lines and shipment headers/lines, including absent identities, using sorted namespaced database lock rows and existing identity constraints. |
+| FR-03 | Safe inbound amendments | Acquire the existing inbound SKU locks in sorted order and lock supply rows before validating/amending quantities, preserving reservations, receipt state, immutable membership, and SKU metadata. |
+| FR-04 | Consistent transaction ordering | Acquire shared gate -> sorted document keys -> sorted inbound SKUs -> run row -> business rows; preserve worker/exclusive-operation ordering and atomic rollback without lock upgrades. |
+| FR-05 | Retry and compatibility | Preserve initialized/completed-run skipping, order deadlines, request idempotency, allocation rules, wire contracts, and independent per-SKU commits; add concurrency regression coverage and synchronized documentation. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Database-wide coordination | Coordinate across service instances using transaction-scoped database row locks, not in-process synchronization; introduce only an additive lock-table migration. |
+| NFR-02 | Bounded change | Do not implement rate limiting, admission control, background/scoped projection rebuilding, pool tuning, virtual threads, or a new persistence stack in this feature. |
+
+### Plan
+
+1. Add an additive document-lock migration and matching entity/repository port/JPA adapter, following the existing SKU lock pattern.
+2. Switch registration to shared-gate, sorted document/SKU, run-row, and supply-row locking while preserving document validation and retry behavior.
+3. Add deterministic PostgreSQL concurrency tests for independent overlap, exclusive exclusion, identity conflicts, supply amendments versus allocation, and reversed SKU input order.
+4. Validate migration startup and affected allocation/reservation/ledger/projection tests, then synchronize architecture, scenarios, design notes, README, issue, and active context.
+
+### Resources
+
+- [Scenario 14: Register Independent Allocation Documents Concurrently](./scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
+- [Feature issue: concurrent document registration](./issues/feature-concurrent-document-registration.md)
+- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+
+## Feature: Bound database work while preserving ledger and expiry headroom
+
+- **Status:** Draft
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md#cross-cutting-concurrency-idempotency-and-rollout), [Allocation admission](#feature-bound-allocation-execution-with-a-fail-fast-bulkhead), [Per-SKU stock processing](#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Bounded Context:** Allocation, Reservations & Stock Ledger / Database Admission
+
+### Overview
+
+Propose an explicit per-instance transaction-work budget alongside the existing
+allocation request semaphore. Bound covered database-intensive phases and
+protect ledger and expiry admission with workload shares. Acquire before
+transaction creation, retain ownership through commit/rollback, and reuse it
+for joined projection. Preserve partial-run recovery and distinguish later
+database-phase refusal from pre-write request rejection. Implementation has
+not started; limits, saturation policies and operational objectives require
+approval. This is not a hard physical connection reservation or a throughput
+guarantee, and ungoverned borrowers/replicas must be accounted for explicitly.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Transaction coverage | Apply a shared per-instance database-work budget to allocation run/document writes, new-demand/backorder SKU workers, standalone projection, ledger work/metadata, whole-order expiry and execution-result writes; explicitly classify discovery and outbox database access. |
+| FR-02 | Maintenance shares | Enforce an overall covered-work ceiling and explicit workload shares so allocation cannot consume ledger/expiry admission; define protection between ledger and expiry rather than treating one undifferentiated semaphore as reserved maintenance capacity. |
+| FR-03 | Transaction lifetime | Acquire admission before the owning transaction begins and release exactly once after commit/rollback and actual work termination; one existing expiry batch transaction consumes one work unit regardless of its order/SKU count. |
+| FR-04 | Safe ownership | Reuse admission for nested projection joining a covered ledger/expiry transaction; independent child transactions acquire independently, and coordinators must not hold database permits while awaiting children, retries, cleanup or external scheduling. |
+| FR-05 | Recoverable saturation | Distinguish database-phase saturation from pre-write request rejection and business failure; preserve earlier commits and unchanged logical identities, with approved HTTP/MCP errors and recoverable RabbitMQ/JobRunr/maintenance deferral that avoids fallback storms and false success. |
+| FR-06 | Preserve stock semantics | Preserve sorted document/SKU/run-or-lifecycle locking, per-SKU replay, atomic expiry, ledger fencing/checkpoints, synchronous forecast recovery, original business dates and hold deadlines; do not advance ledger freshness for deferred/incomplete work. |
+| FR-07 | Budget visibility | Expose enabled/configured/active capacity, admission outcomes and work duration by bounded workload/phase labels; correlate with Hikari pending/acquisition/timeout data, database lock waits, ledger freshness and overdue-expiry lag. |
+| FR-08 | Controlled rollout | Default enforcement to disabled, validate explicit enabled limits, inventory ungoverned borrowers and replica totals, and enable only after saturation/recovery policies and representative contention checks are approved. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Bounded admission | No unbounded permit-wait queue, extra executor backlog, or waiting/backoff for admission while retaining a transaction or pooled connection. |
+| NFR-02 | Existing atomicity | Do not merge allocation phases into one transaction, split whole-order expiry, change lock order, or release a permit on cancellation before transaction completion. |
+| NFR-03 | Honest guarantees | Bound covered work per instance, not all physical connections or cluster-wide concurrency; spare permits cannot bypass hot-SKU locks, unavailable scheduler threads, or ungoverned borrowers. |
+| NFR-04 | Bounded observability | Use fixed workload, phase and outcome labels; exclude request/job/order IDs, SKUs, customer data, payloads and exception messages from metric tags. |
+| NFR-05 | Explicit implementation | Prefer small explicit permit ownership around existing transaction boundaries and current Micrometer/scheduling infrastructure; do not add a limiter framework, schema or scheduling subsystem without a demonstrated approved need. |
+
+### Plan
+
+1. Baseline enabled allocation admission, enumerate transaction owners and bypass borrowers, and approve workload shares, saturation/retry policies, maintenance objectives and per-instance/replica sizing.
+2. Introduce opt-in validated database-work configuration, explicit workload admission/ownership and bounded-label metrics; prove class/total invariants and failure-safe acquisition/release.
+3. Wrap transaction entry points outside Spring transaction creation, including run/result writes and metadata; reuse ownership for joined projection and preserve expiry batches and nontransactional orchestration.
+4. Integrate distinct database-capacity errors and recoverable adapter/maintenance deferral, including partial allocation, failed projection/completion, ledger ownership and cleanup transitions.
+5. Add focused unit, PostgreSQL and adapter tests for ceilings, maintenance shares, proxy/lifetime boundaries, nested reuse, cancellation, contention and idempotent partial recovery; measure representative independent/hot SKUs.
+6. Document measured sizing, uncovered borrowers, replica budgets, retry/date caveats and rollout; synchronize scenario, specification, issue, architecture, service/API guidance and active context before opt-in enablement.
+
+### Resources
+
+- [Scenario 17: Preserve Maintenance Admission Under Database-Work Pressure](./scenarios.md#scenario-17-preserve-maintenance-admission-under-database-work-pressure)
+- [Feature issue: shared database-work budget](./issues/feature-shared-database-work-budget.md)
+- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md#second-increment-protect-the-shared-database-budget)
+
+## Feature: Bound allocation execution with a fail-fast bulkhead
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md#cross-cutting-concurrency-idempotency-and-rollout), [Per-SKU stock processing](#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Bounded Context:** Allocation Application Orchestration & Ingress Adapters
+
+### Overview
+
+Bound admitted allocation orchestrations per service instance before allocation
+business writes, retaining capacity through synchronous projection and applicable
+execution-result persistence. Reject saturated inline HTTP with 503, bound
+incoming request shape, and expose tuning metrics. Include explicit background
+overload handling so RabbitMQ/JobRunr cannot bypass admission or amplify retries.
+Implementation is approved with opt-in enforcement and explicit operator-supplied
+limits, distinct 503/400/413 errors, recoverable background deferral, unchanged
+dates/holds and pre-enable reconciliation of existing oversized work.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Shared fail-fast admission | Use one configurable per-instance allocation execution limit across participating entry points; attempt admission without a waiting queue and before allocation run/document/reservation writes. |
+| FR-02 | Complete permit lifetime | Retain one permit through allocation, synchronous affected-SKU projection and execution-result persistence where applicable; release exactly once only after the actual work stops, on success or failure. |
+| FR-03 | Explicit overload responses | Return HTTP 503 with a stable capacity-error code for rejected inline execution; provide distinct retryable MCP errors and safe durable-worker deferral without silently converting rejected HTTP work to asynchronous work. |
+| FR-04 | Bounded request shape | Enforce approved order/shipment counts, total demand/inbound line counts and distinct-SKU limits before allocation writes or task fan-out, including before HTTP asynchronous enqueue; define byte-size enforcement separately for each ingress. |
+| FR-05 | Safe background overload | Distinguish capacity rejection from invalid input and business failure; prevent RabbitMQ fallback enqueue storms, tight requeue loops, accidental dead-lettering and false JobRunr success on deferred work. |
+| FR-06 | Preserve recovery contracts | Preserve request identity, payload checks, per-SKU locks, partial-run recovery, synchronous projection and physical-ledger separation; do not extend reservation deadlines or silently retime delayed work. |
+| FR-07 | Admission visibility | Expose configured capacity, active permits, admitted/rejected attempts, shape-limit rejections, execution outcomes and duration, plus allocation/projection/completion phase durations, through existing Micrometer infrastructure. |
+| FR-08 | Controlled configuration and cutover | Validate enabled limits at startup, document per-instance scope and all participating callers, and enable enforcement only after adapter overload behavior and queued-work compatibility are approved and verified. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | No hidden waiting | Admission must not sleep or wait for a permit, hold a database connection while waiting, or create another unbounded application queue. |
+| NFR-02 | Existing consistency | Do not change transaction/lock ordering, FIFO allocation, forecast freshness, reservation quantities, or ledger/expiry semantics; a projection failure may still follow committed allocation. |
+| NFR-03 | Honest resource boundary | Bound allocation orchestrations per instance, not all HTTP work, database transactions, durable backlog or persisted-state projection cost; size limits from measurements rather than Hikari defaults. |
+| NFR-04 | Bounded observability | Use fixed low-cardinality metric labels; never use request/job/order IDs, SKUs, customer data, payloads or exception messages as metric tags. |
+| NFR-05 | Limited implementation | Reuse existing processors, validation, adapters, Micrometer and scheduling infrastructure; avoid a new limiter framework, database schema or scheduler unless the approved retry policy requires one. |
+
+### Plan
+
+1. Approve entry-point coverage, enablement, numerical execution/request limits, byte-limit ownership, retry/defer policies and treatment of already queued work; capture the baseline.
+2. Introduce validated admission/request-limit configuration, bounded shape validation, a typed capacity exception and a non-waiting application admission guard with Micrometer measurements.
+3. Wrap shared allocation orchestration through projection and optional completion persistence; route the alternate backorder processor through the same boundary without nested permits or an outer transaction.
+4. Integrate HTTP/MCP errors and pre-enqueue shape checks; implement and verify RabbitMQ/JobRunr overload handling before enabling the common guard, including receipt-triggered backorders.
+5. Add focused permit-lifetime, rejection, payload, adapter and concurrency/recovery checks; measure independent/hot SKUs, slow projection and background contention on dedicated test infrastructure.
+6. Document configured limits, error/retry contracts, metrics, queue-date caveats and rollout; synchronize architecture, scenarios, specification, issue, API documentation, service guidance and active context with the implemented behavior.
+
+### Resources
+
+- [Scenario 16: Reject Allocation Work When Execution Capacity Is Exhausted](./scenarios.md#scenario-16-reject-allocation-work-when-execution-capacity-is-exhausted)
+- [Feature issue: fail-fast allocation admission](./issues/feature-fail-fast-allocation-admission.md)
+- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+
+## Feature: Coordinate stock processing through a per-SKU protocol
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Concurrent document registration](#feature-allow-concurrent-allocation-document-registration)
+- **Bounded Context:** Allocation, Reservations & Stock Ledger
+
+### Overview
+
+Replace the global shared/exclusive projection gate only after allocation,
+registration, scoped projection, ledger, and expiry follow an equivalent
+database-backed SKU protocol. Permit unrelated SKUs to progress concurrently,
+preserve atomic whole-order expiry, and expose recoverable partial ledger-run
+progress. Allocation remains separate from physical ledger synchronization.
+The implementation preserves allocation/forecast and expiry failure boundaries,
+uses SKU-local horizons, persists partial ledger progress, reconciles stale-date
+runs through today's manifest, and requires coordinated all-writer deployment.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Common SKU protocol | All participating writers acquire existing database SKU locks before decision reads; acquire any required sorted document locks before sorted SKU locks, then run/lifecycle and business-row locks. Use SKU-wide scope across warehouses initially. |
+| FR-02 | Scoped projection | Read and replace only the selected SKU's projection data, including removal of obsolete/empty scopes, under its SKU lock; keep the first version synchronous without asynchronous forecast publication. |
+| FR-03 | Atomic SKU ledger | Recompute the selected SKU's projection and apply its receipts, deliveries, and reservation conversions in one protected transaction; do not apply a previously published forecast to live stock. Preserve retry-safe movements and allocation/ledger separation. |
+| FR-04 | Whole-order lifecycle | Discover expiry candidates without taking lifecycle locks first; protect document identity, lock all immutable order SKUs in sorted order, recheck lifecycle/deadline, and release holds plus mark expiry atomically. Never acquire additional unordered SKUs from inside a ledger worker. |
+| FR-05 | Recoverable coordination | Persist a frozen current-day manifest and per-SKU checkpoints; resume incomplete current-day work, reconcile superseded old-date runs through today's manifest, expose partial progress in existing status reads, and advance global success only after full completion. |
+| FR-06 | Durable receipt follow-up | Persist receipt-triggered backorder work in the receipt transaction through an outbox or equivalent durable mechanism, with idempotent dispatch and consumption. |
+| FR-07 | Safe cutover | Introduce and validate scoped processing while retaining the global gate; remove reliance on it only after every deployed participating writer follows the SKU protocol. Preserve existing identity constraints and replay safety. |
+| FR-08 | Verification and visibility | Cover independent/hot SKUs, multi-SKU lifecycle, snapshot scoping, crashes/retries, date boundaries, and rollout; measure completed throughput, latency, lock/pool waits, and ledger backlog without claiming a preset capacity. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Consistency boundaries | Guarantee per-SKU mutation consistency and atomic whole-order expiry, not a single allocation/project/ledger lifecycle transaction or an atomic whole-catalogue ledger run. |
+| NFR-02 | Bounded execution | Bound coordinator fan-out against the combined database budget; keep transactions free of remote calls and broker/job scheduling side effects that belong in durable follow-up. |
+| NFR-03 | Explicit compatibility | Preserve FIFO, eligibility, quantity, ownership, receipt, and reservation rules; approve changes to failure semantics, projection horizon, result/status contracts, and freshness before cutover. |
+| NFR-04 | Limited scope | Do not add rate limiting, HTTP admission control, virtual threads, R2DBC, SKU/warehouse partitioning, confirmation endpoints, or asynchronous forecast/version publication in the first version. |
+
+### Plan
+
+1. Resolve transaction/failure compatibility, ledger-run API/status, date/cutoff, work discovery, and projection-horizon decisions; baseline the current implementation.
+2. Introduce SKU-scoped reads and snapshot replacement plus per-SKU projection tests while retaining global coordination.
+3. Implement the common lock hierarchy and whole-order expiry protocol, including cleanup/retry coordination for ledger workers encountering overdue holds.
+4. Add per-SKU ledger transactions, durable run/progress metadata, and receipt follow-up; keep existing global protection during migration.
+5. Validate every participating writer, replay/crash behavior, mixed-version deployment constraints, and realistic contention; remove the gate only after the coordinated cutover is approved.
+6. Measure performance and remaining bottlenecks, then synchronize interfaces, architecture, scenarios, specifications, issue, run guidance, and active context.
+
+### Resources
+
+- [Scenario 15: Process Stock Operations Concurrently by SKU](./scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
+- [Feature issue: per-SKU stock processing](./issues/feature-per-sku-stock-processing.md)
+- [Completed registration baseline](./issues/feature-concurrent-document-registration.md)
+- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)

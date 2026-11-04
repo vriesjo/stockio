@@ -5,6 +5,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.util.Optional
 import java.util.UUID
+import nl.stockio.allocation.domain.port.AllocationDocumentLockRepository
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationRecordRepository
 import nl.stockio.allocation.domain.port.AllocationRunRepository
@@ -61,6 +62,21 @@ interface AllocationSourceJpaRepository : AllocationSourceRepository, JpaReposit
 }
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
+interface AllocationDocumentLockJpaRepository :
+    AllocationDocumentLockRepository, JpaRepository<AllocationDocumentLockEntity, String> {
+    @Modifying
+    @Query(
+        value = "INSERT INTO allocation_document_lock (lock_key) VALUES (:lockKey) ON CONFLICT (lock_key) DO NOTHING",
+        nativeQuery = true
+    )
+    override fun insertIfMissing(@Param("lockKey") lockKey: String): Int
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select l from AllocationDocumentLockEntity l where l.lockKey = :lockKey")
+    override fun lockByKey(@Param("lockKey") lockKey: String): AllocationDocumentLockEntity?
+}
+
+@ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface AllocationSkuLockJpaRepository : AllocationSkuLockRepository, JpaRepository<AllocationSkuLockEntity, String> {
     @Modifying
     @Query(
@@ -85,6 +101,16 @@ interface AllocationSkuOperationJpaRepository : AllocationSkuOperationRepository
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface AllocationOrderClaimJpaRepository : AllocationOrderClaimRepository, JpaRepository<AllocationOrderClaimEntity, String> {
     override fun findAll(): List<AllocationOrderClaimEntity>
+    @Query(
+        value = "SELECT order_id FROM demand_order WHERE reservation_status = 'PENDING_CONFIRMATION' " +
+            "AND reservation_expires_at <= :now ORDER BY reservation_expires_at, order_id LIMIT :batchSize",
+        nativeQuery = true
+    )
+    override fun findExpiredOrderIds(@Param("now") now: Instant, @Param("batchSize") batchSize: Int): List<String>
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select c from AllocationOrderClaimEntity c where c.orderId = :orderId")
+    override fun lockByOrderId(@Param("orderId") orderId: String): AllocationOrderClaimEntity?
 
     @Query(
         value = """
@@ -116,6 +142,8 @@ interface AllocationOrderClaimJpaRepository : AllocationOrderClaimRepository, Jp
 
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface DemandOrderLineJpaRepository : DemandOrderLineRepository, JpaRepository<DemandOrderLineEntity, String> {
+    @Query("select distinct l.orderId from DemandOrderLineEntity l where l.sku = :sku")
+    override fun findDistinctOrderIdsBySku(@Param("sku") sku: String): List<String>
     override fun findAllById(ids: Iterable<String>): List<DemandOrderLineEntity>
     override fun findAllByOrderIdInOrderByOrderIdAscSequenceNumberAsc(orderIds: Collection<String>): List<DemandOrderLineEntity>
 }
@@ -123,6 +151,7 @@ interface DemandOrderLineJpaRepository : DemandOrderLineRepository, JpaRepositor
 @ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
 interface OpenBackorderJpaRepository : OpenBackorderRepository, JpaRepository<OpenBackorderEntity, String> {
     override fun findAll(): List<OpenBackorderEntity>
+    override fun findAllBySku(sku: String): List<OpenBackorderEntity>
     override fun <S : OpenBackorderEntity> save(entity: S): S
     override fun <S : OpenBackorderEntity> saveAll(entities: Iterable<S>): List<S>
     override fun delete(entity: OpenBackorderEntity)

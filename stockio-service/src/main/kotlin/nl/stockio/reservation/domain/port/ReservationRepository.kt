@@ -10,6 +10,7 @@ interface ReservationRepository {
 interface InboundReservationRepository {
 
     fun findAll(): List<InboundReservationEntity>
+    fun findAllBySku(sku: String): List<InboundReservationEntity>
     fun deleteAll(entities: Iterable<InboundReservationEntity>)
     fun <S : InboundReservationEntity> saveAll(entities: Iterable<S>): List<S>
     fun findAllByShipmentIdIn(shipmentIds: Collection<String>): List<InboundReservationEntity>
@@ -22,6 +23,7 @@ interface InboundReservationRepository {
 interface InboundSupplyRepository {
 
     fun findAll(): List<InboundSupplyEntity>
+    fun findAllBySku(sku: String): List<InboundSupplyEntity>
     fun findAllByShipmentId(shipmentId: String): List<InboundSupplyEntity>
     fun findAllById(ids: Iterable<String>): List<InboundSupplyEntity>
     fun <S : InboundSupplyEntity> saveAll(entities: Iterable<S>): List<S>

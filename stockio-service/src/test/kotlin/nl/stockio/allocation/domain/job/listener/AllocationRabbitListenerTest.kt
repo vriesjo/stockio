@@ -6,6 +6,8 @@ import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import nl.stockio.allocation.domain.processor.AllocationProjectionException
+import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
+import com.rabbitmq.client.Channel
 import org.jobrunr.jobs.Job
 import org.jobrunr.jobs.lambdas.JobLambda
 import org.jobrunr.scheduling.JobScheduler
@@ -44,8 +46,9 @@ class AllocationRabbitListenerTest {
         AllocationRabbitListener(
             jobScheduler = jobScheduler,
             allocationJobExecutor = allocationJobExecutor,
-            storageProvider = storageProvider
-        ).receive(request)
+            storageProvider = storageProvider,
+            capacityBackoff = Mockito.mock(AllocationRabbitCapacityBackoff::class.java)
+        ).receive(request, channel())
 
         val lambda = ArgumentCaptor.forClass(JobLambda::class.java)
         Mockito.verify(jobScheduler).enqueue(ArgumentMatchers.eq(request.requestId), lambda.capture())
@@ -73,8 +76,9 @@ class AllocationRabbitListenerTest {
             AllocationRabbitListener(
                 jobScheduler = jobScheduler,
                 allocationJobExecutor = allocationJobExecutor,
-                storageProvider = storageProvider
-            ).receive(request)
+                storageProvider = storageProvider,
+                capacityBackoff = Mockito.mock(AllocationRabbitCapacityBackoff::class.java)
+            ).receive(request, channel())
         }
 
         Mockito.verifyNoInteractions(jobScheduler, storageProvider)
@@ -98,9 +102,46 @@ class AllocationRabbitListenerTest {
         AllocationRabbitListener(
             jobScheduler = jobScheduler,
             allocationJobExecutor = allocationJobExecutor,
-            storageProvider = storageProvider
-        ).receive(request)
+            storageProvider = storageProvider,
+            capacityBackoff = Mockito.mock(AllocationRabbitCapacityBackoff::class.java)
+        ).receive(request, channel())
 
         Mockito.verifyNoInteractions(jobScheduler)
+    }
+
+    @Test
+    fun `capacity rejection backs off with the original message and never creates fallback jobs`() {
+        val request = AllocationRequest(UUID.randomUUID(), LocalDate.now(), AllocationRunType.NEW_DEMAND)
+        val executor = Mockito.mock(AllocationJobExecutor::class.java)
+        val scheduler = Mockito.mock(JobScheduler::class.java)
+        val storage = Mockito.mock(StorageProvider::class.java)
+        val backoff = Mockito.mock(AllocationRabbitCapacityBackoff::class.java)
+        Mockito.doThrow(AllocationCapacityExceededException()).doReturn(null)
+            .`when`(executor).executeSync(request.requestId, request)
+
+        AllocationRabbitListener(scheduler, executor, storage, backoff).receive(request, channel())
+
+        Mockito.verify(executor, Mockito.times(2)).executeSync(request.requestId, request)
+        Mockito.verify(backoff).pause()
+        Mockito.verifyNoInteractions(scheduler, storage)
+    }
+
+    @Test
+    fun `shutdown during capacity backoff requeues instead of acknowledging or falling back`() {
+        val request = AllocationRequest(UUID.randomUUID(), LocalDate.now(), AllocationRunType.NEW_DEMAND)
+        val executor = Mockito.mock(AllocationJobExecutor::class.java)
+        val scheduler = Mockito.mock(JobScheduler::class.java)
+        val storage = Mockito.mock(StorageProvider::class.java)
+        val backoff = AllocationRabbitCapacityBackoff().also { it.stop() }
+        Mockito.doThrow(AllocationCapacityExceededException()).`when`(executor).executeSync(request.requestId, request)
+
+        Assertions.assertThrows(org.springframework.amqp.ImmediateRequeueAmqpException::class.java) {
+            AllocationRabbitListener(scheduler, executor, storage, backoff).receive(request, channel())
+        }
+        Mockito.verifyNoInteractions(scheduler, storage)
+    }
+
+    private fun channel(): Channel = Mockito.mock(Channel::class.java).also {
+        Mockito.`when`(it.isOpen).thenReturn(true)
     }
 }

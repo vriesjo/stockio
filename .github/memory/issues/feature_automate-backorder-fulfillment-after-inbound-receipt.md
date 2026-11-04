@@ -2,6 +2,12 @@
 
 ## Status and scope
 
+The historical handoff below is strengthened by the implemented
+[per-SKU stock-processing feature](./feature-per-sku-stock-processing.md):
+`StockLedgerSkuWorker` now records receipt follow-up transactionally, and a
+retryable dispatcher schedules it outside the receipt transaction. The old
+after-commit-only callback design is superseded; fulfillment rules are unchanged.
+
 - **Status:** In-progress
 - **Priority:** P1
 - **Bounded Context:** Inventory & Allocation

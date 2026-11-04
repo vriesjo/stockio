@@ -9,6 +9,7 @@ import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
 import nl.stockio.allocation.domain.service.AllocationRunService
+import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.allocation.domain.processor.AllocationProcessor
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
@@ -24,6 +25,7 @@ class AllocationTools(
     private val stockLedgerProcessor: StockLedgerProcessor,
     private val excelReportProcessor: ExcelReportProcessor,
     private val orderReservationService: OrderReservationService,
+    private val requestLimits: AllocationRequestLimits,
     @param:Value("\${stockio.report.directory}")
     private val reportDirectory: String
 ) {
@@ -37,6 +39,7 @@ class AllocationTools(
             "that expire unless confirmed. Rebuild daily stock projections without synchronizing physical stock."
     )
     fun allocateAndStockProject(request: AllocationRequest) {
+        requestLimits.validate(request)
         require(request.runType == AllocationRunType.NEW_DEMAND) { "Run type must be NEW_DEMAND for allocation." }
         processingService.process(request)
     }
@@ -49,6 +52,7 @@ class AllocationTools(
             "Rebuild daily projections without synchronizing physical stock."
     )
     fun allocateOpenBackordersByInventoryAndInboundSupply(request: AllocationRequest): AllocationRunResult {
+        requestLimits.validate(request)
         require(request.runType == AllocationRunType.BACKORDER_FULFILLMENT) {
             "Run type must be BACKORDER_FULFILLMENT for backorder allocation."
         }

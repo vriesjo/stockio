@@ -11,7 +11,10 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.UUID
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
@@ -37,6 +40,8 @@ import nl.stockio.reservation.domain.job.ReservationExpiryJob
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
 import nl.stockio.allocation.domain.worker.AllocationSkuWorker
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
+import nl.stockio.stock.domain.processor.StockLedgerSkuWorker
+import nl.stockio.stock.domain.port.StockLedgerRunRepository
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.infra.AllocationRecordJpaRepository
 import nl.stockio.allocation.infra.AllocationRunJpaRepository
@@ -64,6 +69,8 @@ import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.mockito.Mockito
 import org.jobrunr.jobs.states.StateName
 import org.jobrunr.scheduling.JobScheduler
@@ -131,6 +138,9 @@ class AllocationIntegrationTest {
     private lateinit var allocationService: AllocationService
 
     @Autowired
+    private lateinit var backorderAllocationService: BackorderAllocationService
+
+    @Autowired
     private lateinit var allocationJobExecutor: AllocationJobExecutor
 
     @Autowired
@@ -194,6 +204,12 @@ class AllocationIntegrationTest {
     private lateinit var stockLedgerProcessor: StockLedgerProcessor
 
     @Autowired
+    private lateinit var stockLedgerSkuWorker: StockLedgerSkuWorker
+
+    @Autowired
+    private lateinit var ledgerRunRepository: StockLedgerRunRepository
+
+    @Autowired
     private lateinit var stockProjectionProcessor: StockProjectionProcessor
 
     @Autowired
@@ -215,6 +231,10 @@ class AllocationIntegrationTest {
     fun clearDatabase() {
         Mockito.`when`(clock.zone).thenReturn(ZoneId.systemDefault())
         setNow(Instant.now().truncatedTo(ChronoUnit.MICROS))
+        jdbcTemplate.update("UPDATE stock_ledger_coordinator SET run_id = NULL, owner = NULL, lease_until = NULL WHERE id = 1")
+        jdbcTemplate.update("DELETE FROM stock_receipt_followup")
+        jdbcTemplate.update("DELETE FROM stock_ledger_work")
+        jdbcTemplate.update("DELETE FROM stock_ledger_run")
         jdbcTemplate.update(
             """UPDATE stock_ledger_sync_status SET last_success_at = NULL, snapshot_date = NULL,
                 sku_count = NULL, lot_snapshot_count = NULL, monitoring_started_at = CURRENT_TIMESTAMP WHERE id = 1"""
@@ -232,6 +252,7 @@ class AllocationIntegrationTest {
         backorderRepository.deleteAll()
         jdbcTemplate.update("DELETE FROM demand_order_line")
         jdbcTemplate.update("DELETE FROM demand_order")
+        jdbcTemplate.update("DELETE FROM allocation_document_lock")
         jdbcTemplate.update("DELETE FROM product_knowledge_chunks")
         jdbcTemplate.update("DELETE FROM product_embeddings")
         runRepository.deleteAll()
@@ -554,7 +575,47 @@ class AllocationIntegrationTest {
     }
 
     @Test
+    fun `concurrent executions of the same request do not duplicate allocation`() {
+        val today = LocalDate.now()
+        stockRepository.save(
+            StockEntity(sku = "MAKI-ZALM", lotId = "CONCURRENT-REPLAY-STOCK", receivedDate = today, quantityOnHand = 10)
+        )
+        val request = reservationRequest("CONCURRENT-REPLAY-ORDER", 2)
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        val results = try {
+            val attempts = List(2) {
+                executor.submit {
+                    ready.countDown()
+                    check(start.await(5, TimeUnit.SECONDS))
+                    allocationJobExecutor.executeSync(request.requestId, request)
+                }
+            }
+            Assertions.assertTrue(ready.await(5, TimeUnit.SECONDS))
+            start.countDown()
+            attempts.map { it.get(30, TimeUnit.SECONDS) }
+        } finally {
+            start.countDown()
+            executor.shutdownNow()
+        }
+
+        Assertions.assertEquals(results.first(), results.last())
+        Assertions.assertEquals(1L, runRepository.count())
+        Assertions.assertEquals(1L, jobResultRepository.count())
+        Assertions.assertEquals(1L, stockReservationRepository.count())
+        Assertions.assertEquals(2, stockRepository.findAll().single().quantityReserved)
+    }
+
+    @Test
     fun `allocation projection failure can resume without duplicating committed reservations`() {
+        val admissionProperties = AllocationAdmissionProperties(true, 1, 2, 2, 3, 3, 2, 4096)
+        val registry = io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+        val admission = AllocationAdmission(admissionProperties, registry)
+        val limits = AllocationRequestLimits(admissionProperties, objectMapper, registry)
+        val guarded = AllocationProcessor(allocationService, stockProjectionProcessor, backorderAllocationService,
+            admission, limits)
+        val guardedExecutor = AllocationJobExecutor(guarded, jobResultRepository, jobScheduler, objectMapper, limits)
         val today = LocalDate.now()
         stockRepository.save(
             StockEntity(sku = "MAKI-ZALM", lotId = "ALLOCATION-RETRY-LOT", receivedDate = today, quantityOnHand = 5)
@@ -569,19 +630,41 @@ class AllocationIntegrationTest {
         )
         val request = reservationRequest("ALLOCATION-RETRY-ORDER", 3)
         Assertions.assertThrows(AllocationProjectionException::class.java) {
-            allocationJobExecutor.executeSync(request.requestId, request)
+            guardedExecutor.executeSync(request.requestId, request)
         }
+        Assertions.assertEquals(0.0, registry.get("stockio.allocation.admission.active").gauge().value())
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
         Assertions.assertFalse(jobResultRepository.existsById(request.requestId))
 
         inboundSupplyRepository.deleteById("ALLOCATION-RETRY-LINE")
-        val result = allocationJobExecutor.executeSync(request.requestId, request)
+        val result = guardedExecutor.executeSync(request.requestId, request)
         Assertions.assertEquals(3, result.allocationRun.allocations.single().allocatedFromInventory)
         Assertions.assertEquals(3, snapshotRepository.findLotsByDate(today).single().quantityReserved)
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
         Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+    }
+
+    @Test
+    fun `saturated admission rejects before persisted run document or reservation writes`() {
+        val properties = AllocationAdmissionProperties(true, 1, 1, 1, 1, 1, 1, 4096)
+        val registry = io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+        val admission = AllocationAdmission(properties, registry)
+        val limits = AllocationRequestLimits(properties, objectMapper, registry)
+        val guarded = AllocationProcessor(allocationService, stockProjectionProcessor, backorderAllocationService,
+            admission, limits)
+        val request = reservationRequest("ADMISSION-REFUSED", 1)
+        admission.execute(request.runType) {
+            Assertions.assertThrows(AllocationCapacityExceededException::class.java) { guarded.process(request) }
+            Assertions.assertEquals(0L, jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM allocation_run WHERE request_id = ?", Long::class.java, request.requestId) ?: -1L)
+            Assertions.assertFalse(claimRepository.existsById("ADMISSION-REFUSED"))
+            Assertions.assertEquals(0L, stockReservationRepository.count())
+            Assertions.assertEquals(0L, backorderRepository.count())
+        }
+        guarded.process(request)
+        Assertions.assertTrue(claimRepository.existsById("ADMISSION-REFUSED"))
     }
 
     @Test
@@ -699,9 +782,11 @@ class AllocationIntegrationTest {
             inboundShipments = listOf(singleLineShipment("ROLLBACK-SYNC", "MAKI-ZALM", 5, today))
         ))
         val snapshots = snapshotRepository.findDailyByDate(today)
+        val owner = UUID.randomUUID()
+        val run = ledgerRunRepository.begin(today, owner, clock.instant())
         Assertions.assertThrows(IllegalStateException::class.java) {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                ledgerSyncJob.execute()
+                stockLedgerSkuWorker.process(run, owner, "MAKI-ZALM")
                 throw IllegalStateException("Roll back enclosing transaction")
             }
         }
@@ -709,6 +794,8 @@ class AllocationIntegrationTest {
         Assertions.assertFalse(inboundSupplyRepository.findAll().single().received)
         Assertions.assertTrue(stockRepository.findAll().isEmpty())
         Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+        Assertions.assertEquals(0, ledgerRunRepository.getProgress()!!.completedSkus)
+        Assertions.assertTrue(ledgerRunRepository.pendingReceipts(100).isEmpty())
     }
 
     @Test
@@ -1059,7 +1146,8 @@ class AllocationIntegrationTest {
         val dailySnapshot = snapshotRepository.findDailyByDate(today).single()
         val lotSnapshot = snapshotRepository.findLotsByDate(today).single()
         TransactionTemplate(transactionManager).executeWithoutResult {
-            snapshotRepository.replaceFrom(
+            snapshotRepository.replaceSkuFrom(
+                "MAKI-ZALM",
                 yesterday,
                 listOf(
                     dailySnapshot.copy(id = UUID.randomUUID(), snapshotDate = yesterday),
@@ -1101,7 +1189,8 @@ class AllocationIntegrationTest {
             TransactionTemplate(transactionManager).executeWithoutResult {
                 stockRepository.findById(stock.id).orElseThrow().quantityOnHand = 8
                 stockRepository.flush()
-                snapshotRepository.replaceFrom(
+                snapshotRepository.replaceSkuFrom(
+                    "MAKI-ZALM",
                     today,
                     dailySnapshots.map { it.copy(closingStock = 8) },
                     lotSnapshots.map { it.copy(closingStock = 8, quantityReserved = 9) }
@@ -1840,6 +1929,257 @@ class AllocationIntegrationTest {
     }
 
     @Test
+    fun `independent registrations overlap without acquiring the retired projection gate`() {
+        val today = LocalDate.now()
+        val first = reservationRequest("INDEPENDENT-A", 2).copy(
+            inboundShipments = listOf(singleLineShipment("INDEPENDENT-SHIP-A", "MAKI-ZALM", 5, today))
+        )
+        val second = AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            demandOrders = listOf(singleLineOrder("INDEPENDENT-B", "Independent", "MAKI-TONIJN", 2, 1, today, today)),
+            inboundShipments = listOf(singleLineShipment("INDEPENDENT-SHIP-B", "MAKI-TONIJN", 5, today))
+        )
+        val firstRun = allocationRunService.beginOrResume(first, requestHash(first))
+        val secondRun = allocationRunService.beginOrResume(second, requestHash(second))
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                documentService.initialize(firstRun.id, first)
+                executor.submit {
+                    TransactionTemplate(transactionManager).executeWithoutResult {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                        documentService.initialize(secondRun.id, second)
+                    }
+                }.get(10, TimeUnit.SECONDS)
+                executor.submit {
+                    TransactionTemplate(transactionManager).executeWithoutResult {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '200ms'")
+                        stockProjectionLockRepository.acquire()
+                    }
+                }.get(10, TimeUnit.SECONDS)
+            }
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(2, claimRepository.count())
+        Assertions.assertEquals(2, inboundSupplyRepository.count())
+        Assertions.assertTrue(runRepository.findById(firstRun.id).orElseThrow().documentsInitialized)
+        Assertions.assertTrue(runRepository.findById(secondRun.id).orElseThrow().documentsInitialized)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["order", "order-line", "shipment", "shipment-line"])
+    fun `concurrent registrations cannot merge document identities`(identity: String) {
+        val today = LocalDate.now()
+        val isOrder = identity.startsWith("order")
+        val first = AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            demandOrders = if (isOrder) listOf(DemandOrder(
+                "IDENTITY-OWNER", "Owner", 1, today,
+                listOf(DemandOrderLine("IDENTITY-LINE", "MAKI-ZALM", 2, today))
+            )) else emptyList(),
+            inboundShipments = if (isOrder) emptyList() else listOf(InboundShipment(
+                "IDENTITY-OWNER", listOf(InboundShipmentLine("IDENTITY-LINE", "MAKI-ZALM", 5, today))
+            ))
+        )
+        val second = first.copy(
+            requestId = UUID.randomUUID(),
+            demandOrders = first.demandOrders.map { order ->
+                order.copy(
+                    orderId = if (identity == "order") order.orderId else "IDENTITY-OTHER",
+                    lines = order.lines.map { line ->
+                        line.copy(
+                            orderLineId = if (identity == "order-line") line.orderLineId else "OTHER-LINE",
+                            sku = "MAKI-TONIJN"
+                        )
+                    }
+                )
+            },
+            inboundShipments = first.inboundShipments.map { shipment ->
+                shipment.copy(
+                    shipmentId = if (identity == "shipment") shipment.shipmentId else "IDENTITY-OTHER",
+                    lines = shipment.lines.map { line ->
+                        line.copy(
+                            shipmentLineId = if (identity == "shipment-line") line.shipmentLineId else "OTHER-LINE",
+                            sku = "MAKI-TONIJN"
+                        )
+                    }
+                )
+            }
+        )
+        val firstRun = allocationRunService.beginOrResume(first, requestHash(first))
+        val secondRun = allocationRunService.beginOrResume(second, requestHash(second))
+        val backend = ArrayBlockingQueue<Int>(1)
+        val executor = Executors.newSingleThreadExecutor()
+        lateinit var attempt: Future<IllegalArgumentException>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                documentService.initialize(firstRun.id, first)
+                val holder = currentBackendPid()
+                attempt = executor.submit<IllegalArgumentException> {
+                    Assertions.assertThrows(IllegalArgumentException::class.java) {
+                        TransactionTemplate(transactionManager).executeWithoutResult {
+                            jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                            backend.put(currentBackendPid())
+                            documentService.initialize(secondRun.id, second)
+                        }
+                    }
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+            }
+            attempt.get(10, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertFalse(runRepository.findById(secondRun.id).orElseThrow().documentsInitialized)
+        val table = if (isOrder) "demand_order_line" else "inbound_supply"
+        val parent = if (isOrder) "order_id" else "shipment_id"
+        Assertions.assertEquals(1, requireNotNull(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM $table", Int::class.java)))
+        Assertions.assertEquals(
+            "IDENTITY-OWNER:MAKI-ZALM",
+            jdbcTemplate.queryForObject("SELECT $parent || ':' || sku FROM $table", String::class.java)
+        )
+        Assertions.assertEquals(
+            if (isOrder) 1 else 0,
+            claimRepository.count().toInt()
+        )
+        Assertions.assertEquals(0, stockReservationRepository.count())
+    }
+
+    @Test
+    fun `inbound amendments wait for allocation and validate the committed reserved quantity`() {
+        val today = LocalDate.now()
+        val shipment = singleLineShipment("AMENDMENT-SHIP", "MAKI-ZALM", 100, today)
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND, inboundShipments = listOf(shipment)
+        ))
+        val request = reservationRequest("AMENDMENT-ORDER", 50)
+        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        documentService.initialize(run.id, request)
+        val amendment = AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            inboundShipments = listOf(shipment.copy(lines = shipment.lines.map { it.copy(expectedQuantity = 20) }))
+        )
+        val amendmentRun = allocationRunService.beginOrResume(amendment, requestHash(amendment))
+        val backend = ArrayBlockingQueue<Int>(1)
+        val executor = Executors.newSingleThreadExecutor()
+        lateinit var attempt: Future<IllegalArgumentException>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                allocationSkuWorker.allocateNewDemand(
+                    run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines()
+                )
+                val holder = currentBackendPid()
+                attempt = executor.submit<IllegalArgumentException> {
+                    Assertions.assertThrows(IllegalArgumentException::class.java) {
+                        TransactionTemplate(transactionManager).executeWithoutResult {
+                            jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                            backend.put(currentBackendPid())
+                            documentService.initialize(amendmentRun.id, amendment)
+                        }
+                    }
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+            }
+            Assertions.assertTrue(requireNotNull(attempt.get(10, TimeUnit.SECONDS).message).contains("reservations"))
+        } finally {
+            executor.shutdownNow()
+        }
+        val supply = inboundSupplyRepository.findById("AMENDMENT-SHIP").orElseThrow()
+        Assertions.assertEquals(100, supply.expectedQuantity)
+        Assertions.assertEquals(50, supply.quantityReserved)
+        Assertions.assertEquals(50, requireNotNull(jdbcTemplate.queryForObject(
+            "SELECT SUM(quantity) FROM inbound_reservation WHERE shipment_line_id = 'AMENDMENT-SHIP'", Int::class.java
+        )))
+        Assertions.assertFalse(runRepository.findById(amendmentRun.id).orElseThrow().documentsInitialized)
+    }
+
+    @Test
+    fun `registration retries do not hold the run lock while waiting for its SKU worker`() {
+        val today = LocalDate.now()
+        val request = reservationRequest("RETRY-LOCK-ORDER", 2).copy(
+            inboundShipments = listOf(singleLineShipment("RETRY-LOCK-SHIP", "MAKI-ZALM", 5, today))
+        )
+        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        documentService.initialize(run.id, request)
+        val deadline = claimRepository.findById("RETRY-LOCK-ORDER").orElseThrow().reservationExpiresAt
+        val backend = ArrayBlockingQueue<Int>(1)
+        val executor = Executors.newSingleThreadExecutor()
+        lateinit var attempt: Future<*>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                stockProjectionLockRepository.acquireAllocationReadLock()
+                jdbcTemplate.queryForObject(
+                    "SELECT sku FROM allocation_sku_lock WHERE sku = 'MAKI-ZALM' FOR UPDATE", String::class.java
+                )
+                val holder = currentBackendPid()
+                attempt = executor.submit {
+                    TransactionTemplate(transactionManager).executeWithoutResult {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                        backend.put(currentBackendPid())
+                        documentService.initialize(run.id, request)
+                    }
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+                allocationSkuWorker.allocateNewDemand(
+                    run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines()
+                )
+            }
+            attempt.get(10, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(2, inboundSupplyRepository.findById("RETRY-LOCK-SHIP").orElseThrow().quantityReserved)
+        Assertions.assertEquals(deadline, claimRepository.findById("RETRY-LOCK-ORDER").orElseThrow().reservationExpiresAt)
+    }
+
+    @Test
+    fun `registrations acquire overlapping inbound SKUs consistently despite reversed input order`() {
+        val today = LocalDate.now()
+        val skus = listOf("MAKI-KOMKOMMER", "MAKI-ZALM")
+        skus.forEach { sku ->
+            jdbcTemplate.update("INSERT INTO allocation_sku_lock (sku) VALUES (?) ON CONFLICT DO NOTHING", sku)
+        }
+        val requests = listOf(skus, skus.reversed()).mapIndexed { index, ordered ->
+            AllocationRequest(
+                UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+                inboundShipments = listOf(InboundShipment("LOCK-ORDER-SHIP-$index", ordered.map { sku ->
+                    InboundShipmentLine("LOCK-ORDER-LINE-$index-$sku", sku, 5, today)
+                }))
+            )
+        }
+        val runs = requests.map { allocationRunService.beginOrResume(it, requestHash(it)) }
+        val executor = Executors.newFixedThreadPool(2)
+        val attempts = mutableListOf<Future<*>>()
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                stockProjectionLockRepository.acquireAllocationReadLock()
+                jdbcTemplate.queryForObject(
+                    "SELECT sku FROM allocation_sku_lock WHERE sku = ? FOR UPDATE", String::class.java, skus.first()
+                )
+                val holder = currentBackendPid()
+                requests.zip(runs).forEach { (request, run) ->
+                    val backend = ArrayBlockingQueue<Int>(1)
+                    attempts += executor.submit {
+                        TransactionTemplate(transactionManager).executeWithoutResult {
+                            jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                            backend.put(currentBackendPid())
+                            documentService.initialize(run.id, request)
+                        }
+                    }
+                    awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+                }
+            }
+            attempts.forEach { it.get(10, TimeUnit.SECONDS) }
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(4, inboundSupplyRepository.count())
+        runs.forEach { Assertions.assertTrue(runRepository.findById(it.id).orElseThrow().documentsInitialized) }
+    }
+
+    @Test
     fun `resuming initialized documents does not reapply shipment quantities or renew the order deadline`() {
         val today = LocalDate.now()
         val shipment = InboundShipment("INITIALIZED-SHIP", listOf(
@@ -1881,6 +2221,242 @@ class AllocationIntegrationTest {
         Assertions.assertEquals("LEGACY-SHIP", record.sources.single().shipmentId)
         Assertions.assertEquals("LEGACY-SHIP", record.sources.single().shipmentLineId)
         Assertions.assertEquals(2, record.allocatedFromInbound)
+    }
+
+    @Test
+    fun `projection waits for its SKU allocation but unrelated SKU projection can commit`() {
+        val today = LocalDate.now(clock)
+        stockRepository.saveAll(listOf(
+            StockEntity(sku = "MAKI-ZALM", lotId = "SCOPED-Z", receivedDate = today, quantityOnHand = 10),
+            StockEntity(sku = "MAKI-TONIJN", lotId = "SCOPED-T", receivedDate = today, quantityOnHand = 7)
+        ))
+        val request = reservationRequest("SCOPED-ORDER", 3)
+        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        documentService.initialize(run.id, request)
+        val executor = Executors.newFixedThreadPool(2)
+        val backend = ArrayBlockingQueue<Int>(1)
+        lateinit var waiting: Future<*>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                allocationSkuWorker.allocateNewDemand(run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines())
+                val holder = currentBackendPid()
+                waiting = executor.submit {
+                    TransactionTemplate(transactionManager).executeWithoutResult {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                        backend.put(currentBackendPid())
+                        stockProjectionProcessor.processSku(today, "MAKI-ZALM")
+                    }
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+                executor.submit {
+                    stockProjectionProcessor.processSku(today, "MAKI-TONIJN")
+                }.get(5, TimeUnit.SECONDS)
+                Assertions.assertEquals(7, snapshotRepository.findDailyBySkuAndDate("MAKI-TONIJN", today).single().closingStock)
+            }
+            waiting.get(10, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(3, snapshotRepository.findLotsBySkuAndDate("MAKI-ZALM", today).single().quantityReserved)
+    }
+
+    @Test
+    fun `ledger commits an independent SKU while another allocation holds its SKU lock`() {
+        val today = LocalDate.now(clock)
+        stockRepository.saveAll(listOf(
+            StockEntity(sku = "MAKI-ZALM", lotId = "LEDGER-Z", receivedDate = today, quantityOnHand = 10),
+            StockEntity(sku = "MAKI-TONIJN", lotId = "LEDGER-T", receivedDate = today, quantityOnHand = 7)
+        ))
+        val request = reservationRequest("LEDGER-OVERLAP", 3)
+        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        documentService.initialize(run.id, request)
+        val executor = Executors.newSingleThreadExecutor()
+        lateinit var ledger: Future<*>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                allocationSkuWorker.allocateNewDemand(run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines())
+                ledger = executor.submit { stockLedgerProcessor.processToday() }
+                Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted {
+                    Assertions.assertEquals(1, ledgerRunRepository.getProgress()?.completedSkus)
+                }
+                Assertions.assertFalse(ledger.isDone)
+                Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+                Assertions.assertEquals(7, snapshotRepository.findDailyBySkuAndDate("MAKI-TONIJN", today).single().closingStock)
+            }
+            ledger.get(10, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals("COMPLETED", ledgerRunRepository.getProgress()!!.status)
+        Assertions.assertEquals(3, stockRepository.findAllBySku("MAKI-ZALM").single().quantityReserved)
+    }
+
+    @Test
+    fun `scoped horizons and empty replacement never alter another SKU forecast`() {
+        val today = LocalDate.now(clock)
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            inboundShipments = listOf(
+                singleLineShipment("HORIZON-T", "MAKI-TONIJN", 5, today.plusDays(3)),
+                singleLineShipment("HORIZON-Z", "MAKI-ZALM", 4, today)
+            )
+        ))
+        stockProjectionProcessor.process(today)
+        val other = snapshotRepository.findDailyBySkuAndWarehouse("MAKI-TONIJN", "MAIN")
+        Assertions.assertEquals(4, other.size)
+        Assertions.assertEquals(1, snapshotRepository.findDailyBySkuAndWarehouse("MAKI-ZALM", "MAIN").size)
+        inboundSupplyRepository.deleteById("HORIZON-Z")
+
+        stockProjectionProcessor.processSku(today, "MAKI-ZALM")
+
+        Assertions.assertTrue(snapshotRepository.findDailyBySkuAndWarehouse("MAKI-ZALM", "MAIN").isEmpty())
+        Assertions.assertTrue(snapshotRepository.findLotsBySkuAndDate("MAKI-ZALM", today).isEmpty())
+        Assertions.assertEquals(other, snapshotRepository.findDailyBySkuAndWarehouse("MAKI-TONIJN", "MAIN"))
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `partial ledger work resumes or reconciles on a new date without duplicate receipts`(afterMidnight: Boolean) {
+        Mockito.`when`(clock.zone).thenReturn(ZoneId.of("UTC"))
+        setNow(Instant.parse("2026-10-20T10:00:00Z"))
+        val today = LocalDate.now(clock)
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            inboundShipments = listOf(
+                singleLineShipment("PARTIAL-T", "MAKI-TONIJN", 5, today),
+                singleLineShipment("PARTIAL-Z", "MAKI-ZALM", 4, today)
+            )
+        ))
+        val conflict = inboundSupplyRepository.findById("PARTIAL-Z").orElseThrow()
+        stockRepository.save(
+            StockEntity(sku = "MAKI-ZALM", lotId = conflict.lotId, receivedDate = today, quantityOnHand = 1)
+        )
+
+        Assertions.assertThrows(IllegalArgumentException::class.java) { stockLedgerProcessor.processToday() }
+        val partial = ledgerRunRepository.getProgress()!!
+        Assertions.assertEquals("PARTIAL", partial.status)
+        Assertions.assertEquals(2, partial.totalSkus)
+        Assertions.assertEquals(1, partial.completedSkus)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+        Assertions.assertTrue(inboundSupplyRepository.findById("PARTIAL-T").orElseThrow().received)
+        Assertions.assertFalse(inboundSupplyRepository.findById("PARTIAL-Z").orElseThrow().received)
+        Assertions.assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM stock_receipt_followup", Int::class.java))
+        mockMvc.perform(MockMvcRequestBuilders.get("/api/stock/ledger/status"))
+            .andExpect(MockMvcResultMatchers.jsonPath("$.progress.status").value("PARTIAL"))
+            .andExpect(MockMvcResultMatchers.jsonPath("$.progress.completedSkus").value(1))
+
+        stockRepository.deleteAll(stockRepository.findAllBySku("MAKI-ZALM"))
+        if (afterMidnight) setNow(Instant.parse("2026-10-21T00:01:00Z"))
+        val result = stockLedgerProcessor.processToday()
+        val complete = ledgerRunRepository.getProgress()!!
+        Assertions.assertEquals("COMPLETED", complete.status)
+        Assertions.assertEquals(2, complete.completedSkus)
+        Assertions.assertEquals(5, stockRepository.findAllBySku("MAKI-TONIJN").single().quantityOnHand)
+        Assertions.assertEquals(4, stockRepository.findAllBySku("MAKI-ZALM").single().quantityOnHand)
+        Assertions.assertEquals(LocalDate.now(clock), result.snapshotDate)
+        if (afterMidnight) {
+            Assertions.assertNotEquals(partial.runId, complete.runId)
+            Assertions.assertEquals("SUPERSEDED", jdbcTemplate.queryForObject(
+                "SELECT status FROM stock_ledger_run WHERE id = ?", String::class.java, partial.runId
+            ))
+        } else {
+            Assertions.assertEquals(partial.runId, complete.runId)
+        }
+    }
+
+    @Test
+    fun `expired coordinator is fenced before applying work and committed work survives lost aggregation`() {
+        val today = LocalDate.now(clock)
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            inboundShipments = listOf(singleLineShipment("FENCED-RECEIPT", "MAKI-ZALM", 5, today))
+        ))
+        val previousOwner = UUID.randomUUID()
+        val first = ledgerRunRepository.begin(today, previousOwner, clock.instant())
+        jdbcTemplate.update("UPDATE stock_ledger_coordinator SET lease_until = ?", java.sql.Timestamp.from(clock.instant().minusSeconds(1)))
+        val owner = UUID.randomUUID()
+        val resumed = ledgerRunRepository.begin(today, owner, clock.instant())
+        Assertions.assertEquals(first.id, resumed.id)
+        Assertions.assertThrows(RuntimeException::class.java) {
+            stockLedgerSkuWorker.process(first, previousOwner, "MAKI-ZALM")
+        }
+        Assertions.assertTrue(stockRepository.findAll().isEmpty())
+        stockLedgerSkuWorker.process(resumed, owner, "MAKI-ZALM")
+        Assertions.assertEquals(1, ledgerRunRepository.getProgress()!!.completedSkus)
+        Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
+        ledgerRunRepository.fail(resumed.id, owner, "Crash before parent aggregation", clock.instant())
+
+        stockLedgerProcessor.processToday()
+
+        Assertions.assertEquals(5, stockRepository.findAll().single().quantityOnHand)
+        Assertions.assertEquals(resumed.id, ledgerRunRepository.getProgress()!!.runId)
+        Assertions.assertEquals("COMPLETED", ledgerRunRepository.getProgress()!!.status)
+    }
+
+    @Test
+    fun `expiry waits for the full sorted SKU set and releases every hold atomically`() {
+        val today = LocalDate.now(clock)
+        stockRepository.saveAll(listOf(
+            StockEntity(sku = "MAKI-ZALM", lotId = "EXPIRY-Z", receivedDate = today, quantityOnHand = 5),
+            StockEntity(sku = "MAKI-TONIJN", lotId = "EXPIRY-T", receivedDate = today, quantityOnHand = 5)
+        ))
+        allocationService.allocation(AllocationRequest(
+            UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
+            demandOrders = listOf(DemandOrder("EXPIRY-SORTED", "Expiry", 1, today, listOf(
+                DemandOrderLine("EXPIRY-Z", "MAKI-ZALM", 2, today),
+                DemandOrderLine("EXPIRY-T", "MAKI-TONIJN", 3, today)
+            )))
+        ))
+        setNow(claimRepository.findById("EXPIRY-SORTED").orElseThrow().reservationExpiresAt!!)
+        val executor = Executors.newSingleThreadExecutor()
+        val backend = ArrayBlockingQueue<Int>(1)
+        lateinit var expiry: Future<Int>
+        try {
+            TransactionTemplate(transactionManager).executeWithoutResult {
+                jdbcTemplate.queryForObject(
+                    "SELECT sku FROM allocation_sku_lock WHERE sku = 'MAKI-ZALM' FOR UPDATE", String::class.java
+                )
+                val holder = currentBackendPid()
+                expiry = executor.submit<Int> {
+                    TransactionTemplate(transactionManager).execute {
+                        jdbcTemplate.execute("SET LOCAL lock_timeout = '5s'")
+                        backend.put(currentBackendPid())
+                        expiryService.expireBatch()
+                    }!!
+                }
+                awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
+                Assertions.assertEquals(OrderReservationStatus.PENDING_CONFIRMATION,
+                    claimRepository.findById("EXPIRY-SORTED").orElseThrow().orderReservationStatus)
+                Assertions.assertEquals(5, stockRepository.findAll().sumOf { it.quantityReserved })
+            }
+            Assertions.assertEquals(1, expiry.get(10, TimeUnit.SECONDS))
+        } finally {
+            executor.shutdownNow()
+        }
+        Assertions.assertEquals(0, stockRepository.findAll().sumOf { it.quantityReserved })
+        Assertions.assertEquals(0, stockReservationRepository.count())
+        Assertions.assertEquals(OrderReservationStatus.EXPIRED,
+            claimRepository.findById("EXPIRY-SORTED").orElseThrow().orderReservationStatus)
+    }
+
+    private fun currentBackendPid(): Int =
+        requireNotNull(jdbcTemplate.queryForObject("SELECT pg_backend_pid()", Int::class.java))
+
+    private fun awaitBlockedBy(holder: Int, waiter: Int) {
+        Awaitility.await().atMost(Duration.ofSeconds(5)).until {
+            // PostgreSQL may report a preceding waiter rather than the root lock holder.
+            jdbcTemplate.queryForObject(
+                """
+                    WITH RECURSIVE blockers(pid) AS (
+                        SELECT unnest(pg_blocking_pids(?))
+                        UNION
+                        SELECT unnest(pg_blocking_pids(pid)) FROM blockers
+                    )
+                    SELECT EXISTS (SELECT 1 FROM blockers WHERE pid = ?)
+                """.trimIndent(),
+                Boolean::class.java, waiter, holder
+            ) == true
+        }
     }
 
     private fun reservationRequest(orderId: String, quantity: Int) = AllocationRequest(

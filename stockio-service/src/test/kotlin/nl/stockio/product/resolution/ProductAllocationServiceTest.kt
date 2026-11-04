@@ -201,7 +201,7 @@ class ProductAllocationServiceTest {
         val product = ProductEntity(sku = "MAKI-KOMKOMMER", title = "Maki Komkommer")
         val secondProduct = ProductEntity(sku = "MAKI-AVOCADO", title = "Maki Avocado")
         val tavilySearchClient = mock(TavilySearchClient::class.java)
-        val allocationService = mock(AllocationService::class.java)
+        val allocationService = successfulAllocationService()
         val requested = request(productQuery = "cucumber sushi roll")
         val sut = service(
             tavilySearchClient = tavilySearchClient,
@@ -398,7 +398,7 @@ class ProductAllocationServiceTest {
         productVectorRepository: ProductVectorJdbcTemplateRepository = vectorRepository(
             listOf(ProductEntity(sku = "MAKI-KOMKOMMER", title = "Maki Komkommer", category = "V"))
         ),
-        allocationService: AllocationService = mock(AllocationService::class.java)
+        allocationService: AllocationService = successfulAllocationService()
     ): ProductAllocationService {
         val products = productRepository.findAllByStatus("ACTIVE")
         val productHashes = products.associate { product ->
@@ -413,11 +413,29 @@ class ProductAllocationServiceTest {
             processingService = AllocationProcessor(
                 allocationService,
                 mock(StockProjectionProcessor::class.java),
-                mock(BackorderAllocationService::class.java)
+                mock(BackorderAllocationService::class.java),
+                nl.stockio.allocation.domain.service.AllocationAdmission(
+                    nl.stockio.allocation.domain.service.AllocationAdmissionProperties(),
+                    io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+                ),
+                mock(nl.stockio.allocation.domain.service.AllocationRequestLimits::class.java)
             ),
             properties = ProductResolutionProperties()
         )
     }
+
+    private fun successfulAllocationService(): AllocationService =
+        mock(AllocationService::class.java) { invocation ->
+            if (invocation.method.name == "allocation") {
+                val request = invocation.getArgument<AllocationRequest>(0)
+                AllocationRunResult(
+                    UUID.randomUUID(), request.requestId, request.runType, request.asOfDate,
+                    Instant.now(), 0, emptyList()
+                )
+            } else {
+                org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation)
+            }
+        }
 
     private fun productRepository(products: List<ProductEntity>): ProductJpaRepository =
         mock(ProductJpaRepository::class.java).also {

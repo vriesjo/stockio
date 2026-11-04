@@ -409,7 +409,12 @@ Which request obtains it first is not a guarantee of global business priority.
 can progress concurrently. Work on the same SKU serializes through its own
 exclusive row lock. Projection rebuilding and ledger synchronization take the
 exclusive projection lock, excluding allocation while they build/apply a
-consistent view. Document registration also uses that exclusive lock.
+consistent view. Document registration uses the shared gate, sorted namespaced
+header/line identity locks, sorted inbound SKU locks, and then the run lock.
+This permits independent registrations to overlap while protecting absent
+identities and inbound amendments. Existing supply rows are locked before
+amendment validation. Run locking follows SKU acquisition so a retry does not
+block worker foreign-key checks while waiting for that worker.
 
 This is stronger than protecting a single stock counter: ledger processing
 touches receipts, holds, snapshots, and physical balances together.

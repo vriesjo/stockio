@@ -37,7 +37,7 @@ async function service(context: TestContext, listener: RequestListener) {
   configureUrl(context, `http://127.0.0.1:${address.port}/stockio/`);
 }
 
-for (const status of [200, 400, 500]) {
+for (const status of [200, 400, 413, 503, 500]) {
   test(`Axios forwards unchanged JSON to the configured service and preserves HTTP ${status}`, async (context) => {
     let calls = 0;
     const result = status === 200
@@ -63,10 +63,35 @@ for (const status of [200, 400, 500]) {
   });
 }
 
-test("Axios defaults to the independent service on port 8080 with a bounded timeout", async (context) => {
+test("opt-in byte admission accepts the exact boundary and rejects larger bodies before Axios", async (context) => {
+  const enabled = process.env.ALLOCATION_ADMISSION_ENABLED;
+  const previous = process.env.ALLOCATION_ADMISSION_MAX_REQUEST_BYTES;
+  process.env.ALLOCATION_ADMISSION_ENABLED = "true";
+  process.env.ALLOCATION_ADMISSION_MAX_REQUEST_BYTES = String(Buffer.byteLength(body));
+  context.after(() => {
+    if (enabled === undefined) delete process.env.ALLOCATION_ADMISSION_ENABLED;
+    else process.env.ALLOCATION_ADMISSION_ENABLED = enabled;
+    if (previous === undefined) delete process.env.ALLOCATION_ADMISSION_MAX_REQUEST_BYTES;
+    else process.env.ALLOCATION_ADMISSION_MAX_REQUEST_BYTES = previous;
+  });
+  const post = context.mock.method(axios, "post", async () => ({ status: 200, headers: {}, data: "{}" }));
+  assert.equal((await POST(request())).status, 200);
+  const tooLarge = await POST(new Request("http://localhost/api/allocate", { method: "POST", body: body + " " }));
+  assert.equal(tooLarge.status, 413);
+  assert.equal((await tooLarge.json()).code, "ALLOCATION_REQUEST_TOO_LARGE");
+  assert.equal(post.mock.callCount(), 1);
+  process.env.ALLOCATION_ADMISSION_MAX_REQUEST_BYTES = "2";
+  assert.equal((await POST(new Request("http://localhost/api/allocate", { method: "POST", body: "\u00e9" }))).status, 200);
+  assert.equal((await POST(new Request("http://localhost/api/allocate", { method: "POST", body: "\u00e9\u00e9" }))).status, 413);
+  assert.equal(post.mock.callCount(), 2);
+  delete process.env.ALLOCATION_ADMISSION_MAX_REQUEST_BYTES;
+  await assert.rejects(POST(request()), /requires a positive/);
+});
+
+test("Axios defaults to the independent service on port 9090 with a bounded timeout", async (context) => {
   configureUrl(context, undefined);
   context.mock.method(axios, "post", async (url: string, data: string, config: AxiosRequestConfig) => {
-    assert.equal(url, "http://127.0.0.1:8080/api/products/allocate");
+    assert.equal(url, "http://127.0.0.1:9090/api/products/allocate");
     assert.equal(data, body);
     assert.equal(config.timeout, 180_000);
     return { status: 200, headers: {}, data: "{}" };

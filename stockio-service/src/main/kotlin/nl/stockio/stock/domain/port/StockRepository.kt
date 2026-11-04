@@ -14,6 +14,7 @@ import nl.stockio.stock.infra.StockReservationEntity
 interface StockRepository {
 
     fun findAll(): List<StockEntity>
+    fun findAllBySku(sku: String): List<StockEntity>
     fun <S : StockEntity> saveAll(entities: Iterable<S>): List<S>
     fun lockAllBySkuIn(skus: Collection<String>): List<StockEntity>
 }
@@ -31,6 +32,7 @@ interface StockLedgerSyncStatusRepository {
 
 interface StockReservationRepository {
     fun findAll(): List<StockReservationEntity>
+    fun findAllBySku(sku: String): List<StockReservationEntity>
     fun deleteAll(entities: Iterable<StockReservationEntity>)
     fun <S : StockReservationEntity> saveAll(entities: Iterable<S>): List<S>
     fun lockAllByOrderLineIdIn(lineIds: Collection<String>): List<StockReservationEntity>
@@ -41,11 +43,14 @@ interface StockReservationRepository {
 
 interface StockSnapshotRepository {
 
-    fun replaceFrom(
+    fun replaceSkuFrom(
+        sku: String,
         startDate: LocalDate,
         dailySnapshots: List<StockDailySnapshot>,
         lotSnapshots: List<StockDailyLotSnapshot>
     )
+    fun findDailyBySkuAndDate(sku: String, snapshotDate: LocalDate): List<StockDailySnapshot>
+    fun findLotsBySkuAndDate(sku: String, snapshotDate: LocalDate): List<StockDailyLotSnapshot>
     fun findDailyByDate(snapshotDate: LocalDate): List<StockDailySnapshot>
     fun findLotsByDate(snapshotDate: LocalDate): List<StockDailyLotSnapshot>
     fun findDailyBySkuAndWarehouse(sku: String, warehouseCode: String): List<StockDailySnapshot>

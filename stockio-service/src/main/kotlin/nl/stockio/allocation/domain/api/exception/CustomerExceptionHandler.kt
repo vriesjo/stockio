@@ -1,5 +1,7 @@
 package nl.stockio.allocation.domain.api.exception
 
+import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
 import org.jobrunr.storage.JobNotFoundException
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.ExceptionHandler
@@ -15,6 +17,16 @@ import org.springframework.web.bind.annotation.RestControllerAdvice
  */
 @RestControllerAdvice
 class CustomerExceptionHandler {
+
+    @ExceptionHandler(AllocationCapacityExceededException::class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    fun handleCapacity(exception: AllocationCapacityExceededException): Map<String, String> =
+        mapOf("code" to "ALLOCATION_CAPACITY_EXHAUSTED", "error" to exception.message.orEmpty())
+
+    @ExceptionHandler(AllocationRequestTooLargeException::class)
+    @ResponseStatus(HttpStatus.PAYLOAD_TOO_LARGE)
+    fun handleTooLarge(exception: AllocationRequestTooLargeException): Map<String, String> =
+        mapOf("code" to "ALLOCATION_REQUEST_TOO_LARGE", "error" to exception.message.orEmpty())
 
     // Exception handlers for the controller
     @ExceptionHandler(IllegalArgumentException::class)

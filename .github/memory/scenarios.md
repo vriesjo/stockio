@@ -60,6 +60,7 @@ and independently synchronizes the physical stock ledger.
 - Allocation reserves persisted inventory and inbound supply and refreshes stock projections, but does not synchronize physical stock
 - New orders start as temporary reservations and expire unless confirmed
 - Reusing a `requestId` with the same payload is idempotent; using it with a different payload or operation is rejected
+- Independent document registrations share the projection gate and use sorted document/SKU locks for conflicting identities and inbound amendments; see [Scenario 14](#scenario-14-register-independent-allocation-documents-concurrently)
 
 ### Acceptance Criteria
 - A valid default asynchronous REST request returns `202 Accepted`, `jobId`, `requestId`, and a matching location for status polling
@@ -108,7 +109,7 @@ and independently synchronizes the physical stock ledger.
 
 ### High-level technical analysis
 - MCP tool: `allocate_open_backorders`
-- Automatic trigger: `StockLedgerProcessor` after a successful transaction marks inbound supply as received
+- Automatic trigger: `StockLedgerSkuWorker` records durable follow-up with each committed physical receipt
 - Background execution: a dedicated JobRunr backorder-fulfillment job
 - Application path: `BackorderAllocationJob` -> `AllocationProcessor` -> `BackorderAllocationService`, accepting an internal `BackorderAllocationRequest`
 - Command data: `requestId`, `asOfDate`, `trigger`, optional `skuScope`, and inbound shipments for manual registration
@@ -117,11 +118,11 @@ and independently synchronizes the physical stock ledger.
 - The MCP tool maps its external `AllocationRequest` to the same internal command with trigger `MANUAL`
 - Idempotency and concurrency protection prevent duplicate fulfillment for the same received-supply event or SKU scope
 - Receipt request/job IDs are derived from the date and sorted received shipment-line IDs
-- The after-commit callback is not durable: a crash before enqueue can lose the trigger, and enqueue failure cannot undo the receipt. There is no transactional outbox or automatic reconstruction of a missing enqueue
+- `stock_receipt_followup` survives a crash or enqueue outage; the dispatcher retries with stable IDs immediately after complete synchronization and through a recurring minute-based job
 - The current request fingerprint excludes internal `skuScope` and `trigger`; it must not be treated as validation of every internal command field
 
 ### Acceptance Criteria
-- When the post-commit callback runs and enqueue succeeds, newly received supply schedules fulfillment only after the ledger transaction commits
+- Newly received supply records retryable follow-up atomically; fulfillment is scheduled only after its receipt transaction commits
 - Registering expected inbound supply alone does not enqueue a fulfillment job
 - The job identifies and processes only SKUs affected by newly received supply when a scope is available
 - Fulfilled and partially fulfilled quantities are reported with their allocation sources
@@ -161,15 +162,17 @@ and independently synchronizes the physical stock ledger.
 ### Gherkin description
 **Given** a current-day stock projection containing inventory, reservations, inbound receipts, and confirmed deliveries \
 **When** the client invokes `process_stock_ledger`, or the recurring stock-ledger job runs \
-**Then** Stockio expires overdue unconfirmed reservations, rebuilds today's projection, and synchronizes it to live stock in one transaction \
+**Then** Stockio expires overdue unconfirmed reservations and atomically rebuilds and synchronizes each intended SKU \
 **And** arrived inbound supply is received only once \
 **And** due deliveries are consumed only for confirmed orders \
-**And** an invalid or non-current snapshot date is rejected without applying partial changes
+**And** invalid dates are rejected before work starts, while processing failures expose resumable partial progress
 
 ### High-level technical analysis
 - MCP tool: `process_stock_ledger`
 - Service: `StockLedgerProcessor`
-- The processor acquires the stock projection lock, cleans up expired holds, rebuilds lot-level and aggregate snapshots, applies due receipts and confirmed deliveries, and records synchronization status
+- The coordinator freezes the current-day SKU manifest; each worker takes its SKU lock, rebuilds scoped snapshots, applies due movements, and commits its checkpoint and receipt follow-up together
+- Whole-order cleanup acquires sorted document/all-SKU locks separately before worker retry; it never expands a ledger worker's lock set
+- Partial current-day runs resume incomplete work; previous-day runs are superseded and reconciled through a fresh current-day manifest
 - The recurring `StockLedgerSyncJob` runs the same synchronization independently on its configured schedule
 - This flow is separate from allocation and is the only flow that applies projected movements to physical live stock
 
@@ -179,7 +182,8 @@ and independently synchronizes the physical stock ledger.
 - Expired holds are removed before the synchronized projection is calculated
 - Arrived shipments are marked received and are not received again on retry
 - Only confirmed orders with due deliveries reduce live stock
-- The transaction fails atomically when snapshot or reservation invariants are inconsistent
+- A failing SKU rolls back its changes and checkpoint; previously committed SKUs remain visible and are not replayed
+- Full manifest completion alone advances global success/freshness and returns the aggregate synchronous result
 
 ## Scenario 7: Monitor Stock-Ledger Freshness
 
@@ -305,7 +309,7 @@ and independently synchronizes the physical stock ledger.
 **Status:** Implemented.
 
 ### Gherkin description
-**Given** the Next.js allocation frontend and an independently running `stockio-service` on port `8080` \
+**Given** the Next.js allocation frontend and an independently running `stockio-service` on port `9090` \
 **When** a user submits a valid product allocation form to the same-origin `POST /api/allocate` route \
 **Then** the Next.js route uses Axios to send the flat request to `POST /api/products/allocate` on `stockio-service` \
 **And** `ProductAllocationController` directly invokes `productAllocationService.allocate(request)` \
@@ -317,7 +321,7 @@ and independently synchronizes the physical stock ledger.
 
 ### High-level technical analysis
 - Keep the existing Next.js route as the same-origin adapter; Axios runs server-side, not in the browser
-- Use a small TypeScript Axios client with server-side `STOCKIO_API_URL`, defaulting to `http://127.0.0.1:8080`, and upstream path `/api/products/allocate`
+- Use a small TypeScript Axios client with server-side `STOCKIO_API_URL`, defaulting to `http://127.0.0.1:9090`, and upstream path `/api/products/allocate`
 - The REST controller directly delegates to `ProductAllocationService`; `ProductAllocationTools.kt` and `allocate_product_by_name` have been removed
 - Return plain `ProductAllocationResponse` JSON; frontend parsing, error text, proxy tests, and browser fixtures use the REST contract
 - The obsolete Spring MCP bridge runtime is removed; `stockio-api` remains a normal Kotlin DTO library and owns the OpenAPI documents and Gradle generation tasks used by `stockio-service`
@@ -326,7 +330,7 @@ and independently synchronizes the physical stock ledger.
 - The service's allocation, persistence, product lookup, and unrelated MCP interfaces remain unchanged; product allocation uses REST-only access and no browser-to-service CORS change is needed
 
 ### Acceptance Criteria
-- The frontend works with independently started Next.js and `stockio-service:8080`, without `StockioMcpApplication`, a `bootJar` prerequisite, a bundled UI/service fat JAR, or a child service JVM
+- The frontend works with independently started Next.js and `stockio-service:9090`, without `StockioMcpApplication`, a `bootJar` prerequisite, a bundled UI/service fat JAR, or a child service JVM
 - The Next.js route uses Axios to send the unchanged flat request fields to the configured service's `/api/products/allocate` endpoint
 - Valid service responses preserve HTTP status and JSON content, including non-allocation domain outcomes returned with HTTP `200`
 - The UI displays selected products, candidates, evidence, allocation quantities, line/source identities, skipped-expiry outcomes, and backorders from plain REST JSON
@@ -364,3 +368,167 @@ and independently synchronizes the physical stock ledger.
 - Disabled harness publishing and standalone service startup generate no synthetic allocation traffic
 - Service consumption/topology and application tests remain independent of harness dependencies
 - No performance runner or load-generation guarantee is introduced
+
+## Scenario 14: Register Independent Allocation Documents Concurrently
+
+**Status:** Implemented.
+
+Historical registration baseline: the gate requirements below were subsequently
+replaced by [Scenario 15](#scenario-15-process-stock-operations-concurrently-by-sku).
+Identity, SKU, run and supply protections remain active.
+
+### Gherkin description
+**Given** concurrent allocation requests with independent order and shipment identities \
+**When** their documents are registered before SKU allocation \
+**Then** independent registrations can overlap under the shared projection gate \
+**And** competing order, line, and shipment identities cannot be reassigned or merged \
+**And** inbound amendments serialize with allocation for the affected SKUs without losing reservations \
+**And** exclusive projection, ledger, and expiry operations remain excluded until registration commits
+
+### High-level technical analysis
+- `AllocationDocumentService.initialize` takes the existing shared database projection gate instead of the exclusive gate
+- Namespaced document-identity lock rows protect order headers/lines and shipment headers/lines, including identities that have not yet been inserted; existing primary, unique, and foreign-key constraints remain authoritative
+- Registration acquires the shared gate, all document keys in sorted order, all inbound SKU locks in sorted order, the run row, and then business rows; locking the run after the SKU locks avoids waiting for a worker's SKU while blocking its run foreign-key checks
+- Existing SKU workers retain shared-gate -> SKU -> business-row ordering; projection, ledger, and expiry retain exclusive-gate-first ordering, with no shared-to-exclusive upgrade
+- Inbound registration locks existing shipment supply rows before validation and amendment; initialized/completed runs still skip re-registration and deadline renewal
+- This changes concurrency only, not request contracts, allocation rules, full projection rebuilding, admission control, worker/pool sizes, or cross-SKU transaction boundaries
+
+### Acceptance Criteria
+- Two registrations with disjoint document identities and inbound SKUs can both finish their registration bodies before either transaction commits
+- An exclusive projection-gate request cannot pass an active registration transaction
+- Concurrent duplicate headers and cross-parent order/shipment line IDs are rejected without reparenting, partial registration, or duplicate holds
+- An amendment waiting behind allocation revalidates the committed reserved quantity and cannot reduce expected supply below it or overwrite it
+- Opposite input orders for overlapping inbound SKUs do not cause opposite lock acquisition
+- Existing retry/idempotency, immutable shipment membership, received-supply restrictions, expiry, ledger, and projection behavior remain valid
+
+## Scenario 15: Process Stock Operations Concurrently by SKU
+
+**Status:** Implemented.
+
+### Gherkin description
+**Given** allocation and stock-maintenance work for independent SKUs \
+**When** allocation, scoped projection, ledger synchronization, or reservation expiry execute concurrently \
+**Then** unrelated SKUs can progress without the global projection gate \
+**And** operations affecting the same SKU observe protected committed state and cannot over-reserve or duplicate movements \
+**And** expiry of a multi-SKU order releases all its holds and changes its lifecycle atomically \
+**And** a ledger run reports recoverable per-SKU progress rather than claiming success while intended work is incomplete
+
+### High-level technical analysis
+- Reuse database SKU locks across warehouses, with sorted document locks when needed before sorted SKU locks, followed by run/lifecycle and business rows
+- Scope projection reads and snapshot replacement to one SKU; ledger computes and applies its fresh SKU projection in the same transaction, separately from allocation
+- Expiry discovers candidates before locking, acquires all immutable order SKUs, and rechecks status/deadline; ledger defers and retries when whole-order cleanup is needed rather than expanding its lock set
+- Persist the current-day manifest, per-SKU checkpoints and receipt follow-up; expose additive progress in the existing status endpoint and record global freshness only after complete success
+- All participating writers use the SKU protocol; deploy them together through a coordinated stop/migrate/deploy/restart with no mixed versions
+- The first version keeps synchronous projections and does not add admission control, non-blocking persistence, confirmation interfaces, or a full-catalogue atomicity guarantee
+
+### Acceptance Criteria
+- An allocation for SKU 1 does not block ledger/projection work for unrelated SKU 2 solely through a global gate
+- Competing allocation, amendment, ledger, and expiry work for the same SKU preserves quantities, reservation sums, receipt state, and replay safety
+- Scoped snapshot replacement cannot delete another SKU's forecasts and removes obsolete rows when its own output is empty
+- A multi-SKU order is never marked expired with unreleased holds elsewhere, and reversed SKU input does not create inverse lock acquisition
+- Ledger uses a fresh protected baseline, retries/crashes do not duplicate physical movements, and receipt follow-up survives an enqueue outage
+- Partial ledger execution remains visible and resumable without falsely advancing global success/freshness
+- Gate removal cannot overlap a deployed writer that still relies on global exclusivity
+- Exercise independent and hot SKUs; production capacity requires representative workload measurement, with no 1,000-request-per-second guarantee
+
+## Scenario 16: Reject Allocation Work When Execution Capacity Is Exhausted
+
+**Status:** Implemented; enforcement is opt-in with explicit limits.
+
+### Gherkin description
+**Given** allocation admission is enabled with approved execution and request-size limits \
+**And** every allocation execution permit on this service instance is occupied \
+**When** a valid client attempts another inline allocation \
+**Then** the service rejects that attempt promptly with HTTP 503 and a capacity-error code before allocation business writes \
+**And** accepted executions retain their permits until allocation, synchronous projection and applicable completion persistence finish or fail \
+**And** oversized requests are rejected distinctly before allocation or asynchronous enqueue \
+**And** background capacity rejection preserves recoverable work without a fallback enqueue storm or immediate retry loop
+
+### High-level technical analysis
+- Apply one non-waiting per-instance guard to shared allocation orchestration, not only controllers or individual SKU workers
+- Include optional execution-result persistence inside the guarded scope; reuse the same boundary for direct processors and background execution without nested permits
+- Preserve existing SKU transactions and synchronous forecast recovery; do not hold an outer database transaction across parallel workers
+- Validate bounded request shape before writes/fan-out and asynchronous enqueue; enforce approved ingress byte limits before deserialization where supported
+- Map typed overload separately from validation/business errors in HTTP, MCP, RabbitMQ and JobRunr; approve durable deferral before enabling enforcement
+- Expose low-cardinality admission/outcome/phase metrics through existing Micrometer infrastructure; durable backlog and global database budgets remain separate
+
+### Acceptance Criteria
+- At most the configured number of allocation orchestrations are admitted per instance across participating entry points; no permit-wait queue is introduced
+- Saturated inline HTTP attempts return 503 with a stable capacity code and perform no allocation run, document, reservation, backorder or completion writes for that attempt
+- A permit remains occupied during blocked projection and completion persistence and is released exactly once after success, exception or actual cancellation completion
+- An unchanged retry after committed allocation and failed projection preserves idempotency and refreshes forecasts without duplicate reservations
+- Exact request limits are accepted, over-limit requests are rejected before writes/enqueue, and limit bypass through internal or non-HTTP entry points is covered
+- RabbitMQ capacity rejection does not trigger generic JobRunr fallback or unintended dead-lettering; JobRunr deferral does not claim successful allocation or exhaust business retries unnoticed
+- Metrics identify admission pressure and processing outcomes with bounded labels, and status/health/ledger/expiry paths are not subjected to the allocation request guard
+- Multi-instance checks show independent limits rather than a claimed distributed cap; production limits require representative workload evidence
+
+Implemented feature: [Fail-fast allocation admission](./issues/feature-fail-fast-allocation-admission.md).
+
+## Scenario 17: Preserve Maintenance Admission Under Database-Work Pressure
+
+**Status:** Planned; implementation has not started and policies require approval.
+
+### Gherkin description
+**Given** database-work admission is enabled with approved allocation, ledger and expiry shares \
+**And** allocation work occupies its entire permitted database-work share \
+**When** more allocation work and due ledger or expiry work are triggered \
+**Then** allocation cannot consume the protected maintenance admission shares \
+**And** maintenance can be admitted within its own limits independently of allocation-share saturation \
+**And** an unadmitted work unit opens no transaction and borrows no connection for that unit \
+**And** nested projection reuses its owning ledger or expiry transaction's admission \
+**And** deferred work preserves prior commits and retry identity without reporting false completion
+
+### High-level technical analysis
+- Keep the existing request semaphore and add a separate per-instance transaction-work budget with explicit workload shares
+- Place admission outside transactional proxies/templates; retain ownership until commit/rollback, including commit failures
+- Count one expiry batch transaction once; joined projection reuses its owner, while independent SKU transactions acquire separately
+- Classify receipt-triggered backorders as allocation; release ledger work before whole-order cleanup and reacquire for a subsequent ledger attempt
+- Handle database-phase saturation separately from pre-write request rejection because registration or other SKU transactions may already have committed
+- Account explicitly for metadata, reads, outbox access, JobRunr storage and all replicas; maintenance admission is not a physical connection or completion-time guarantee
+
+### Acceptance Criteria
+- Covered active transactions never exceed configured class/total ceilings, even across concurrent new-demand, backorder, projection and background callers
+- Allocation-share saturation alone cannot deny available ledger/expiry admission; verify the approved protection between the two maintenance classes as well
+- Rejected units do not enter their transaction or borrow its connection, and acquired permits remain occupied through commit/rollback and actual cancellation completion
+- Ledger/expiry projection consumes no second permit; expiry remains atomic across every selected order's complete SKU set and all affected forecasts
+- Coordinators and deferred workers retain no database-work permit/connection while waiting for children, retry backoff, cleanup or external scheduling
+- Saturation after partial SKU commits, allocation before projection, or projection before result persistence remains resumable without duplicate reservations or physical movements
+- Background saturation preserves recoverable work without fallback storms, unintended dead-lettering, false success, or falsely advancing ledger freshness; dates and hold deadlines remain unchanged
+- Disabled enforcement preserves existing behavior, invalid enabled configuration fails startup, and metrics/bypass documentation distinguish local admission from physical or distributed guarantees
+
+Planned feature: [Shared database-work budget](./issues/feature-shared-database-work-budget.md).
+
+## Scenario 18: Consume an Allocation Request from Kafka
+
+**Status:** Implemented.
+
+### Gherkin description
+**Given** Kafka allocation consumption is enabled and a valid allocation request is available on its configured topic \
+**When** Stockio consumes the record \
+**Then** it invokes the shared allocation execution path using the request's stable identity \
+**And** it commits the Kafka offset only after allocation completes or a durable recovery handoff succeeds \
+**And** the existing RabbitMQ allocation consumer remains available
+
+### High-level technical analysis
+- The current allocation listener is `AllocationRabbitListener`, a RabbitMQ adapter; Kafka requires a separate broker adapter and configuration
+- The Kafka adapter should call `allocationJobExecutor.executeSync(jobId, request)` using a stable logical request identity, as the RabbitMQ adapter currently does
+- A bounded Kotlin `Channel<AllocationRequest>` and fixed worker set provide a local burst buffer; they do not replace the existing `AllocationAdmission` semaphore or represent durable acceptance
+- `AllocationAdmission` uses non-waiting `Semaphore.tryAcquire()` and throws `AllocationCapacityExceededException` when saturated; Kafka retains that record and retries with bounded-delay backoff rather than dropping it or hot-looping
+- `executeSync` and Spring/JPA work are synchronous; allocation already uses Kotlin coroutines internally for per-SKU workers, so Kafka workers must be separately bounded and must not multiply that concurrency without measurement
+- The synchronous Kafka listener waits for its bounded-channel worker before returning; this avoids async-listener reordering of later records in a partition
+- Configure one record per poll and listener concurrency no greater than the topic partition count; offsets advance only after synchronous listener success
+- Mirror RabbitMQ's capacity backoff, invalid/oversized-message dead-lettering, and durable JobRunr fallback for other failures
+- Enqueueing into the local channel must not commit an offset; only completed work or a confirmed durable recovery handoff may advance contiguous offsets for a partition
+- Completion caching supports replay after a saved result, but simultaneous duplicate deliveries require separate verification and must not be assumed safe from the cache lookup alone
+- Kafka and RabbitMQ may deliver the same logical request; use only bounded coroutine workers, not per-event unbounded fan-out. No Kafka Streams topology, payment processing, or Adyen integration is implied
+
+### Acceptance Criteria
+- Kafka consumption can be enabled without removing or silently changing the existing RabbitMQ consumer
+- A consumed record is converted to the agreed allocation contract and delegated to the shared execution path with a stable job identity
+- Offsets do not advance before successful completion or a confirmed durable recovery handoff
+- Concurrent same-request execution through the shared executor is tested; stable request identity and the absence of a cross-broker single-flight guarantee are documented
+- Capacity pressure applies bounded-delay backoff without a retry limit; invalid records and other recoverable failures follow distinct explicit policies
+- The bounded channel and fixed workers smooth short bursts without replacing or bypassing `AllocationAdmission`; channel-full and semaphore-saturation paths preserve records and do not advance offsets
+- Focused tests cover conversion, execution delegation, offset/retry behavior, duplicates, channel saturation, capacity pressure, and RabbitMQ coexistence
+
+In-progress feature: [Kafka allocation consumer](./issues/feature-concurrent-per-event-allocation.md).
