@@ -12,6 +12,7 @@ import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
@@ -571,6 +572,39 @@ class AllocationIntegrationTest {
             .andExpect(MockMvcResultMatchers.jsonPath("$.snapshotDate").value(today.toString()))
             .andExpect(MockMvcResultMatchers.jsonPath("$.lastSuccessAt").exists())
             .andExpect(MockMvcResultMatchers.jsonPath("$.lotSnapshotCount").value(1))
+    }
+
+    @Test
+    fun `concurrent executions of the same request do not duplicate allocation`() {
+        val today = LocalDate.now()
+        stockRepository.save(
+            StockEntity(sku = "MAKI-ZALM", lotId = "CONCURRENT-REPLAY-STOCK", receivedDate = today, quantityOnHand = 10)
+        )
+        val request = reservationRequest("CONCURRENT-REPLAY-ORDER", 2)
+        val ready = CountDownLatch(2)
+        val start = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        val results = try {
+            val attempts = List(2) {
+                executor.submit {
+                    ready.countDown()
+                    check(start.await(5, TimeUnit.SECONDS))
+                    allocationJobExecutor.executeSync(request.requestId, request)
+                }
+            }
+            Assertions.assertTrue(ready.await(5, TimeUnit.SECONDS))
+            start.countDown()
+            attempts.map { it.get(30, TimeUnit.SECONDS) }
+        } finally {
+            start.countDown()
+            executor.shutdownNow()
+        }
+
+        Assertions.assertEquals(results.first(), results.last())
+        Assertions.assertEquals(1L, runRepository.count())
+        Assertions.assertEquals(1L, jobResultRepository.count())
+        Assertions.assertEquals(1L, stockReservationRepository.count())
+        Assertions.assertEquals(2, stockRepository.findAll().single().quantityReserved)
     }
 
     @Test

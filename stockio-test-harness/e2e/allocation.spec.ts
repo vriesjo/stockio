@@ -55,7 +55,7 @@ test("submits the form through the Next proxy and preserves identity on retry", 
     }
   });
   const backendUrl = new URL(process.env.STOCKIO_API_URL ?? "");
-  if (backendUrl.hostname !== "127.0.0.1" || !backendUrl.port || ["8080", "8082"].includes(backendUrl.port)) {
+  if (backendUrl.hostname !== "127.0.0.1" || !backendUrl.port || ["9090", "8082"].includes(backendUrl.port)) {
     throw new Error("Run E2E tests with STOCKIO_API_URL pointing to a dedicated localhost mock port, not the real API.");
   }
   await new Promise<void>((resolve, reject) => {

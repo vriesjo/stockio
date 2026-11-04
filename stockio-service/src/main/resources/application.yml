@@ -1,6 +1,8 @@
 spring:
+  server:
+    port: ${PORT:9090}
   application:
-    name: mcp
+    name: stockio-service
   main:
     web-application-type: servlet
     banner-mode: off
@@ -30,6 +32,21 @@ spring:
     listener:
       simple:
         default-requeue-rejected: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    admin:
+      auto-create: false
+    consumer:
+      group-id: ${ALLOCATION_KAFKA_GROUP_ID:stockio-allocation}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 1
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
   jpa:
     hibernate:
       ddl-auto: validate
@@ -46,7 +63,7 @@ jobrunr:
 
 server:
   address: ${SERVER_ADDRESS:127.0.0.1}
-  port: ${SERVER_PORT:8080}
+  port: ${SERVER_PORT:9090}
 
 management:
   endpoints:
@@ -109,6 +126,19 @@ stockio:
       dead-letter-exchange: ${ALLOCATION_RABBITMQ_DEAD_LETTER_EXCHANGE:stockio.allocation.dlx}
       dead-letter-routing-key: ${ALLOCATION_RABBITMQ_DEAD_LETTER_ROUTING_KEY:allocation.failed}
       dead-letter-queue: ${ALLOCATION_RABBITMQ_DEAD_LETTER_QUEUE:stockio.allocation.dead}
+    kafka:
+      enabled: ${ALLOCATION_KAFKA_ENABLED:false}
+      topic: ${ALLOCATION_KAFKA_TOPIC:stockio.allocation.requests}
+      group-id: ${ALLOCATION_KAFKA_GROUP_ID:stockio-allocation}
+      dead-letter-topic: ${ALLOCATION_KAFKA_DEAD_LETTER_TOPIC:stockio.allocation.requests.DLT}
+      partition-count: ${ALLOCATION_KAFKA_PARTITION_COUNT:4}
+      listener-concurrency: ${ALLOCATION_KAFKA_LISTENER_CONCURRENCY:2}
+      worker-count: ${ALLOCATION_KAFKA_WORKER_COUNT:2}
+      channel-capacity: ${ALLOCATION_KAFKA_CHANNEL_CAPACITY:4}
+      capacity-backoff-min: ${ALLOCATION_KAFKA_CAPACITY_BACKOFF_MIN:5s}
+      capacity-backoff-max: ${ALLOCATION_KAFKA_CAPACITY_BACKOFF_MAX:10s}
+      retry-backoff: ${ALLOCATION_KAFKA_RETRY_BACKOFF:1s}
+      retry-attempts: ${ALLOCATION_KAFKA_RETRY_ATTEMPTS:3}
 
   report:
     directory: ${REPORT_DIR:${user.home}/itzitzo-mcp/reports}

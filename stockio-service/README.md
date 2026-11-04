@@ -5,6 +5,7 @@ The Kotlin Spring Boot MCP server processes a lot-level stock ledger, allocates 
 ## Run
 
 Requirements: JDK 21, PostgreSQL, and RabbitMQ (or Docker Compose for local infrastructure).
+Kafka is optional and disabled by default.
 From the repository root, configure the connection and start the service:
 
 ```shell
@@ -109,6 +110,48 @@ schedule the same job after a jittered 5-10 seconds (plus polling), without
 using its three ordinary business retries. Job history/queue age can still grow.
 Drain/reconcile oversized queued work before enabling: invalid messages/jobs
 are not silently grandfathered. Business dates and reservation TTL are unchanged.
+
+### Opt-in Kafka allocation consumer
+
+The service can also consume `AllocationRequest` JSON from Kafka without
+replacing the RabbitMQ listener. The default local stack is optional; start it
+from the repository root with:
+
+```shell
+docker compose -f infra/docker/docker-compose.yml up -d zookeeper kafka schema-registry kafka-ui
+```
+
+Set `ALLOCATION_KAFKA_ENABLED=true` when starting the service to enable the
+listener. Its defaults are topic `stockio.allocation.requests`, group
+`stockio-allocation`, and dead-letter topic
+`stockio.allocation.requests.DLT`; configure `KAFKA_BOOTSTRAP_SERVERS` and
+`ALLOCATION_KAFKA_TOPIC`, `ALLOCATION_KAFKA_GROUP_ID`,
+`ALLOCATION_KAFKA_DEAD_LETTER_TOPIC`, `ALLOCATION_KAFKA_PARTITION_COUNT`,
+`ALLOCATION_KAFKA_LISTENER_CONCURRENCY`, `ALLOCATION_KAFKA_WORKER_COUNT`, and
+`ALLOCATION_KAFKA_CHANNEL_CAPACITY` for the deployment. Capacity retry delay
+defaults to 5-10 seconds; general error handling retries three times at one
+second before DLT recovery, configurable with `ALLOCATION_KAFKA_CAPACITY_BACKOFF_MIN`,
+`ALLOCATION_KAFKA_CAPACITY_BACKOFF_MAX`, `ALLOCATION_KAFKA_RETRY_BACKOFF`, and
+`ALLOCATION_KAFKA_RETRY_ATTEMPTS`. The local stack exposes Kafka on
+`localhost:9092`, Schema Registry on `localhost:8081`, and Kafka UI on
+`localhost:8082`; the consumer uses JSON strings and does not require Schema
+Registry.
+
+The listener calls the same synchronous allocation path as RabbitMQ, using
+`requestId` as the execution ID. A bounded Kotlin channel and fixed workers
+smooth short bursts; the shared allocation semaphore remains authoritative.
+Channel saturation suspends intake, and semaphore saturation retains the record
+with a 5-10 second backoff. Neither condition commits the record. Offsets become
+eligible only after execution or a successful durable JobRunr fallback. Invalid
+or oversized requests go directly to the DLT. Other synchronous failures first
+use the JobRunr fallback; failed fallback handoffs use Spring Kafka's configured
+retries before DLT recovery. Actuator exposes low-cardinality
+`stockio.allocation.kafka.records` counters, the `stockio.allocation.kafka.inflight`
+gauge, and `stockio.allocation.kafka.processing.duration` timer. Kafka and
+RabbitMQ may both deliver the same request, so retain the stable `requestId`;
+the database idempotency path does not guarantee single-flight behavior for
+simultaneous cross-broker duplicates. Tune partitions and concurrency from
+measured allocation/database capacity, not local channel size.
 
 Actuator exposes `stockio.allocation.admission.enabled`, `.limit`, `.active`,
 `.attempts`, `stockio.allocation.request.rejected`,

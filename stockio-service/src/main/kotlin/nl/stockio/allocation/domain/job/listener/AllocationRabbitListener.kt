@@ -39,7 +39,7 @@ import org.springframework.stereotype.Component
 private val logger = KotlinLogging.logger {}
 
 @Component
-class AllocationRabbitListener(
+    class AllocationRabbitListener(
     private val jobScheduler: JobScheduler,
     private val allocationJobExecutor: AllocationJobExecutor,
     private val storageProvider: StorageProvider,

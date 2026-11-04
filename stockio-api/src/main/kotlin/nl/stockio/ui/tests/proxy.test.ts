@@ -88,10 +88,10 @@ test("opt-in byte admission accepts the exact boundary and rejects larger bodies
   await assert.rejects(POST(request()), /requires a positive/);
 });
 
-test("Axios defaults to the independent service on port 8080 with a bounded timeout", async (context) => {
+test("Axios defaults to the independent service on port 9090 with a bounded timeout", async (context) => {
   configureUrl(context, undefined);
   context.mock.method(axios, "post", async (url: string, data: string, config: AxiosRequestConfig) => {
-    assert.equal(url, "http://127.0.0.1:8080/api/products/allocate");
+    assert.equal(url, "http://127.0.0.1:9090/api/products/allocate");
     assert.equal(data, body);
     assert.equal(config.timeout, 180_000);
     return { status: 200, headers: {}, data: "{}" };

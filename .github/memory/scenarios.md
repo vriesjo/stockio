@@ -309,7 +309,7 @@ and independently synchronizes the physical stock ledger.
 **Status:** Implemented.
 
 ### Gherkin description
-**Given** the Next.js allocation frontend and an independently running `stockio-service` on port `8080` \
+**Given** the Next.js allocation frontend and an independently running `stockio-service` on port `9090` \
 **When** a user submits a valid product allocation form to the same-origin `POST /api/allocate` route \
 **Then** the Next.js route uses Axios to send the flat request to `POST /api/products/allocate` on `stockio-service` \
 **And** `ProductAllocationController` directly invokes `productAllocationService.allocate(request)` \
@@ -321,7 +321,7 @@ and independently synchronizes the physical stock ledger.
 
 ### High-level technical analysis
 - Keep the existing Next.js route as the same-origin adapter; Axios runs server-side, not in the browser
-- Use a small TypeScript Axios client with server-side `STOCKIO_API_URL`, defaulting to `http://127.0.0.1:8080`, and upstream path `/api/products/allocate`
+- Use a small TypeScript Axios client with server-side `STOCKIO_API_URL`, defaulting to `http://127.0.0.1:9090`, and upstream path `/api/products/allocate`
 - The REST controller directly delegates to `ProductAllocationService`; `ProductAllocationTools.kt` and `allocate_product_by_name` have been removed
 - Return plain `ProductAllocationResponse` JSON; frontend parsing, error text, proxy tests, and browser fixtures use the REST contract
 - The obsolete Spring MCP bridge runtime is removed; `stockio-api` remains a normal Kotlin DTO library and owns the OpenAPI documents and Gradle generation tasks used by `stockio-service`
@@ -330,7 +330,7 @@ and independently synchronizes the physical stock ledger.
 - The service's allocation, persistence, product lookup, and unrelated MCP interfaces remain unchanged; product allocation uses REST-only access and no browser-to-service CORS change is needed
 
 ### Acceptance Criteria
-- The frontend works with independently started Next.js and `stockio-service:8080`, without `StockioMcpApplication`, a `bootJar` prerequisite, a bundled UI/service fat JAR, or a child service JVM
+- The frontend works with independently started Next.js and `stockio-service:9090`, without `StockioMcpApplication`, a `bootJar` prerequisite, a bundled UI/service fat JAR, or a child service JVM
 - The Next.js route uses Axios to send the unchanged flat request fields to the configured service's `/api/products/allocate` endpoint
 - Valid service responses preserve HTTP status and JSON content, including non-allocation domain outcomes returned with HTTP `200`
 - The UI displays selected products, candidates, evidence, allocation quantities, line/source identities, skipped-expiry outcomes, and backorders from plain REST JSON
@@ -463,3 +463,72 @@ Identity, SKU, run and supply protections remain active.
 - Multi-instance checks show independent limits rather than a claimed distributed cap; production limits require representative workload evidence
 
 Implemented feature: [Fail-fast allocation admission](./issues/feature-fail-fast-allocation-admission.md).
+
+## Scenario 17: Preserve Maintenance Admission Under Database-Work Pressure
+
+**Status:** Planned; implementation has not started and policies require approval.
+
+### Gherkin description
+**Given** database-work admission is enabled with approved allocation, ledger and expiry shares \
+**And** allocation work occupies its entire permitted database-work share \
+**When** more allocation work and due ledger or expiry work are triggered \
+**Then** allocation cannot consume the protected maintenance admission shares \
+**And** maintenance can be admitted within its own limits independently of allocation-share saturation \
+**And** an unadmitted work unit opens no transaction and borrows no connection for that unit \
+**And** nested projection reuses its owning ledger or expiry transaction's admission \
+**And** deferred work preserves prior commits and retry identity without reporting false completion
+
+### High-level technical analysis
+- Keep the existing request semaphore and add a separate per-instance transaction-work budget with explicit workload shares
+- Place admission outside transactional proxies/templates; retain ownership until commit/rollback, including commit failures
+- Count one expiry batch transaction once; joined projection reuses its owner, while independent SKU transactions acquire separately
+- Classify receipt-triggered backorders as allocation; release ledger work before whole-order cleanup and reacquire for a subsequent ledger attempt
+- Handle database-phase saturation separately from pre-write request rejection because registration or other SKU transactions may already have committed
+- Account explicitly for metadata, reads, outbox access, JobRunr storage and all replicas; maintenance admission is not a physical connection or completion-time guarantee
+
+### Acceptance Criteria
+- Covered active transactions never exceed configured class/total ceilings, even across concurrent new-demand, backorder, projection and background callers
+- Allocation-share saturation alone cannot deny available ledger/expiry admission; verify the approved protection between the two maintenance classes as well
+- Rejected units do not enter their transaction or borrow its connection, and acquired permits remain occupied through commit/rollback and actual cancellation completion
+- Ledger/expiry projection consumes no second permit; expiry remains atomic across every selected order's complete SKU set and all affected forecasts
+- Coordinators and deferred workers retain no database-work permit/connection while waiting for children, retry backoff, cleanup or external scheduling
+- Saturation after partial SKU commits, allocation before projection, or projection before result persistence remains resumable without duplicate reservations or physical movements
+- Background saturation preserves recoverable work without fallback storms, unintended dead-lettering, false success, or falsely advancing ledger freshness; dates and hold deadlines remain unchanged
+- Disabled enforcement preserves existing behavior, invalid enabled configuration fails startup, and metrics/bypass documentation distinguish local admission from physical or distributed guarantees
+
+Planned feature: [Shared database-work budget](./issues/feature-shared-database-work-budget.md).
+
+## Scenario 18: Consume an Allocation Request from Kafka
+
+**Status:** Implemented.
+
+### Gherkin description
+**Given** Kafka allocation consumption is enabled and a valid allocation request is available on its configured topic \
+**When** Stockio consumes the record \
+**Then** it invokes the shared allocation execution path using the request's stable identity \
+**And** it commits the Kafka offset only after allocation completes or a durable recovery handoff succeeds \
+**And** the existing RabbitMQ allocation consumer remains available
+
+### High-level technical analysis
+- The current allocation listener is `AllocationRabbitListener`, a RabbitMQ adapter; Kafka requires a separate broker adapter and configuration
+- The Kafka adapter should call `allocationJobExecutor.executeSync(jobId, request)` using a stable logical request identity, as the RabbitMQ adapter currently does
+- A bounded Kotlin `Channel<AllocationRequest>` and fixed worker set provide a local burst buffer; they do not replace the existing `AllocationAdmission` semaphore or represent durable acceptance
+- `AllocationAdmission` uses non-waiting `Semaphore.tryAcquire()` and throws `AllocationCapacityExceededException` when saturated; Kafka retains that record and retries with bounded-delay backoff rather than dropping it or hot-looping
+- `executeSync` and Spring/JPA work are synchronous; allocation already uses Kotlin coroutines internally for per-SKU workers, so Kafka workers must be separately bounded and must not multiply that concurrency without measurement
+- The synchronous Kafka listener waits for its bounded-channel worker before returning; this avoids async-listener reordering of later records in a partition
+- Configure one record per poll and listener concurrency no greater than the topic partition count; offsets advance only after synchronous listener success
+- Mirror RabbitMQ's capacity backoff, invalid/oversized-message dead-lettering, and durable JobRunr fallback for other failures
+- Enqueueing into the local channel must not commit an offset; only completed work or a confirmed durable recovery handoff may advance contiguous offsets for a partition
+- Completion caching supports replay after a saved result, but simultaneous duplicate deliveries require separate verification and must not be assumed safe from the cache lookup alone
+- Kafka and RabbitMQ may deliver the same logical request; use only bounded coroutine workers, not per-event unbounded fan-out. No Kafka Streams topology, payment processing, or Adyen integration is implied
+
+### Acceptance Criteria
+- Kafka consumption can be enabled without removing or silently changing the existing RabbitMQ consumer
+- A consumed record is converted to the agreed allocation contract and delegated to the shared execution path with a stable job identity
+- Offsets do not advance before successful completion or a confirmed durable recovery handoff
+- Concurrent same-request execution through the shared executor is tested; stable request identity and the absence of a cross-broker single-flight guarantee are documented
+- Capacity pressure applies bounded-delay backoff without a retry limit; invalid records and other recoverable failures follow distinct explicit policies
+- The bounded channel and fixed workers smooth short bursts without replacing or bypassing `AllocationAdmission`; channel-full and semaphore-saturation paths preserve records and do not advance offsets
+- Focused tests cover conversion, execution delegation, offset/retry behavior, duplicates, channel saturation, capacity pressure, and RabbitMQ coexistence
+
+In-progress feature: [Kafka allocation consumer](./issues/feature-concurrent-per-event-allocation.md).

@@ -39,7 +39,7 @@ The Gradle build includes three modules:
 | `:stockio-api` (`stockio-api/`) | Shared Kotlin DTO library and OpenAPI specifications/generation tasks consumed by the service; also contains the independently run Next.js UI. It has no Spring application entry point. |
 | `:stockio-test-harness` (`stockio-test-harness/`) | Test-only tooling: mock-backed Playwright tests in `e2e/`, future performance guidance in `performance/`, and an independently run JDBC/RabbitMQ sample publisher with tests in `publisher/`. Depends on API DTOs, not the service. |
 
-The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL with pgvector, Flyway, RabbitMQ, JobRunr, Apache POI, HikariCP, and Spring Boot Actuator. Natural-language product allocation also uses the Tavily search API and Ollama embeddings. Allocation work is parallelized across SKUs with Kotlin coroutines.
+The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL with pgvector, Flyway, RabbitMQ, opt-in Spring Kafka allocation consumption, JobRunr, Apache POI, HikariCP, and Spring Boot Actuator. Natural-language product allocation also uses the Tavily search API and Ollama embeddings. Allocation work is parallelized across SKUs with Kotlin coroutines.
 
 ## System context
 
@@ -55,11 +55,12 @@ flowchart LR
     Harness["Test harness publisher (opt-in)"] -->|"Read catalogue SKUs through JDBC"| DB
     Harness -->|"Publish synthetic allocation requests"| Rabbit["RabbitMQ"]
     Rabbit -->|"Deliver allocation requests"| API
+    Kafka["Kafka (opt-in allocation consumer)"] -->|"AllocationRequest JSON"| API
     API -->|"Read"| CSV["Configured allocation CSV"]
     API -->|"Write .xlsx"| Reports["Report directory"]
 ```
 
-The service runs as a servlet application and exposes MCP tools through Spring AI. The HTTP server binds to `127.0.0.1:8080` by default. No application-level authentication is configured; protect the API and Actuator endpoints if `SERVER_ADDRESS` is changed to expose them beyond the local host.
+The service runs as a servlet application and exposes MCP tools through Spring AI. The HTTP server binds to `127.0.0.1:9090` by default. No application-level authentication is configured; protect the API and Actuator endpoints if `SERVER_ADDRESS` is changed to expose them beyond the local host.
 
 ### Frontend HTTP integration
 
@@ -67,7 +68,7 @@ The Next.js allocation UI under `stockio-api/src/main/kotlin/nl/stockio/ui`
 posts to its same-origin `/api/allocate` route. The route uses the server-side
 Axios client in `lib/product-allocation-client.ts` to call
 `POST /api/products/allocate` at `STOCKIO_API_URL` (default
-`http://127.0.0.1:8080`). The service controller directly invokes
+`http://127.0.0.1:9090`). The service controller directly invokes
 `ProductAllocationService.allocate(request)` and returns plain JSON.
 
 Next.js and the service start independently, using npm scripts and
@@ -120,7 +121,7 @@ components and separates the hexagonal boundaries:
 - **Domain services and policies** contain allocation and projection rules.
 - **Outbound ports** define persistence and external-service contracts.
 - **Outbound adapters** implement those ports using JPA, JDBC, HTTP, RabbitMQ,
-  JobRunr, and the filesystem.
+  Kafka, JobRunr, and the filesystem.
 
 The diagram groups logical responsibilities; it is not a claim that every
 integration has an explicit port interface. In particular, JobRunr, search
@@ -133,6 +134,7 @@ flowchart LR
     Rest["REST clients"] --> RestAdapters
     Mcp["MCP clients"] --> McpAdapters
     Rabbit["RabbitMQ"] --> MessageAdapter
+    Kafka["Kafka"] --> KafkaMessageAdapter
     Scheduler["Cron / JobRunr"] --> ScheduledAdapter
     Csv["Configured CSV"] --> FileAdapter
     FileAdapter -->|"Writes"| Reports["Report directory"]
@@ -147,6 +149,7 @@ flowchart LR
             AdminAdapter["AllocationAdminController<br/>Spring MVC<br/>CSV, reports, retry cleanup"]
             McpAdapters["AllocationTools<br/>Spring AI @Tool<br/>MCP use cases"]
             MessageAdapter["AllocationRabbitListener<br/>Spring AMQP<br/>Queue intake and retry handoff"]
+            KafkaMessageAdapter["AllocationKafkaListener / bounded Kotlin Channel<br/>Spring Kafka<br/>Synchronous acknowledgment and fixed workers"]
             ScheduledAdapter["ReservationExpiryJob / StockLedgerSyncJob / BackorderAllocationJob<br/>JobRunr + scheduling<br/>Recurring and receipt triggers"]
         end
 
@@ -182,6 +185,7 @@ flowchart LR
             SearchAdapter["Tavily / Ollama HTTP clients<br/>Timeouts and response validation"]
             JobAdapter["JobRunr integration<br/>Execution, retries, job storage"]
             AmqpAdapter["Rabbit configuration<br/>Consumer exchange, queue and dead-letter bindings"]
+            KafkaAdapter["Kafka configuration<br/>Opt-in listener, source and DLT topics"]
             FileAdapter["CSV reader / Apache POI<br/>Filesystem import and .xlsx reports"]
         end
     end
@@ -196,6 +200,7 @@ flowchart LR
     McpAdapters -->|"Reads"| QueryFlow
     McpAdapters -->|"Calls"| FileFlow
     MessageAdapter -->|"Calls"| AllocationJob
+    KafkaMessageAdapter -->|"Calls through fixed workers"| AllocationJob
     ScheduledAdapter -->|"Triggers"| ReservationFlow
     ScheduledAdapter -->|"Triggers"| LedgerFlow
     ScheduledAdapter -->|"Backorder job"| AllocationFlow
@@ -239,9 +244,11 @@ flowchart LR
     ProductPort --> PersistenceAdapters
     RuntimePort --> PersistenceAdapters
     MessageAdapter -->|"Retry fallback"| JobAdapter
+    KafkaMessageAdapter -->|"Retry fallback"| JobAdapter
     AllocationJob -->|"Direct enqueue and status"| JobAdapter
     AllocationJob -->|"Uses"| RuntimePort
     AmqpAdapter --> Rabbit
+    KafkaAdapter --> Kafka
     JobAdapter --> Database
     PersistenceAdapters --> Database
 
@@ -251,12 +258,12 @@ flowchart LR
     classDef port fill:#f3e5f5,stroke:#7b1fa2
     classDef adapter fill:#fce4ec,stroke:#ad1457
     classDef external fill:#eeeeee,stroke:#616161
-    class RestAdapters,ProductAdapter,AdminAdapter,McpAdapters,MessageAdapter,ScheduledAdapter inbound
+    class RestAdapters,ProductAdapter,AdminAdapter,McpAdapters,MessageAdapter,KafkaMessageAdapter,ScheduledAdapter inbound
     class AllocationJob,ProductFlow,AllocationFlow,BackorderFlow,LedgerFlow,ReservationFlow,QueryFlow,FileFlow usecase
     class RunDomain,DocumentDomain,SkuDomain,PolicyDomain,ProjectionDomain domain
     class AllocationPort,ReservationPort,StockPort,ProductPort,RuntimePort port
-    class PersistenceAdapters,SearchAdapter,JobAdapter,AmqpAdapter,FileAdapter adapter
-    class Rest,Mcp,Rabbit,Scheduler,Csv,Reports,Tavily,Ollama,Database external
+    class PersistenceAdapters,SearchAdapter,JobAdapter,AmqpAdapter,KafkaAdapter,FileAdapter adapter
+    class Rest,Mcp,Rabbit,Kafka,Scheduler,Csv,Reports,Tavily,Ollama,Database external
 ```
 
 The following runtime collaboration view keeps the more detailed submission and job
@@ -495,6 +502,7 @@ separate scenario definitions:
 | Flow | Role | Related scenarios |
 | --- | --- | --- |
 | [RabbitMQ intake and retry](#rabbitmq-intake-and-retry-flow) | Queue delivery, synchronous allocation attempt, JobRunr fallback, or dead-letter rejection. | 2 |
+| [Kafka allocation intake](#kafka-allocation-intake-and-retry-flow) | Opt-in Kafka delivery through a bounded channel and fixed workers, with synchronous offset completion and recovery. | 18 |
 | [Reservation expiry](#reservation-expiry-flow) | Recurring release of overdue holds and forecast refresh. | 5 and 6 |
 | [Stock projection](#stock-projection-flow) | Rebuilds aggregate and lot-level forecasts without applying physical movements. | 1, 2, 4, and 6 |
 
@@ -863,6 +871,51 @@ sequenceDiagram
 Invalid requests are not retried by JobRunr. Other failures hand off only when a
 job with that ID does not already exist; the existence check skips already
 recorded jobs but is not itself an atomic business deduplication guarantee.
+
+### Kafka allocation intake and retry flow
+
+The opt-in Kafka listener accepts the existing `AllocationRequest` JSON
+contract. The synchronous listener waits for a bounded Kotlin channel worker
+that invokes the same execution path as RabbitMQ. Channel enqueue is volatile
+and does not permit offset progress; the listener returns only after allocation
+or a successful JobRunr recovery handoff. This preserves partition order while
+consumer concurrency allows work from separate partitions to overlap. The
+shared allocation semaphore remains the execution bulkhead.
+
+```mermaid
+sequenceDiagram
+    participant Kafka as Kafka topic
+    participant Listener as AllocationKafkaListener
+    participant Channel as Bounded Kotlin Channel
+    participant Worker as Fixed allocation worker
+    participant Job as AllocationJobExecutor
+    participant Runtime as JobRunr
+
+    Kafka->>Listener: AllocationRequest JSON
+    Listener->>Channel: Submit and wait for bounded capacity
+    Channel->>Worker: Dispatch queued request
+    Worker->>Job: executeSync(requestId, request)
+    alt Allocation succeeds
+        Job-->>Worker: Persisted completion
+        Worker-->>Listener: Return worker result
+        Listener-->>Kafka: Offset becomes eligible
+    else Admission semaphore is full
+        Worker->>Worker: Back off and retry same request
+    else Invalid or oversized request
+        Listener-->>Kafka: Error handler retries if applicable, then DLT
+    else Other synchronous failure
+        Worker->>Runtime: Enqueue durable fallback
+        Runtime-->>Worker: Enqueue succeeds
+        Worker-->>Listener: Return after successful enqueue
+        Listener-->>Kafka: Offset becomes eligible
+    end
+```
+
+Kafka remains disabled by default and coexists with RabbitMQ. Both brokers can
+deliver the same logical request; the stable request ID supports replay, but
+the completion lookup does not guarantee single-flight execution for
+simultaneous cross-broker duplicates. Local channel buffering does not add
+durable admission or processing capacity.
 The request queue has a dead-letter exchange/queue, with rejected messages not
 requeued by default. A failure while arranging fallback still propagates rather
 than masquerading as completed allocation.
@@ -1319,6 +1372,11 @@ Hikari waits and maintenance freshness. See the
 [feature](./issues/feature-fail-fast-allocation-admission.md) and
 [configuration guide](../../stockio-service/README.md#opt-in-allocation-admission).
 
+A separate [draft database-work budget](./issues/feature-shared-database-work-budget.md)
+proposes pre-transaction admission with protected ledger/expiry shares, joined
+projection ownership and partial-progress recovery. It is not implemented and
+does not change the current connection or maintenance guarantees.
+
 **Ledger coordination is not a stock-projection gate**
 
 `stock_ledger_coordinator` admits one sequential ledger coordinator across
@@ -1441,7 +1499,7 @@ Flyway migrations V1-V18 create and evolve these tables, seed products, add dail
 | `ALLOCATION_LEDGER_SYNC_CRON` | `0 0,12 * * *` | Five-field cron for physical ledger processing. |
 | `ALLOCATION_LEDGER_SYNC_ZONE` | `UTC` | Scheduler zone and shared business-clock zone. |
 | `ALLOCATION_LEDGER_SYNC_FRESHNESS_TOLERANCE` | `1h` | Grace after the next expected sync before ledger health becomes stale. |
-| `SERVER_ADDRESS` / `SERVER_PORT` | `127.0.0.1` / `8080` | HTTP bind address and port. |
+| `SERVER_ADDRESS` / `SERVER_PORT` | `127.0.0.1` / `9090` | HTTP bind address and port. |
 | `ALLOCATION_MAX_CONCURRENT_SKUS` | `4` | Maximum concurrent SKU workers. |
 | `ALLOCATION_RESERVATION_TTL` | `30m` | Temporary order-header hold duration, including SKU-processing time. |
 | `ALLOCATION_RESERVATION_EXPIRY_INTERVAL` | `1m` | Recurring expiry sweep interval, independent of ledger sync. |
@@ -1471,7 +1529,7 @@ Flyway migrations V1-V18 create and evolve these tables, seed products, add dail
 | `HARNESS_DB_URL` | `jdbc:postgresql://localhost:5437/logistics` | Harness-only read-only catalogue JDBC URL; the service owns migrations. |
 | `HARNESS_DB_USERNAME` / `HARNESS_DB_PASSWORD` | `logistics` / `logistics` | Harness-only local defaults; prefer SELECT-only catalogue credentials. |
 | `JOBRUNR_DASHBOARD_PORT` | `8181` | JobRunr dashboard port. |
-| `STOCKIO_API_URL` | `http://127.0.0.1:8080` | Next.js server-side Axios base URL for the independently running service. |
+| `STOCKIO_API_URL` | `http://127.0.0.1:9090` | Next.js server-side Axios base URL for the independently running service. |
 
 The frontend does not launch a service subprocess or manage its dashboard.
 The standalone service owns its configured HTTP and JobRunr dashboard ports.

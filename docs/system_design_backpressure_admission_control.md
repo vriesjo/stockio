@@ -25,6 +25,7 @@ Related material:
 - [System design: prevent duplicate allocation](./system_design_interview.md)
 - [Implemented feature: per-SKU stock processing](../.github/memory/issues/feature-per-sku-stock-processing.md)
 - [Feature: fail-fast allocation admission](../.github/memory/issues/feature-fail-fast-allocation-admission.md)
+- [Draft feature: shared database-work budget](../.github/memory/issues/feature-shared-database-work-budget.md)
 - [Admission configuration](../stockio-service/README.md#opt-in-allocation-admission)
 
 ## 1. Current execution and bottlenecks
@@ -238,8 +239,9 @@ The first increment implements configurable fail-fast allocation admission,
 request shape/byte limits and Micrometer measurements while preserving the SKU
 protocol and synchronous forecast semantics. Enforcement defaults to disabled;
 choose explicit positive limits from representative measurements before enabling.
-**Next recommendation:** baseline/tune that opt-in guard, then implement the
-shared database-work budget below before changing threading or increasing pools.
+**Next recommendation:** baseline/tune that opt-in guard. If pool contention or
+maintenance freshness objectives justify another layer, approve the shared
+database-work budget below before changing threading or increasing pools.
 
 The [separate feature](../.github/memory/issues/feature-fail-fast-allocation-admission.md)
 details admission ownership through completion persistence, adapter policies,
@@ -276,12 +278,18 @@ guarantee or a bound on queued JobRunr jobs.
 
 ### Second increment: protect the shared database budget
 
+The [draft feature](../.github/memory/issues/feature-shared-database-work-budget.md)
+captures Scenario 17, transaction owners, maintenance shares, partial-progress
+recovery, verification and open policy decisions. Implementation has not started.
+
 Apply a shared execution budget to database-intensive transaction entry points:
 registration, new-demand/backorder SKU workers, projection, ledger SKU work and
-whole-order expiry. Acquire before opening the transaction and release after
+whole-order expiry, including owning run/result and ledger-metadata writes.
+Acquire outside Spring's transactional proxy/template and release after
 commit/rollback, so waiting for an application permit cannot retain a pooled
-connection. Treat a whole-order expiry transaction as one database work unit,
-not one permit per locked SKU.
+connection. Acquiring inside an `@Transactional` method body is too late.
+Treat the existing whole-order expiry batch transaction as one database work
+unit, not one permit per order or locked SKU.
 
 Avoid nested permit acquisition: ledger and expiry already invoke projection
 inside their own transaction. Their inner refresh must use the existing
@@ -290,7 +298,10 @@ Do not hold a database-work permit while an outer coordinator waits for child
 work to acquire permits.
 
 Reserve maintenance/control-plane headroom rather than assigning the whole
-pool to customer allocation. A sizing constraint is:
+pool to customer allocation. Protect ledger and expiry from allocation and
+define their protection from each other; one shared semaphore alone does
+neither. Receipt-triggered backorder allocation uses the allocation share.
+A sizing constraint is:
 
 ```text
 admitted database work + other active database use + headroom <= pool size
@@ -302,6 +313,13 @@ budget, and ensure the sum across replicas fits database capacity. Use controlle
 workload shares or another explicit isolation mechanism if maintenance
 availability must be guaranteed. Do not copy the default pool size of 10 into a
 semaphore limit of 10.
+
+Database-phase refusal may follow committed registration, other SKUs or
+allocation before projection/completion. Distinguish it from the existing
+pre-write request rejection and preserve unchanged-identity recovery without
+claiming a whole-request rollback. Extend adapter and maintenance deferral
+deliberately; allocation-specific retry filtering does not automatically cover
+ledger/expiry jobs.
 
 Hot-SKU lock waits can still occupy execution slots and connections. Measure
 their effect; if they crowd out independent SKUs, consider bounded SKU-aware

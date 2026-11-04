@@ -15,11 +15,11 @@
 The frontend must not require a separate Spring backend that starts another
 Stockio JVM merely to call `allocate_product_by_name`. The user confirmed that
 Axios should run inside the existing Next.js route, preserving same-origin
-browser requests. `stockio-service` will run independently on port `8080`.
+browser requests. `stockio-service` will run independently on port `9090`.
 
 Keep the browser's `POST /api/allocate` interface. Its Next.js handler should
 use a small Axios HTTP client to call
-`POST http://127.0.0.1:8080/api/products/allocate`, with an environment-configurable
+`POST http://127.0.0.1:9090/api/products/allocate`, with an environment-configurable
 base URL. That existing REST endpoint directly invokes
 `productAllocationService.allocate(request)` and returns plain
 `ProductAllocationResponse` JSON. Axios cannot call an in-process Kotlin
@@ -31,7 +31,7 @@ controller and application service remain.
 ### Separate processes; no fat-JAR dependency
 
 Run the Next.js UI and `stockio-service` as two independently started processes.
-The UI communicates with the service only over HTTP on port `8080`. For local
+The UI communicates with the service only over HTTP on port `9090`. For local
 development, start the service through the IDE or `:stockio-service:bootRun`,
 and start the UI through its own npm scripts.
 
@@ -59,7 +59,7 @@ Browser fetch POST /api/allocate
 ```text
 Browser fetch POST /api/allocate (same origin)
   -> existing Next.js route
-  -> server-side Axios POST :8080/api/products/allocate
+  -> server-side Axios POST :9090/api/products/allocate
   -> ProductAllocationController.allocate(request)
   -> ProductAllocationService.allocate(request)
   -> plain ProductAllocationResponse JSON returned to the frontend
@@ -108,7 +108,7 @@ The commands below record the original feature validation.
 - Inspected the API JAR and service `bootRun` task graph: plain DTO classes and
   OpenAPI resources are present, without `BOOT-INF`, bridge application YAML,
   or a `bootJar` startup prerequisite.
-- Started the real service on `8080` using `bootRun` against a disposable
+- Started the real service on `9090` using `bootRun` against a disposable
   PostgreSQL/pgvector database and Next.js separately on `3101`. A live browser
   processed/rendered an exact product allocation and a no-match outcome through
   the Axios route, without a fat-JAR build, bridge, or external product lookup.
@@ -124,7 +124,7 @@ not as current runtime components.
 | Component | Evidence and consequence |
 | --- | --- |
 | `stockio-api/src/main/kotlin/nl/stockio/api/McpProductAllocationController.kt` | Exposes `/api/allocate`, maps a flat request into nested MCP `request` arguments, and returns `McpSchema.CallToolResult`; obsolete in the planned frontend flow. |
-| `stockio-api/src/main/kotlin/nl/stockio/api/McpStdioClientConfig.kt` | Locates the service JAR, starts a Java child process with stdio enabled and `SERVER_PORT=0`, initializes the MCP client, and owns its lifecycle; not a connection to the existing service on `8080`. |
+| `stockio-api/src/main/kotlin/nl/stockio/api/McpStdioClientConfig.kt` | Locates the service JAR, starts a Java child process with stdio enabled and `SERVER_PORT=0`, initializes the MCP client, and owns its lifecycle; not a connection to the existing service on `9090`. |
 | `stockio-api/src/main/kotlin/nl/stockio/StockioMcpApplication.kt` | Starts the separate Spring bridge application; the frontend should no longer need this runtime. |
 | `stockio-api/src/main/resources/application.yml` | Defaults the bridge to `8082`, enables child-server startup, and supplies JAR/Java/MCP timeout settings; retire bridge-only configuration. |
 | `stockio-api/src/main/kotlin/nl/stockio/ui/app/api/allocate/route.ts` | Currently uses fetch to forward raw JSON to `STOCKIO_API_URL` (default `8082`) plus `/api/allocate`; validates HTTP(S) URLs, rejects redirects, disables caching, uses a 180-second timeout, and maps network/timeout failures to `502`/`504`. |
@@ -135,7 +135,7 @@ not as current runtime components.
 | `stockio-service/src/main/kotlin/nl/stockio/product/tools/ProductAllocationTools.kt` | `allocate_product_by_name` already delegates to the same application service. Remove this adapter and tool as explicitly requested; retain the REST controller and service. |
 | `stockio-service/src/main/kotlin/nl/stockio/product/domain/service/ProductAllocationService.kt` | Owns product resolution, optional external lookup, and delegation to shared allocation processing. All business behavior stays here. |
 | `stockio-api/src/main/resources/openapi/product-allocation-controller.yaml` | Defines the existing REST path, flat request, HTTP `200` response, domain statuses, and HTTP `400` errors; use as the client contract rather than inventing another endpoint. |
-| `stockio-service/src/main/resources/application.yml` | Already defaults the service to `127.0.0.1:8080`; no port change is needed. |
+| `stockio-service/src/main/resources/application.yml` | Already defaults the service to `127.0.0.1:9090`; no port change is needed. |
 | Root `build.gradle` | Service has `implementation project(":stockio-api")`, using DTOs now located there. API-owned OpenAPI tasks generate interfaces compiled directly by the service. API `bootRun` also depends on service `bootJar`. Preserve the former responsibilities and retire only bridge-specific wiring. |
 
 ### Contract and error behavior
@@ -160,7 +160,7 @@ not as current runtime components.
   Axios timeout errors. Keep the existing timeout warning: the service may
   still complete after the HTTP client stops waiting.
 - Use the existing `STOCKIO_API_URL` as server-only configuration, changing its
-  default/example to `http://127.0.0.1:8080`; do not add `NEXT_PUBLIC_` exposure.
+  default/example to `http://127.0.0.1:9090`; do not add `NEXT_PUBLIC_` exposure.
   Keep the existing 180-second timeout, no-store response behavior, and redirect
   rejection. Do not add automatic retries.
 
@@ -169,7 +169,7 @@ not as current runtime components.
 | ID | Title | Description |
 | --- | --- | --- |
 | FR-01 | Same-origin frontend route | Keep browser submissions to Next.js `POST /api/allocate`; perform the service call inside that route, without a separate Spring frontend backend. |
-| FR-02 | Axios service client | Add Axios to the UI package and a small server-side TypeScript client using `STOCKIO_API_URL`, default `http://127.0.0.1:8080`, to POST flat `ProductAllocationRequest` JSON to `/api/products/allocate`. |
+| FR-02 | Axios service client | Add Axios to the UI package and a small server-side TypeScript client using `STOCKIO_API_URL`, default `http://127.0.0.1:9090`, to POST flat `ProductAllocationRequest` JSON to `/api/products/allocate`. |
 | FR-03 | Existing application use case | Use `ProductAllocationController.allocate` and its direct `productAllocationService.allocate(request)` delegation; do not invoke MCP or duplicate allocation logic in TypeScript. |
 | FR-04 | Plain REST result | Update frontend types and result parsing to consume plain `ProductAllocationResponse`, preserving domain outcomes, evidence, allocation quantities, line/source identities, skipped-expiry outcomes, and backorders. |
 | FR-05 | Explicit HTTP failures | Preserve upstream HTTP status and JSON bodies; show service validation errors, reject malformed successful payloads, and return explicit `502` connection and `504` timeout responses. |
@@ -192,14 +192,14 @@ not as current runtime components.
 2. Update frontend request naming, plain REST response validation, service error display, and UI wording while retaining form validation, rendering, and manual retry identity.
 3. Remove the obsolete Spring MCP bridge runtime, bridge-only configuration/dependencies/tests, and `ProductAllocationTools.kt`; remove fat-JAR startup coupling, preserve shared DTO/OpenAPI build responsibilities and unrelated MCP tools, and verify service compilation.
 4. Update environment/run guidance and focused client, route, parser, and browser tests to use a mock service's `/api/products/allocate` endpoint and plain REST JSON.
-5. Run UI unit tests, type checking, production build, and the focused browser flow; validate/generate OpenAPI interfaces and compile/test the affected Kotlin service boundary, then smoke-test with only Next.js and `stockio-service:8080`.
+5. Run UI unit tests, type checking, production build, and the focused browser flow; validate/generate OpenAPI interfaces and compile/test the affected Kotlin service boundary, then smoke-test with only Next.js and `stockio-service:9090`.
 
 ## Functional scenario
 
 Source: [Scenario 12](../scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http).
 
 ### Gherkin description
-**Given** the Next.js allocation frontend and an independently running `stockio-service` on port `8080` \
+**Given** the Next.js allocation frontend and an independently running `stockio-service` on port `9090` \
 **When** a user submits a valid product allocation form to the same-origin `POST /api/allocate` route \
 **Then** the Next.js route uses Axios to send the flat request to `POST /api/products/allocate` on `stockio-service` \
 **And** `ProductAllocationController` directly invokes `productAllocationService.allocate(request)` \
@@ -211,7 +211,7 @@ Source: [Scenario 12](../scenarios.md#scenario-12-allocate-a-product-from-the-fr
 
 ### High-level technical analysis
 - Keep the existing Next.js route as the same-origin adapter; Axios runs server-side, not in the browser
-- Use a small TypeScript Axios client with server-side `STOCKIO_API_URL`, defaulting to `http://127.0.0.1:8080`, and upstream path `/api/products/allocate`
+- Use a small TypeScript Axios client with server-side `STOCKIO_API_URL`, defaulting to `http://127.0.0.1:9090`, and upstream path `/api/products/allocate`
 - The REST controller directly delegates to `ProductAllocationService`; `ProductAllocationTools.kt` and `allocate_product_by_name` have been removed
 - Return plain `ProductAllocationResponse` JSON; frontend parsing, error text, proxy tests, and browser fixtures use the REST contract
 - The obsolete Spring MCP bridge runtime is removed; `stockio-api` remains a normal Kotlin DTO library and owns the OpenAPI documents and Gradle generation tasks used by `stockio-service`
@@ -220,7 +220,7 @@ Source: [Scenario 12](../scenarios.md#scenario-12-allocate-a-product-from-the-fr
 - The service's allocation, persistence, product lookup, and unrelated MCP interfaces remain unchanged; product allocation uses REST-only access and no browser-to-service CORS change is needed
 
 ### Acceptance Criteria
-- The frontend works with independently started Next.js and `stockio-service:8080`, without `StockioMcpApplication`, a `bootJar` prerequisite, a bundled UI/service fat JAR, or a child service JVM
+- The frontend works with independently started Next.js and `stockio-service:9090`, without `StockioMcpApplication`, a `bootJar` prerequisite, a bundled UI/service fat JAR, or a child service JVM
 - The Next.js route uses Axios to send the unchanged flat request fields to the configured service's `/api/products/allocate` endpoint
 - Valid service responses preserve HTTP status and JSON content, including non-allocation domain outcomes returned with HTTP `200`
 - The UI displays selected products, candidates, evidence, allocation quantities, line/source identities, skipped-expiry outcomes, and backorders from plain REST JSON
@@ -269,7 +269,7 @@ Source: [Scenario 12](../scenarios.md#scenario-12-allocate-a-product-from-the-fr
   contract.
 - Adapt `e2e/allocation.spec.ts` to serve plain REST responses and assert the
   upstream service path. Keep a dedicated mock port rather than contacting
-  the real `8080` service; preserve identity-on-retry and identity-after-edit
+  the real `9090` service; preserve identity-on-retry and identity-after-edit
   checks, and replace MCP error fixtures with REST domain/HTTP failures.
 - Validate/generate the allocation, reservation, and product OpenAPI documents
   through the existing `:stockio-api:openApiValidate`,
@@ -283,7 +283,7 @@ Source: [Scenario 12](../scenarios.md#scenario-12-allocate-a-product-from-the-fr
   after bridge/build cleanup. The focused controller test already verifies
   the direct service call and HTTP `400` mapping.
 - Smoke-test the actual Next.js route against independently running
-  `stockio-service:8080` started through the IDE or `bootRun`, with safe test
+  `stockio-service:9090` started through the IDE or `bootRun`, with safe test
   data and without building a fat JAR or using the Spring bridge/JAR launcher.
   Start Next.js separately and confirm rendering of plain service responses.
 - Verify that `allocate_product_by_name` is no longer registered and that
