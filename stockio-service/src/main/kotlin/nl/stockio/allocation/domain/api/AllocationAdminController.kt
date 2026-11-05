@@ -23,6 +23,7 @@ class AllocationAdminController(
     private val allocationJobRunrService: AllocationJobRunrService,
     @Value("\${stockio.allocation.csv-path}")
     private val csvPath: String
+
 ) {
 
     @GetMapping("/allocations/generate-request-by-csv")
@@ -35,9 +36,9 @@ class AllocationAdminController(
     ): String =
         allocationTools.generateExcelReport(request)
 
-    @DeleteMapping("/allocations/delete-jobs-with-excessive-retries")
-    fun deleteJobsWithExcessiveRetries(): String {
-        allocationJobRunrService.deleteJobsWithRetriesByStatus()
+    @DeleteMapping("/allocations/flush-all-jobs")
+    fun flushAllJobs(): String {
+        allocationJobRunrService.flushAllJobs()
         return "Jobs with excessive retries deleted."
     }
 

@@ -57,6 +57,7 @@ Example:
   -Dstockio.perf.port=9090 \
   -Dstockio.perf.soakRps=40 \
   -Dstockio.perf.soakSeconds=120
+  -Dstockio.perf.async=false
 ```
 
 ## What the simulation does

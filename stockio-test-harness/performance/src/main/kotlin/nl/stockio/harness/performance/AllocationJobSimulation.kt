@@ -7,6 +7,7 @@ import io.gatling.javaapi.core.ChainBuilder
 import io.gatling.javaapi.core.CoreDsl.StringBody
 import io.gatling.javaapi.core.CoreDsl.constantUsersPerSec
 import io.gatling.javaapi.core.CoreDsl.csv
+import io.gatling.javaapi.core.CoreDsl.doIf
 import io.gatling.javaapi.core.CoreDsl.exec
 import io.gatling.javaapi.core.CoreDsl.global
 import io.gatling.javaapi.core.CoreDsl.jsonPath
@@ -112,6 +113,7 @@ private object AllocationJobRequests {
         .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
 
     private val createRequestBody = StringBody { session ->
+        val today = LocalDate.now()
         val orderId = requireSessionString(session, "orderId")
         val customer = requireSessionString(session, "customer")
         val priority = requireSessionString(session, "priority").toInt()
@@ -124,14 +126,14 @@ private object AllocationJobRequests {
 
         val request = AllocationRequest(
             requestId = UUID.fromString(requireSessionString(session, "requestId")),
-            asOfDate = LocalDate.parse(requireSessionString(session, "asOfDate")),
+            asOfDate = today,
             runType = AllocationRunType.NEW_DEMAND,
             demandOrders = listOf(
                 DemandOrder(
                     orderId = orderId,
                     customer = customer,
                     priority = priority,
-                    placedDate = LocalDate.parse(requireSessionString(session, "asOfDate")),
+                    placedDate = today,
                     lines = listOf(
                         DemandOrderLine(
                             orderLineId = orderLineId,
@@ -180,6 +182,14 @@ private object AllocationJobRequests {
                 .get(AllocationOpenApiContract.GET_ALLOCATION_JOB_STATUS_PATH)
                 .check(status().`in`(200, 404))
         )
+
+    fun fetchAllocationJobStatusWhenPresent(enabled: Boolean): ChainBuilder =
+        if (!enabled) {
+            exec { session -> session }
+        } else {
+            doIf { session -> session.contains("jobId") }
+                .then(fetchAllocationJobStatus())
+        }
 }
 
 private object AllocationJobScenario {
@@ -189,16 +199,25 @@ private object AllocationJobScenario {
             .feed(feeder)
             .exec(
                 exec { session ->
+                    val requestId = UUID.randomUUID().toString()
                     val asOfDate = LocalDate.now().toString()
+                    val baseOrderId = session.getString("orderId") ?: error("Missing session key: orderId")
+                    val baseOrderLineId = session.getString("orderLineId") ?: error("Missing session key: orderLineId")
+                    val baseShipmentId = session.getString("shipmentId") ?: error("Missing session key: shipmentId")
+                    val baseShipmentLineId = session.getString("shipmentLineId") ?: error("Missing session key: shipmentLineId")
                     session
-                        .set("requestId", UUID.randomUUID().toString())
+                        .set("requestId", requestId)
                         .set("asOfDate", asOfDate)
+                        .set("orderId", "$baseOrderId-$requestId")
+                        .set("orderLineId", "$baseOrderLineId-$requestId")
+                        .set("shipmentId", "$baseShipmentId-$requestId")
+                        .set("shipmentLineId", "$baseShipmentLineId-$requestId")
                         .set("requiredDeliveryDate", LocalDate.now().plusDays(3).toString())
                         .set("expectedArrivalDate", LocalDate.now().plusDays(1).toString())
                 }
             )
             .exec(AllocationJobRequests.submitAllocationJob(config.asyncQuery))
-            .exec(AllocationJobRequests.fetchAllocationJobStatus())
+            .exec(AllocationJobRequests.fetchAllocationJobStatusWhenPresent(config.asyncQuery))
     }
 }
 

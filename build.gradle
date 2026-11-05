@@ -342,6 +342,9 @@ project(":stockio-test-harness") {
         classpath = sourceSets.performance.runtimeClasspath
         mainClass = 'io.gatling.app.Gatling'
         jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
+        systemProperties.putAll(
+            System.getProperties().findAll { key, _ -> key.toString().startsWith('stockio.perf.') }
+        )
         args '-s', 'nl.stockio.harness.performance.AllocationJobSimulation',
             '-rf', "${layout.buildDirectory.get().asFile}/reports/gatling",
             '-rd', "allocation-job-performance"
