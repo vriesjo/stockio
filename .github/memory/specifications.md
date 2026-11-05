@@ -571,3 +571,105 @@ runs through today's manifest, and requires coordinated all-writer deployment.
 - [Feature issue: per-SKU stock processing](./issues/feature-per-sku-stock-processing.md)
 - [Completed registration baseline](./issues/feature-concurrent-document-registration.md)
 - [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+
+## Feature: Add an allocation performance harness for job endpoints
+
+- **Status:** In-progress
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Feature: Isolate browser tests and synthetic publishing in a test harness](#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
+- **Bounded Context:** Test Infrastructure & Performance Validation
+
+### Overview
+
+Define and implement a repository-owned performance harness in
+`stockio-test-harness/performance` for allocation-job REST traffic. The initial
+request is based on a generic Gatling prompt and needs scoping: parameterized
+workload phases and measurable artifacts are in scope; hardcoded production
+SLA claims, mandatory auth assumptions, and unverifiable "production-ready"
+language are not. The harness should support representative measurements while
+remaining safe for local and CI execution.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Harness-owned load suite | Add a dedicated Gatling Kotlin suite in `stockio-test-harness/performance` with Gradle execution and no runtime dependency from service/UI modules. |
+| FR-02 | Endpoint flow coverage | Exercise `POST /api/allocation/jobs` and correlated `GET /api/allocation/jobs/{id}` polling with realistic payload variation and ID extraction. |
+| FR-03 | Parameterized workload profile | Support configurable warm-up/ramp/soak phases (defaults from the request), target host/protocol/port, and request pacing via environment or JVM properties. |
+| FR-04 | Explicit transport and checks | Centralize protocol headers/timeouts and reusable request blocks; validate expected HTTP status and response fields needed for downstream polling. |
+| FR-05 | Reproducible run artifacts | Capture effective runtime configuration, assertion results, and generated reports so runs are comparable across environments. |
+| FR-06 | Challenge unsupported assumptions | Document and gate assumptions around auth headers, generated OpenAPI client usage, and fixed SLA thresholds; defaults must not imply unsupported guarantees. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Honest performance claims | Do not claim production capacity or latency guarantees from local/developer runs; require representative infrastructure evidence for such statements. |
+| NFR-02 | Safe defaults | Keep defaults non-destructive and suitable for dedicated non-production targets only; avoid hidden retries or traffic amplification that obscures failures. |
+| NFR-03 | Bounded complexity | Prefer direct, inspectable Gatling scenario logic; generated HTTP clients are optional and must not reduce observability/debuggability. |
+
+### Plan
+
+1. Convert `stockio-test-harness/performance/README.md` from prompt-style content into repository-specific workload design, assumptions, and run contract.
+2. Add Gradle/Gatling wiring and a modular Kotlin simulation layout (protocol, feeders, actions, scenario, setup) with environment/property-driven configuration.
+3. Implement create-job + poll-job flow with correlation, assertions, and configurable auth-header handling.
+4. Add run scripts/targets and artifact documentation; execute baseline runs in local infrastructure and record observed limits without overclaiming.
+5. Synchronize scenario/specification/issue/active-context and update guidance after first validated run.
+
+### Resources
+
+- [Scenario 19: Exercise allocation-job REST endpoints under controlled load](./scenarios.md#scenario-19-exercise-allocation-job-rest-endpoints-under-controlled-load)
+- [Feature issue: allocation performance harness](./issues/feature-allocation-performance-harness.md)
+- [Harness performance README seed](../../stockio-test-harness/performance/README.md)
+
+## Feature: Add a direct structured allocation UI alongside the agentic page
+
+- **Status:** In-progress
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Feature: Replace the frontend MCP bridge with an Axios service client](#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
+- **Bounded Context:** Frontend Integration & Allocation API Workflows
+
+### Overview
+
+Extend the current Next.js allocation UI with a second, direct structured flow:
+SKU-first input with explicit order metadata, request identity preview, and JSON
+preview. Keep the existing agentic product-resolution flow unchanged. Reuse
+same-origin server-side Axios transport and established UI behavior patterns.
+
+This feature uses the allocation jobs contract (`POST /api/allocation/jobs`)
+with the `AllocationRequest` shape from `allocation-controller.yaml`.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Separate direct workflow surface | Add a dedicated UI route/page for direct structured allocation requests without replacing the existing "Find the right product. Allocate with confidence" page. |
+| FR-02 | SKU-first form fields | Capture SKU, quantity, priority, order ID, customer, placed date, required delivery date, and as-of date with clear validation and defaults where appropriate. |
+| FR-03 | Consistent navigation shell | Include a simple default Tailwind navbar and clear navigation between the existing agentic flow and the new direct flow. |
+| FR-04 | Request identity and preview | Show request identity and a JSON preview of the exact outbound payload, with explicit behavior for unchanged retries versus edited requests. |
+| FR-05 | Axios submission path | Submit through server-side Axios using same-origin Next.js route patterns, preserving explicit HTTP/network error handling. |
+| FR-06 | Contract alignment | Align direct-page types, route/client, docs, and tests to `POST /api/allocation/jobs` with `AllocationRequest`. |
+| FR-07 | Response rendering | Render response outcomes and errors explicitly, without implying success guarantees beyond returned API status/body. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Backward compatibility | Keep existing agentic page behavior, request/response parsing, and tests intact unless intentionally updated with approved scope. |
+| NFR-02 | Transport safety | Keep service URL configuration server-side, maintain no-store behavior and bounded timeout/error mapping patterns used by current Axios route. |
+| NFR-03 | Honest UX semantics | Distinguish accepted, failed, and uncertain outcomes clearly; do not claim allocation completion where API semantics do not guarantee it. |
+
+### Plan
+
+1. Use `allocation-controller.yaml` + `AllocationRequest` as the direct-page contract baseline and keep route naming explicit.
+2. Introduce direct-flow request types/builders and Axios client/route wiring aligned with the selected contract.
+3. Implement new page UI (navbar, form, request identity, JSON preview, submit/result sections) while preserving agentic page behavior.
+4. Add focused unit/route/browser coverage for field validation, payload shape, request identity behavior, and error mapping.
+5. Synchronize architecture/run guidance/scenario/specification/issue/active-context with implemented behavior.
+
+### Resources
+
+- [Scenario 20: Submit structured allocation requests from a direct UI workflow](./scenarios.md#scenario-20-submit-structured-allocation-requests-from-a-direct-ui-workflow)
+- [Feature issue: direct structured allocation UI](./issues/feature-direct-structured-allocation-ui.md)
+- [Current page](../../stockio-api/src/main/kotlin/nl/stockio/ui/app/page.tsx)
+- [Allocation jobs OpenAPI](../../stockio-api/src/main/resources/openapi/allocation-controller.yaml)

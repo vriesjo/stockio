@@ -22,6 +22,10 @@ The REST API listens on `127.0.0.1:8080` by default. Set `SERVER_ADDRESS` and
 supports independent MCP integrations for the tools listed below; protocol
 messages use stdout and application logs use stderr.
 
+Swagger UI is available at `/swagger-ui.html` and is configured to render
+`stockio-api/src/main/resources/openapi/allocation-controller.yaml` through
+`/openapi/allocation-controller.yaml`.
+
 ### Run the allocation UI separately
 
 Requirements: Node.js 22.18 or later. Leave `stockio-service` running on `8080`

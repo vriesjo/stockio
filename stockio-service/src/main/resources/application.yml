@@ -151,3 +151,9 @@ logging:
   structured:
     format:
       console: logstash
+
+springdoc:
+  swagger-ui:
+    path: /openapi.html
+    disable-swagger-default-url: true
+    url: /openapi/allocation-controller.yaml

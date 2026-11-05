@@ -532,3 +532,59 @@ Planned feature: [Shared database-work budget](./issues/feature-shared-database-
 - Focused tests cover conversion, execution delegation, offset/retry behavior, duplicates, channel saturation, capacity pressure, and RabbitMQ coexistence
 
 In-progress feature: [Kafka allocation consumer](./issues/feature-concurrent-per-event-allocation.md).
+
+## Scenario 19: Exercise allocation-job REST endpoints under controlled load
+
+**Status:** In-progress.
+
+### Gherkin description
+**Given** the service allocation-job REST endpoints and a dedicated non-production environment \
+**When** a harness performance run executes staged warm-up, ramp, and sustained traffic against `POST /api/allocation/jobs` and `GET /api/allocation/jobs/{id}` \
+**Then** request rate, latency percentiles, and success/error rates are measured and persisted as run artifacts \
+**And** unsupported assumptions (authentication, static SLA, generated-client behavior, and local-only sizing) are made explicit before claims are published \
+**And** no production-readiness statement is made without representative environment evidence
+
+### High-level technical analysis
+- `stockio-test-harness/performance/README.md` currently contains a generic prompt, not an executable harness, scenario, or validated run instructions
+- The request asks for OpenAPI-based client generation and strict latency thresholds, but current repository guidance explicitly defers performance tooling/workload guarantees and requires honest claims
+- The service architecture currently has no application-level authentication guarantee by default, so auth-header behavior must be configurable/optional instead of hard-required in the first iteration
+- Performance runs should separate transport scaffolding from workload semantics: reusable protocol/feeders/checks plus endpoint-specific actions and scenario composition
+- Metrics collection must rely on bounded, reproducible outputs (Gatling report + captured config + run metadata) and should not require a full Prometheus stack for baseline execution
+- Load profile and SLA thresholds should be parameterized with safe defaults and explicitly tied to environment class; local laptop runs cannot establish production capacity
+
+### Acceptance Criteria
+- A runnable harness exists under `stockio-test-harness/performance` with clear local/CI execution instructions and parameterized environment settings
+- The run exercises both create-job and poll-job flows with realistic payload variation and correlation of created job IDs
+- Warm-up/ramp/soak profile can be configured from environment/system properties and recorded with run artifacts
+- Assertions are explicit, environment-aware, and fail runs when configured bounds are violated
+- Generated-client usage versus direct DSL calls is intentionally documented with tradeoffs, and chosen behavior is reflected in code/tests/docs
+- Documentation states that results are environment-specific and do not imply production guarantees without representative infrastructure
+
+Planned feature: [Allocation performance harness](./issues/feature-allocation-performance-harness.md).
+
+## Scenario 20: Submit structured allocation requests from a direct UI workflow
+
+**Status:** In-progress.
+
+### Gherkin description
+**Given** the existing agentic allocation page remains available \
+**When** a user opens the direct allocation UI and enters SKU, quantity, priority, and order metadata \
+**Then** the page previews the exact JSON request body and request identity before submission \
+**And** the page submits via a server-side Axios flow consistent with the existing frontend transport pattern \
+**And** the page renders success/error outcomes without implying allocation guarantees not provided by the API
+
+### High-level technical analysis
+- The current page (`stockio-api/src/main/kotlin/nl/stockio/ui/app/page.tsx`) is optimized for the product-resolution flow (`productQuery`, optional equivalents) and currently posts to the same-origin `/api/allocate` route
+- The requested direct workflow is similar UX but with SKU-first structured input and no product-resolution text query
+- The direct workflow contract baseline is `POST /api/allocation/jobs` with `AllocationRequest` (`allocation-controller.yaml`)
+- A dedicated page should reuse existing UI patterns (header, form layout, request identity behavior, JSON preview, error rendering) while isolating direct-API fields/validation from the agentic form
+- Transport should reuse the existing server-side Axios approach (as in `ui/lib/product-allocation-client.ts`) and keep browser requests same-origin
+
+### Acceptance Criteria
+- A dedicated direct-allocation page exists with a simple default Tailwind navbar and a form for SKU, quantity, priority, order ID, customer, placed date, required delivery date, and as-of date
+- Request identity behavior matches current UX expectations (stable on unchanged retry, reset on edit/new request) and a JSON preview is visible before submission
+- Submission uses a server-side Axios client and returns explicit HTTP/domain errors in the page UI
+- Agentic product-resolution workflow remains intact and separately navigable
+- The selected target endpoint and payload contract are documented and reflected consistently in frontend types/client/route/tests
+
+In-progress feature: [Direct structured allocation UI](./issues/feature-direct-structured-allocation-ui.md).

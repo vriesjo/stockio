@@ -1,5 +1,43 @@
 # Active Context
 
+## Feature: Add a direct structured allocation UI alongside the agentic page
+
+- **Specification:** [Feature specification](./specifications.md#feature-add-a-direct-structured-allocation-ui-alongside-the-agentic-page)
+- **Scenario:** [Scenario 20](./scenarios.md#scenario-20-submit-structured-allocation-requests-from-a-direct-ui-workflow)
+- **Issue:** [Feature issue](./issues/feature-direct-structured-allocation-ui.md)
+- **Status:** In-progress
+- **Priority:** Not set
+- **Implementation started:** Yes. Direct-page implementation is in progress.
+
+### Steps worked on
+- Confirmed direct-page contract source of truth as `POST /api/allocation/jobs` with `AllocationRequest`.
+- Added a dedicated direct page route with SKU-first form fields, request identity behavior, JSON preview, and submit/result/error rendering.
+- Added a new server-side Axios proxy route/client for allocation jobs with admission-size guard and transport error mapping aligned with existing patterns.
+- Added focused tests for direct request mapping/parsing and allocation-jobs proxy forwarding/error behavior.
+
+### Next possible steps (suggestions)
+- Run the UI typecheck/tests and resolve any integration regressions.
+- Validate the new direct page against a running `stockio-service` instance and finalize docs/status when complete.
+
+## Feature: Add an allocation performance harness for job endpoints
+
+- **Specification:** [Feature specification](./specifications.md#feature-add-an-allocation-performance-harness-for-job-endpoints)
+- **Scenario:** [Scenario 19](./scenarios.md#scenario-19-exercise-allocation-job-rest-endpoints-under-controlled-load)
+- **Issue:** [Feature issue](./issues/feature-allocation-performance-harness.md)
+- **Status:** In-progress
+- **Priority:** Not set
+- **Implementation started:** Yes. Initial Gatling harness scaffolding is being implemented.
+
+### Steps worked on
+- Reviewed `stockio-test-harness/performance/README.md` and challenged it against current repository constraints, existing harness boundaries, and the "honest performance claims" rule already used elsewhere.
+- Captured key challenge points: production-readiness overclaim risk, unverified mandatory auth assumption, generated-client tradeoff, and static SLA thresholds without environment binding.
+- Added linked scenario/specification/issue entries to convert the prompt into a repository-owned implementation handoff with explicit scope, requirements, and plan.
+- Started implementation by wiring a harness-owned Gatling run task, adding a Kotlin simulation with the async Gatling DSL, and replacing the prompt README with executable run/configuration guidance.
+
+### Next possible steps (suggestions)
+- Decide whether to use direct Gatling DSL only or retain optional OpenAPI-generated client usage with observability safeguards.
+- Approve environment classes and default assertion thresholds for local versus representative infrastructure runs before implementation.
+
 ## Feature: Add a Kafka allocation consumer alongside RabbitMQ
 
 - **Specification:** [Feature specification](./specifications.md#feature-add-a-kafka-allocation-consumer-alongside-rabbitmq)
