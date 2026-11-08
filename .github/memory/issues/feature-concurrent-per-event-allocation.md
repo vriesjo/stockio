@@ -8,15 +8,16 @@
 - **Specification:** [`../specifications.md`](../specifications.md#feature-add-a-kafka-allocation-consumer-alongside-rabbitmq)
 - **Scenario:** [`Scenario 18: Consume an Allocation Request from Kafka`](../scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
 
-Add a Kafka consumer for Stockio allocation requests alongside the existing
-RabbitMQ consumer. The Kafka adapter should invoke the same allocation
-application path as `AllocationRabbitListener`, including
+Publish default asynchronous REST allocation submissions to Kafka, and consume
+Kafka allocation requests alongside the existing RabbitMQ consumer. The Kafka
+adapter invokes the same allocation application path as
+`AllocationRabbitListener`, including
 `allocationJobExecutor.executeSync(jobId, request)`. Stockio allocates stock;
 this is not payment processing or external billing.
 
-The scope is the Kafka consumer and its required configuration, not a Kafka
-producer, Kafka Streams topology, or a replacement for RabbitMQ. Keep RabbitMQ
-available and behaviorally unchanged.
+The scope includes the service's allocation submission publisher and Kafka
+consumer, not a reusable producer starter, Kafka Streams topology, or a
+replacement for RabbitMQ. Keep RabbitMQ available and behaviorally unchanged.
 A bounded Kotlin `Channel` with a fixed set of allocation workers is the proposed
 local buffer for smoothing short bursts; the existing `AllocationAdmission`
 semaphore remains the authoritative execution bulkhead.
@@ -24,9 +25,19 @@ semaphore remains the authoritative execution bulkhead.
 ## Approved implementation decisions
 
 - Consume the existing `AllocationRequest` JSON contract; use
-  `request.requestId` as the `jobId` for `allocationJobExecutor.executeSync`.
-- Keep Kafka disabled by default. Configure topic, group, worker count, channel
-  capacity, retry delay, and dead-letter topic through service properties.
+  the UUID Kafka record key as the `jobId` for
+  `allocationJobExecutor.executeSync`, falling back to `request.requestId` when
+  an external producer sends no key.
+- Publish raw `AllocationRequest` JSON from asynchronous REST submission and
+  use a unique execution job ID as its Kafka key. Return the existing acceptance
+  response only after Kafka acknowledges the send.
+- Persist Kafka job state separately from JobRunr so the existing status endpoint
+  can report queued and processing jobs, completed results, and ambiguous
+  submission outcomes.
+- Keep Kafka consumption disabled by default; asynchronous REST submission
+  requires a reachable, provisioned Kafka topic. Configure topic, group, worker
+  count, channel capacity, retry delay, and dead-letter topic through service
+  properties.
 - Mirror the current RabbitMQ failure policy: retain and back off capacity
   rejections, dead-letter invalid/oversized requests, and enqueue a durable
   JobRunr fallback for other synchronous failures. Kafka offset progress follows
@@ -106,6 +117,16 @@ before rollout.
 
 ### Acceptance Criteria
 
+- A valid asynchronous REST submission publishes the unchanged request JSON to
+  the configured Kafka topic, keyed by its returned `jobId`; publish failures
+  propagate without returning a successful acceptance response.
+- Acknowledged Kafka submissions remain queryable by `jobId` before and during
+  processing, and successful completion returns the persisted allocation result
+  without requiring a JobRunr job record.
+- A broker acknowledgement error is represented as an unknown submission
+  outcome rather than a false accepted or rejected status.
+- The service consumer uses a valid UUID record key as its execution job ID
+  and preserves `requestId` fallback for compatible external publishers.
 - Kafka consumption can be enabled/configured without removing or silently
   changing the existing RabbitMQ consumer.
 - A Kafka record is mapped to the agreed allocation request contract and
@@ -136,6 +157,8 @@ before rollout.
 | FR-05 | Bounded consumption | Use a bounded local Kotlin channel and fixed worker concurrency to smooth short bursts; keep the existing `AllocationAdmission` semaphore authoritative, preserve records on channel or semaphore saturation, and do not launch unbounded per-record coroutines or buffers. |
 | FR-06 | RabbitMQ coexistence | Keep the RabbitMQ listener and its contract operational; document behavior when both brokers deliver the same logical request. |
 | FR-07 | Operational visibility | Log and measure bounded-cardinality consumption outcomes, retries, capacity deferrals, and processing duration without using request or SKU identifiers as metric labels. |
+| FR-08 | Asynchronous REST publisher | Serialize the unchanged `AllocationRequest` and publish to the configured Kafka topic using a unique execution job ID as the record key; return acceptance only after the broker acknowledges the publish. |
+| FR-09 | Durable Kafka job status | Persist submission, enqueue, processing, and terminal states so accepted Kafka jobs can be polled by their returned execution ID without requiring a JobRunr record. |
 
 ## Non-Functional Requirements (NFR)
 
@@ -145,6 +168,8 @@ before rollout.
 | NFR-02 | Bounded resource use | Bound the local channel and active workers; preserve the existing allocation admission and stock-coordination guarantees, and never treat in-memory channel enqueueing as durable acceptance. |
 | NFR-03 | Opt-in rollout | Kafka listener activation and connection settings must be explicit so introducing Kafka does not unexpectedly alter existing RabbitMQ operation. |
 | NFR-04 | Honest performance claims | Do not claim non-blocking processing, throughput improvement, or latency bounds without representative measurements. |
+| NFR-05 | Compatible message contract | Keep the Kafka value as raw `AllocationRequest` JSON and preserve request-ID fallback for producers that do not send an execution key. |
+| NFR-06 | Honest status and delivery outcomes | Preserve the REST status-polling contract and represent ambiguous broker acknowledgements explicitly rather than claiming the message was accepted or rejected without evidence. |
 
 ## Technical analysis and affected components
 
@@ -156,8 +181,11 @@ before rollout.
 - `stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt`
   owns `executeSync`; the RabbitMQ listener passes `request.requestId` as its
   `jobId`.
-- The service currently has Spring AMQP/RabbitMQ configuration and no Kafka
-  listener or Kafka consumer configuration.
+- `AllocationJobExecutor.executeAsync` publishes to the configured Kafka topic;
+  the service Kafka listener remains disabled by default and can consume those
+  records when explicitly enabled.
+- Kafka-submitted job status does not depend on JobRunr storage: accepted
+  messages are tracked through execution and completion in PostgreSQL.
 - `AllocationAdmission` uses a non-waiting `Semaphore.tryAcquire()` for
   allocation work and reports saturation with
   `AllocationCapacityExceededException`; the RabbitMQ listener currently
@@ -202,11 +230,14 @@ before rollout.
 - Size worker concurrency and partitions from observed allocation/database
   capacity; do not claim throughput or latency bounds from local buffering.
 - The database's unique request identity and allocation-run resume behavior
-  protect logical allocation replay. Keep the JobRunr completion job ID equal
-  to `requestId`; test same-request overlap across Kafka and RabbitMQ.
-- Deploy the Kafka consumer disabled, ensure the upstream producer and source
-  topic are configured, and provision the DLT before enabling it deliberately.
-  RabbitMQ remains available; no migration or producer library is part of this
+  protect logical allocation replay. Preserve the keyed execution ID for
+  service-published records and use `requestId` fallback only for unkeyed
+  external records; test same-request overlap across Kafka and RabbitMQ.
+- Provision the source topic for default asynchronous REST submissions and
+  deploy the Kafka consumer disabled unless this service is intended to consume
+  those records. Provision the DLT before enabling consumption deliberately;
+  the service does not auto-create the source topic while its consumer is off.
+  RabbitMQ remains available; no reusable producer library is part of this
   feature.
 
 ## Implementation plan
@@ -214,15 +245,21 @@ before rollout.
 1. Add opt-in Spring Kafka dependencies, typed service configuration, source
    and DLT topic declarations, and a raw-string consumer compatible with the
    existing `AllocationRequest` JSON contract.
-2. Implement synchronous listener completion backed by a bounded Kotlin
+2. Publish asynchronous REST submissions as raw request JSON keyed by their
+   accepted execution job ID, and make the Kafka consumer use that key while
+   retaining compatibility with request-ID-keyed or unkeyed external messages.
+3. Add durable job tracking for publish, enqueue, execution, ambiguous send,
+   successful completion, and dead-letter failure states; use it alongside
+   JobRunr state in the status service.
+4. Implement synchronous listener completion backed by a bounded Kotlin
    channel and fixed workers; preserve per-partition order and commit offsets
    only after execution or durable JobRunr handoff.
-3. Mirror RabbitMQ's capacity backoff and JobRunr fallback behavior, dead-letter
+5. Mirror RabbitMQ's capacity backoff and JobRunr fallback behavior, dead-letter
    malformed/oversized requests, and preserve records on channel/bulkhead
    saturation.
-4. Merge the supplied local Kafka stack into the existing Docker Compose file
+6. Merge the supplied local Kafka stack into the existing Docker Compose file
    and document disabled-by-default configuration and startup.
-5. Add focused listener, queue, retry/DLT, duplicate-delivery, context
+7. Add focused publisher, tracking/status, listener, queue, retry/DLT, duplicate-delivery, context
    lifecycle, and broker-backed tests; measure before setting production
    concurrency or claiming throughput improvements.
 

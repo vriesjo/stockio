@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.api
+package nl.stockio.allocation.domain.api.filter
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.servlet.FilterChain
@@ -10,7 +10,7 @@ import jakarta.servlet.http.HttpServletResponse
 import java.io.BufferedReader
 import java.io.ByteArrayInputStream
 import java.io.InputStreamReader
-import nl.stockio.allocation.domain.service.AllocationAdmissionProperties
+import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
 import org.springframework.core.Ordered

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonMappingException
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.micrometer.core.instrument.MeterRegistry
 import java.io.OutputStream
+import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.DemandOrder
@@ -13,6 +14,13 @@ import org.springframework.stereotype.Component
 class AllocationRequestTooLargeException :
     RuntimeException("ALLOCATION_REQUEST_TOO_LARGE: Allocation request exceeds the configured byte limit.")
 
+/**
+ * Service responsible for validating allocation requests against configured limits.
+ *
+ * This service checks the number of orders, shipments, distinct SKUs, demand lines,
+ * inbound lines, and the total byte size of the request. If any limit is exceeded,
+ * an exception is thrown, and a corresponding metric is recorded.
+ */
 @Component
 class AllocationRequestLimits(
     private val properties: AllocationAdmissionProperties,
@@ -23,10 +31,13 @@ class AllocationRequestLimits(
         validate(request.demandOrders, request.inboundShipments, emptySet(), request)
     }
 
+    // Validates a backorder allocation request by checking its inbound shipments and SKU scope.
     fun validate(command: BackorderAllocationRequest) {
         validate(emptyList(), command.inboundShipments, command.skuScope.orEmpty(), command)
     }
 
+    // Checks if the total byte size of the request exceeds the configured maximum.
+    // If it does, a metric is recorded, and an exception is thrown.
     fun checkBytes(bytes: Long) {
         if (properties.enabled && bytes > properties.maxRequestBytes) {
             registry.counter("stockio.allocation.request.rejected", "reason", "bytes").increment()

@@ -1,6 +1,6 @@
 package nl.stockio
 
-import nl.stockio.allocation.tools.AllocationTools
+import nl.stockio.allocation.domain.tools.AllocationMcpTools
 import org.springframework.ai.support.ToolCallbacks
 import org.springframework.ai.tool.ToolCallback
 import org.springframework.boot.SpringApplication
@@ -12,7 +12,7 @@ class McpServerRunner {
 
     @Bean
     fun toolCallbacks(
-        allocationTools: AllocationTools
+        allocationTools: AllocationMcpTools
     ): List<ToolCallback> =
         ToolCallbacks.from(allocationTools).toList()
 }

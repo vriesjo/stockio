@@ -15,7 +15,8 @@ import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.api.dto.AllocationCompletionResult
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
-import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationLockContentionException
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import org.jobrunr.jobs.lambdas.JobLambda
 import org.jobrunr.scheduling.JobScheduler
@@ -78,12 +79,51 @@ class AllocationKafkaListenerTest {
     }
 
     @Test
+    fun `uses a UUID record key as the allocation execution ID`() {
+        val request = request()
+        val jobId = UUID.randomUUID()
+        val mapper = jacksonObjectMapper().findAndRegisterModules()
+        val workQueue = Mockito.mock(AllocationKafkaWorkQueue::class.java)
+        Mockito.`when`(workQueue.submit(request, jobId))
+            .thenReturn(CompletableFuture.completedFuture(null))
+        val listener = AllocationKafkaListener(
+            mapper,
+            Mockito.mock(AllocationRequestLimits::class.java),
+            workQueue
+        )
+
+        listener.receive(mapper.writeValueAsString(request), jobId.toString())
+
+        Mockito.verify(workQueue).submit(request, jobId)
+    }
+
+    @Test
     fun `backs off capacity rejection and completes after allocation succeeds`() {
         val request = request()
+        val jobId = UUID.randomUUID()
         val executor = Mockito.mock(AllocationJobExecutor::class.java)
         val attempts = AtomicInteger()
         Mockito.doAnswer {
             if (attempts.incrementAndGet() == 1) throw AllocationCapacityExceededException()
+            Mockito.mock(AllocationCompletionResult::class.java)
+        }.`when`(executor).executeSync(jobId, request)
+        val queue = workQueue(executor, properties(capacityBackoffMin = Duration.ofMillis(1)))
+
+        try {
+            queue.submit(request, jobId).get(2, TimeUnit.SECONDS)
+            Mockito.verify(executor, Mockito.times(2)).executeSync(jobId, request)
+        } finally {
+            queue.stop()
+        }
+    }
+
+    @Test
+    fun `backs off lock contention and completes after allocation succeeds`() {
+        val request = request()
+        val executor = Mockito.mock(AllocationJobExecutor::class.java)
+        val attempts = AtomicInteger()
+        Mockito.doAnswer {
+            if (attempts.incrementAndGet() == 1) throw AllocationLockContentionException()
             Mockito.mock(AllocationCompletionResult::class.java)
         }.`when`(executor).executeSync(request.requestId, request)
         val queue = workQueue(executor, properties(capacityBackoffMin = Duration.ofMillis(1)))

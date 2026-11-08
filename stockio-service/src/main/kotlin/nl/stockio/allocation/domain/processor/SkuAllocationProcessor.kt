@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.worker
+package nl.stockio.allocation.domain.processor
 
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -10,19 +10,23 @@ import nl.stockio.allocation.domain.converter.toInboundReservationChange
 import nl.stockio.allocation.domain.converter.toInboundSupplyState
 import nl.stockio.allocation.domain.converter.toInventoryLotState
 import nl.stockio.allocation.domain.converter.toStockReservationChange
+import nl.stockio.allocation.domain.performance.AllocationLockContentionPolicy
 import nl.stockio.allocation.domain.model.AllocationCalculationResult
 import nl.stockio.allocation.domain.model.AllocationOrder
-import nl.stockio.api.dto.AllocationProcessingOutcome
-import nl.stockio.api.dto.AllocationRecord
-import nl.stockio.api.dto.AllocationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
 import nl.stockio.allocation.domain.port.AllocationSkuOperationRepository
 import nl.stockio.allocation.domain.port.DemandOrderLineRepository
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
-import nl.stockio.allocation.domain.service.AllocationRunService
+import nl.stockio.allocation.domain.service.AllocationRunLifecycleService
+import nl.stockio.allocation.domain.allocator.AllocationCalculator
+import nl.stockio.allocation.domain.allocator.InboundSupplyAllocator
+import nl.stockio.allocation.domain.allocator.InventoryLotAllocator
 import nl.stockio.allocation.infra.AllocationSkuOperationEntity
 import nl.stockio.allocation.infra.OpenBackorderEntity
+import nl.stockio.api.dto.AllocationProcessingOutcome
+import nl.stockio.api.dto.AllocationRecord
+import nl.stockio.api.dto.AllocationStatus
 import nl.stockio.reservation.domain.port.InboundReservationRepository
 import nl.stockio.reservation.domain.port.InboundSupplyRepository
 import nl.stockio.reservation.infra.InboundReservationEntity
@@ -34,9 +38,17 @@ import nl.stockio.stock.infra.StockReservationEntity
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * Processor responsible for processing allocation requests for specific SKUs.
+ *
+ * This class handles the allocation of new demand and backorders for individual SKUs. It ensures that
+ * allocation operations are performed in a thread-safe manner by acquiring locks on SKUs and managing
+ * the state of stock, inbound supply, and reservations. The processor interacts with various repositories
+ * to persist allocation results and maintain data integrity.
+ */
 @Service
-class AllocationSkuWorker(
-    private val allocationRunService: AllocationRunService,
+class SkuAllocationProcessor(
+    private val allocationRunLifecycleService: AllocationRunLifecycleService,
     private val skuLockRepository: AllocationSkuLockRepository,
     private val skuOperationRepository: AllocationSkuOperationRepository,
     private val orderClaimRepository: AllocationOrderClaimRepository,
@@ -46,26 +58,28 @@ class AllocationSkuWorker(
     private val stockReservationRepository: StockReservationRepository,
     private val inboundReservationRepository: InboundReservationRepository,
     private val backorderRepository: OpenBackorderRepository,
+    private val lockContentionPolicy: AllocationLockContentionPolicy,
     private val clock: Clock,
     private val objectMapper: ObjectMapper
 ) {
 
     private val allocationCalculator = AllocationCalculator(
-        InventoryAllocationPolicy(),
-        InboundAllocationPolicy()
+        InventoryLotAllocator(),
+        InboundSupplyAllocator()
     )
 
     @Transactional
-    fun allocateNewDemand(
+    fun process(
         runId: UUID,
         requestHash: String,
         sku: String,
         asOfDate: LocalDate,
         orders: List<AllocationOrder>
     ): List<AllocationRecord> {
+        lockContentionPolicy.apply()
         lockSku(sku)
         existingResult(runId, sku, requestHash)?.let { return it }
-        allocationRunService.getRunById(runId)?.let { run ->
+        allocationRunLifecycleService.getRunById(runId)?.let { run ->
             return run.allocations.filter { it.sku == sku }
         }
 
@@ -119,9 +133,10 @@ class AllocationSkuWorker(
         sku: String,
         asOfDate: LocalDate
     ): List<AllocationRecord> {
+        lockContentionPolicy.apply()
         lockSku(sku)
         existingResult(runId, sku, requestHash)?.let { return it }
-        allocationRunService.getRunById(runId)?.let { run ->
+        allocationRunLifecycleService.getRunById(runId)?.let { run ->
             return run.allocations.filter { it.sku == sku }
         }
 

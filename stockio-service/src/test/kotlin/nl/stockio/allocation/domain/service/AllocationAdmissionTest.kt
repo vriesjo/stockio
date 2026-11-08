@@ -11,6 +11,10 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import nl.stockio.allocation.domain.performance.AllocationAdmission
+import nl.stockio.allocation.domain.performance.AllocationAdmissionConfiguration
+import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
 import nl.stockio.allocation.domain.processor.AllocationProcessor
@@ -21,6 +25,7 @@ import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
+import org.springframework.dao.CannotAcquireLockException
 
 class AllocationAdmissionTest {
     private val request = AllocationRequest(UUID.randomUUID(), LocalDate.now(), AllocationRunType.NEW_DEMAND)
@@ -47,7 +52,7 @@ class AllocationAdmissionTest {
             val registry = SimpleMeterRegistry()
             val admission = AllocationAdmission(properties, registry)
             val service = mockk<AllocationService>()
-            val backorders = mockk<BackorderAllocationService>()
+            val backorders = mockk<AllocationBackorderService>()
             val projection = mockk<StockProjectionProcessor>()
             val processor = AllocationProcessor(service, projection, backorders, admission,
                 AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry))
@@ -123,6 +128,22 @@ class AllocationAdmissionTest {
                                 release.await()
                             } catch (_: InterruptedException) {
                                 // Model blocking downstream work that has not stopped on cancellation.
+                            }
+
+                            @Test
+                            fun `database lock contention is surfaced as retryable allocation lock contention`() {
+                                val registry = SimpleMeterRegistry()
+                                val admission = AllocationAdmission(properties, registry)
+                                val service = mockk<AllocationService>()
+                                val backorders = mockk<AllocationBackorderService>()
+                                val projection = mockk<StockProjectionProcessor>()
+                                val processor = AllocationProcessor(service, projection, backorders, admission,
+                                    AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry))
+                                every { service.allocation(request) } throws CannotAcquireLockException("lock wait timeout")
+
+                                assertThrows(_root_ide_package_.nl.stockio.allocation.domain.performance.AllocationLockContentionException::class.java) {
+                                    processor.process(request)
+                                }
                             }
                         }
                     }

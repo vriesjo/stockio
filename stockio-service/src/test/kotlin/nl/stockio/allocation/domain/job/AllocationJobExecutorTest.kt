@@ -5,18 +5,22 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import io.mockk.every
 import io.mockk.Called
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
 import java.time.Instant
 import java.time.LocalDate
 import java.util.Optional
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import nl.stockio.allocation.domain.performance.AllocationAdmission
+import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.processor.AllocationProcessor
 import nl.stockio.allocation.domain.service.*
 import nl.stockio.api.dto.*
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import nl.stockio.stock.infra.AllocationJobResultEntity
-import org.jobrunr.scheduling.JobScheduler
+import org.springframework.kafka.core.KafkaTemplate
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
@@ -29,9 +33,12 @@ class AllocationJobExecutorTest {
     private val service = mockk<AllocationService>()
     private val projection = mockk<StockProjectionProcessor>(relaxed = true)
     private val repository = mockk<AllocationJobResultRepository>()
-    private val scheduler = mockk<JobScheduler>()
+    private val kafkaTemplate = mockk<KafkaTemplate<String, String>>()
+    private val jobTracking = mockk<AllocationJobTrackingService>(relaxed = true)
     private val processor = AllocationProcessor(service, projection, mockk(), admission, limits)
-    private val executor = AllocationJobExecutor(processor, repository, scheduler, mapper, limits)
+    private val executor =
+        AllocationJobExecutor(processor, repository, mapper, limits, kafkaTemplate, jobTracking,
+            "stockio.allocation.requests")
     private val request = AllocationRequest(UUID.randomUUID(), LocalDate.now(), AllocationRunType.NEW_DEMAND)
     private val run = AllocationRunResult(UUID.randomUUID(), request.requestId, request.runType,
         request.asOfDate, Instant.now(), 0, emptyList())
@@ -46,8 +53,10 @@ class AllocationJobExecutorTest {
         }
         assertThrows(IllegalStateException::class.java) { executor.executeSync(request.requestId, request) }
         assertEquals(0.0, registry.get("stockio.allocation.admission.active").gauge().value())
+        verify { jobTracking.markProcessing(request.requestId) }
         every { repository.save(any()) } answers { firstArg() }
         assertEquals(run, executor.executeSync(request.requestId, request).allocationRun)
+        verify { jobTracking.markSucceeded(request.requestId) }
     }
 
     @Test
@@ -63,13 +72,53 @@ class AllocationJobExecutorTest {
     }
 
     @Test
-    fun `oversized async requests are rejected before creating a durable job`() {
+    fun `async execution publishes the request keyed by its accepted job ID`() {
+        val payload = mapper.writeValueAsString(request)
+        val key = slot<String>()
+        every {
+            kafkaTemplate.send("stockio.allocation.requests", capture(key), payload)
+        } returns CompletableFuture.completedFuture(mockk(relaxed = true))
+        every { jobTracking.registerSubmission(any(), request.requestId) } returns Unit
+
+        val accepted = executor.executeAsync(request)
+
+        assertEquals(request.requestId, accepted.requestId)
+        assertEquals(accepted.jobId, UUID.fromString(key.captured))
+        verify { jobTracking.registerSubmission(accepted.jobId, request.requestId) }
+        verify { jobTracking.markEnqueued(accepted.jobId) }
+        verify(exactly = 0) { repository.save(any()) }
+    }
+
+    @Test
+    fun `async execution propagates Kafka publish failures`() {
+        val publish = CompletableFuture<org.springframework.kafka.support.SendResult<String, String>>()
+        publish.completeExceptionally(IllegalStateException("Kafka unavailable"))
+        every { kafkaTemplate.send(any<String>(), any<String>(), any<String>()) } returns publish
+
+        assertThrows(IllegalStateException::class.java) { executor.executeAsync(request) }
+    }
+
+    @Test
+    fun `oversized async requests are rejected before creating a tracking record or publishing`() {
         val order = DemandOrder("O", "C", 1, request.asOfDate,
             listOf(DemandOrderLine("L", "A", 1, request.asOfDate)))
         assertThrows(IllegalArgumentException::class.java) {
             executor.executeAsync(request.copy(demandOrders = listOf(order, order.copy(orderId = "O2"))))
         }
-        verify { scheduler wasNot Called }
+        verify(exactly = 0) { kafkaTemplate.send(any<String>(), any<String>(), any<String>()) }
+        verify(exactly = 0) { jobTracking.registerSubmission(any(), any()) }
         verify { repository wasNot Called }
+    }
+
+    @Test
+    fun `failed Kafka acknowledgement leaves status as submission unknown`() {
+        val publish = CompletableFuture<org.springframework.kafka.support.SendResult<String, String>>()
+        publish.completeExceptionally(IllegalStateException("Kafka acknowledgement timed out"))
+        every { kafkaTemplate.send(any<String>(), any<String>(), any<String>()) } returns publish
+
+        assertThrows(IllegalStateException::class.java) { executor.executeAsync(request) }
+
+        verify { jobTracking.markSubmissionUnknown(any()) }
+        verify(exactly = 0) { jobTracking.markEnqueued(any()) }
     }
 }

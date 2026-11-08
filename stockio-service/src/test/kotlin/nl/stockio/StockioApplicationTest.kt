@@ -1,6 +1,6 @@
 package nl.stockio
 
-import nl.stockio.allocation.tools.AllocationTools
+import nl.stockio.allocation.domain.tools.AllocationMcpTools
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -10,7 +10,7 @@ class StockioApplicationTest {
 
     @Test
     fun `MCP registration retains allocation tools without product allocation tool`() {
-        val tools = McpServerRunner().toolCallbacks(mock(AllocationTools::class.java))
+        val tools = McpServerRunner().toolCallbacks(mock(AllocationMcpTools::class.java))
             .map { it.toolDefinition.name() }
 
         assertTrue("allocation_and_stock_projection" in tools)

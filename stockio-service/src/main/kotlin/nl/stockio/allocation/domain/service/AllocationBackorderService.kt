@@ -12,15 +12,22 @@ import nl.stockio.api.dto.AllocationRecord
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
-import nl.stockio.allocation.domain.worker.AllocationSkuWorker
+import nl.stockio.allocation.domain.processor.SkuAllocationProcessor
 import nl.stockio.util.requestHash
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
+/**
+ * Service responsible for handling backorder allocation requests.
+ *
+ * This service manages the allocation of backorders based on the provided [BackorderAllocationRequest].
+ * It validates the request, checks for existing completed runs, and coordinates the allocation process
+ * across multiple SKUs using coroutines for concurrent processing.
+ */
 @Service
-class BackorderAllocationService(
-    private val allocationRunService: AllocationRunService,
-    private val allocationSkuWorker: AllocationSkuWorker,
+class AllocationBackorderService(
+    private val allocationRunLifecycleService: AllocationRunLifecycleService,
+    private val skuAllocationProcessor: SkuAllocationProcessor,
     private val allocationDocumentService: AllocationDocumentService,
     private val backorderRepository: OpenBackorderRepository,
     @Value("\${stockio.allocation.max-concurrent-skus:4}")
@@ -33,6 +40,15 @@ class BackorderAllocationService(
         require(maxConcurrentSkus > 0) { "The maximum concurrent SKU allocation count must be positive." }
     }
 
+    /**
+     * Allocates backorders based on the provided [BackorderAllocationRequest].
+     *
+     * This function validates the request, checks for existing completed runs, and coordinates
+     * the allocation process across multiple SKUs using coroutines for concurrent processing.
+     *
+     * @param allocationRequest The backorder allocation request containing relevant information.
+     * @return The result of the backorder allocation run.
+     */
     fun allocate(allocationRequest: BackorderAllocationRequest): AllocationRunResult {
         require(allocationRequest.skuScope == null || allocationRequest.skuScope.all { it.isNotBlank() }) {
             "SKU scope must contain only non-blank SKUs."
@@ -44,31 +60,31 @@ class BackorderAllocationService(
             inboundShipments = allocationRequest.inboundShipments
         )
         val requestHash = requestHash(request)
-        allocationRunService.getRun(request) { previousRun, newRequest ->
+        allocationRunLifecycleService.getRun(request) { previousRun, newRequest ->
             previousRun.contractVersion == 2 &&
                 previousRun.runType == AllocationRunType.BACKORDER_FULFILLMENT &&
                 previousRun.requestHash == requestHash &&
                 previousRun.requestHash == requestHash(newRequest)
         }?.let { return it }
 
-        val run = allocationRunService.beginOrResume(request, requestHash)
-        if (run.completed) return allocationRunService.getRun(run.id)
+        val run = allocationRunLifecycleService.beginOrResume(request, requestHash)
+        if (run.completed) return allocationRunLifecycleService.getRun(run.id)
 
         allocationDocumentService.initialize(run.id, request)
-        val operationSkus = allocationRunService.getOperationSkus(run.id)
+        val operationSkus = allocationRunLifecycleService.getOperationSkus(run.id)
         val skus = (allocationRequest.skuScope ?: backorderRepository.findDistinctSkus().toSet())
             .plus(operationSkus)
             .distinct()
             .sorted()
         val allocations = runSkuWorkers(skus) { sku ->
-            allocationSkuWorker.allocateBackorders(
+            skuAllocationProcessor.allocateBackorders(
                 runId = run.id,
                 requestHash = requestHash,
                 sku = sku,
                 asOfDate = allocationRequest.asOfDate
             )
         }.flatten().sortedWith(compareBy<AllocationRecord> { it.priority }.thenBy { it.placedDate })
-        return allocationRunService.completeRun(run.id, skus.toSet(), allocations)
+        return allocationRunLifecycleService.completeRun(run.id, skus.toSet(), allocations)
     }
 
     private fun <T> runSkuWorkers(skus: List<String>, action: suspend (String) -> T): List<T> =

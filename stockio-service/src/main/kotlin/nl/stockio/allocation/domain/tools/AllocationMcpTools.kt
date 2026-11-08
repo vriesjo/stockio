@@ -1,4 +1,4 @@
-package nl.stockio.allocation.tools
+package nl.stockio.allocation.domain.tools
 
 import java.nio.file.Path
 import nl.stockio.api.dto.AllocationRequest
@@ -8,7 +8,7 @@ import nl.stockio.api.dto.ProcessDailyStockRequest
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
-import nl.stockio.allocation.domain.service.AllocationRunService
+import nl.stockio.allocation.domain.service.AllocationRunLifecycleService
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.allocation.domain.processor.AllocationProcessor
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
@@ -19,9 +19,9 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 
 @Component
-class AllocationTools(
+class AllocationMcpTools(
     private val processingService: AllocationProcessor,
-    private val allocationRunService: AllocationRunService,
+    private val allocationRunLifecycleService: AllocationRunLifecycleService,
     private val stockLedgerProcessor: StockLedgerProcessor,
     private val excelReportProcessor: ExcelReportProcessor,
     private val orderReservationService: OrderReservationService,
@@ -92,7 +92,7 @@ class AllocationTools(
         require(request.fileName.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]*\\.xlsx"))) {
             "fileName must be a simple .xlsx file name without a directory path."
         }
-        val run = allocationRunService.getRun(request.runId)
+        val run = allocationRunLifecycleService.getRun(request.runId)
         val path = excelReportProcessor.process(run, Path.of(reportDirectory).resolve(request.fileName))
         return path.toString()
     }

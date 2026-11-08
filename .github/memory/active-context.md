@@ -1,5 +1,26 @@
 # Active Context
 
+## Feature: Mitigate synchronous allocation lock contention with fail-fast admission
+
+- **Specification:** [Feature specification](./specifications.md#feature-mitigate-synchronous-allocation-lock-contention-with-fail-fast-admission)
+- **Scenario:** [Scenario 21](./scenarios.md#scenario-21-fail-fast-under-allocation-lock-contention)
+- **Issue:** [Feature issue](./issues/feature-fail-fast-lock-contention-mitigation.md)
+- **Status:** In-progress
+- **Priority:** Not set
+- **Implementation started:** Yes. Initial contention fail-fast implementation is in progress.
+
+### Steps worked on
+- Reviewed the contention symptom from the latest allocation harness report: high latency under higher concurrency with low failure, indicating queueing/waiting behavior.
+- Connected the requested approach to existing repository design: fail-fast admission as the first control, then lock-holding duration reduction while preserving sorted lock protocol and idempotency semantics.
+- Added and linked a new scenario/specification/issue set for this increment, including explicit acceptance criteria for latency, rejection behavior, lock ordering, and observability.
+- Started implementation with transaction-local lock/statement timeout controls on lock-heavy allocation/projection transactions and retryable lock-contention error mapping.
+- Extended HTTP and background handling to treat lock contention as explicit recoverable overload (`503` for inline, deferred retry/backoff for RabbitMQ/Kafka/JobRunr paths).
+
+### Next possible steps (suggestions)
+- Validate contention behavior under representative load and tune `ALLOCATION_ADMISSION_*` plus lock-timeout budgets from measured lock/pool pressure.
+- Continue narrowing lock-residency sections where correctness allows (especially around non-lock-critical synchronous completion/projection work).
+- Finalize docs and rollout guidance after before/after latency/rejection evidence is captured.
+
 ## Feature: Add a direct structured allocation UI alongside the agentic page
 
 - **Specification:** [Feature specification](./specifications.md#feature-add-a-direct-structured-allocation-ui-alongside-the-agentic-page)
@@ -45,7 +66,7 @@
 - **Issue:** [Feature issue](./issues/feature-concurrent-per-event-allocation.md)
 - **Status:** Done
 - **Priority:** Not set
-- **Implementation started:** Yes. Kafka consumer, bounded worker queue, opt-in configuration, local broker stack, and focused validation are complete.
+- **Implementation started:** Yes. Kafka consumption and asynchronous REST publishing with durable job status tracking are complete.
 
 ### Steps worked on
 - Followed the AGENTS.md feature workflow by checking the repository guidance, current memory, allocation listener/executor, dependencies, and worktree before editing.
@@ -56,9 +77,13 @@
 - Added Spring Kafka dependencies, disabled-by-default listener/container and DLT/topic configuration, bounded channel workers with capacity backoff and JobRunr fallback, local Kafka Compose services, and focused listener/queue tests.
 - Compiled the service, validated Compose configuration, and passed focused Kafka/RabbitMQ listener and queue tests plus embedded-broker offset-commit, invalid-record DLT-routing, and retry-exhaustion tests.
 - Added a PostgreSQL-backed concurrent same-request execution test that confirms one allocation and one persisted JobRunr completion; direct cross-broker single-flight behavior is not guaranteed.
+- Updated the feature scope to publish raw `AllocationRequest` JSON from asynchronous REST submissions, keyed by the accepted execution ID; the existing consumer remains opt-in and continues to support external request-ID keyed messages.
+- Added PostgreSQL job tracking so accepted Kafka jobs remain pollable without a JobRunr record; acknowledgement failures retain an explicit `SUBMISSION_UNKNOWN` state.
+- Verified focused executor, Kafka listener/offset/DLT, job-status, and PostgreSQL tracking tests; validated and regenerated the allocation OpenAPI interface.
 
 ### Next possible steps (suggestions)
-- Tune worker and listener concurrency from measured production capacity; preserve the current RabbitMQ path and keep Kafka opt-in.
+- Provision the Kafka source topic and configure the broker before using default asynchronous REST submission; enable the listener explicitly when this service should consume its own topic.
+- Tune worker and listener concurrency from measured production capacity; preserve the current RabbitMQ path and keep Kafka consumption opt-in.
 - Exercise broker outage, shutdown, and consumer-rebalance behavior on dedicated infrastructure before production rollout.
 
 ## Feature: Bound database work while preserving ledger and expiry headroom

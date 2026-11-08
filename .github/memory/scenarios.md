@@ -42,7 +42,8 @@ and independently synchronizes the physical stock ledger.
 ### Gherkin description
 **Given** a structured allocation request with a unique `requestId`, `asOfDate`, demand orders, and optional inbound shipments \
 **When** the client submits `POST /api/allocation/jobs` with the default `async=true`, or invokes `allocation_and_stock_projection` \
-**Then** Stockio accepts the request and processes it as `NEW_DEMAND` \
+**Then** Stockio processes it as `NEW_DEMAND` \
+**And** for the asynchronous REST submission, Stockio publishes the request to the configured Kafka topic and returns acceptance only after the broker acknowledges it \
 **And** orders are processed by ascending priority and FIFO `placedDate` \
 **And** inventory is consumed FIFO by `receivedDate` and `lotId` \
 **And** inbound supply is used only when its expected arrival is on or before the line's required delivery date \
@@ -53,9 +54,11 @@ and independently synchronizes the physical stock ledger.
 - MCP tool: `allocation_and_stock_projection`
 - Controller: `AllocationController`
 - Services: `AllocationJobExecutor`, `AllocationJobRunrService`, `AllocationProcessor`, and the allocation workers
-- The controller validates `asOfDate` against the business clock, then directly enqueues JobRunr work; no in-process event or after-commit listener is involved
-- The default REST flow returns `{jobId, requestId}` with `Location: /api/allocation/jobs/{jobId}` only after enqueue succeeds; enqueue failures propagate
-- MCP invokes the processing flow directly rather than returning a JobRunr acceptance response
+- The controller validates `asOfDate` against the business clock; `AllocationJobExecutor.executeAsync` creates a unique execution `jobId`, serializes the unchanged `AllocationRequest`, and publishes it to the configured Kafka topic with `jobId` as the record key
+- The default REST flow returns `{jobId, requestId}` with `Location: /api/allocation/jobs/{jobId}` only after Kafka acknowledges the publish; serialization and publish failures propagate
+- The Kafka listener uses the UUID record key as the execution ID, falling back to `requestId` for compatible external producers such as the test harness; Kafka consumption remains explicitly opt-in
+- A durable PostgreSQL tracking row records submission, enqueue, processing, and terminal state so accepted Kafka jobs remain pollable without a JobRunr record
+- MCP invokes the processing flow directly rather than publishing an asynchronous Kafka request or returning a REST acceptance response
 - `async=false` executes inline but currently returns the run ID as its job ID without creating a JobRunr job; its returned polling URL is not a valid execution-status contract
 - Allocation reserves persisted inventory and inbound supply and refreshes stock projections, but does not synchronize physical stock
 - New orders start as temporary reservations and expire unless confirmed
@@ -63,35 +66,39 @@ and independently synchronizes the physical stock ledger.
 - Independent document registrations share the projection gate and use sorted document/SKU locks for conflicting identities and inbound amendments; see [Scenario 14](#scenario-14-register-independent-allocation-documents-concurrently)
 
 ### Acceptance Criteria
-- A valid default asynchronous REST request returns `202 Accepted`, `jobId`, `requestId`, and a matching location for status polling
-- The REST endpoint rejects an `asOfDate` other than today before enqueueing or creating a run
+- A valid default asynchronous REST request returns `202 Accepted`, `jobId`, `requestId`, and a matching location for status polling only after Kafka acknowledges the publish
+- The REST endpoint rejects an `asOfDate` other than today before publishing or creating a run
+- A Kafka publish failure propagates and does not return a successful acceptance response
 - The request must use `runType: NEW_DEMAND` for the structured new-demand flow
 - Allocation results distinguish inventory, inbound, allocated, partially backordered, and backordered quantities
 - Orders already submitted as new demand cannot be submitted again as new demand
 - The same request can be retried safely without creating a duplicate allocation run
-- Repeated HTTP submissions can create distinct execution jobs for one logical request; a lost acceptance response is an unknown outcome, not proof that enqueue failed
+- Repeated HTTP submissions can create distinct execution jobs for one logical request; a lost acceptance response is an unknown outcome, not proof that Kafka did not accept the record
 - Allocation never changes physical live stock directly
 
 ## Scenario 3: Monitor an Allocation Job
 
 ### Gherkin description
-**Given** a client has received a `jobId` from a new-demand allocation request \
+**Given** a client has received a `jobId` from an accepted asynchronous new-demand allocation request \
 **When** the client requests `GET /api/allocation/jobs/{jobId}` \
-**Then** Stockio returns the current job status \
+**Then** Stockio returns the current JobRunr or Kafka-tracked status \
 **And** when processing succeeds, the response includes the execution job ID and saved allocation run \
 **And** when the job does not exist, Stockio returns `404 Not Found`
 
 ### High-level technical analysis
 - Endpoint: `GET /api/allocation/jobs/{jobId}`
 - Controller: `AllocationController`
-- Service: `AllocationJobRunrService`; execution and result persistence: `AllocationJobExecutor`
+- Service: `AllocationJobRunrService`; execution and result persistence: `AllocationJobExecutor`; durable Kafka status persistence: `AllocationJobTrackingService`
+- Status lookup reads JobRunr state when a JobRunr job exists and otherwise reads the durable Kafka tracking row; Kafka states include `ENQUEUED`, `PROCESSING`, `SUCCEEDED`, and `FAILED`
+- Ambiguous producer acknowledgements remain visible as `SUBMISSION_UNKNOWN`; dead-lettered tracked records report `FAILED`
 - Completed results are persisted as an `AllocationCompletionResult` containing `jobId` and `allocationRun`, without a top-level `version` or stock-sync result
 - Job completion is serialized and reused on retries
 
 ### Acceptance Criteria
-- A known job returns its current status
+- A known JobRunr or Kafka-tracked job returns its current status
 - A completed job returns `status: SUCCEEDED` and a non-null allocation result
 - A `SUCCEEDED` job without saved completion is an explicit consistency error, not an empty successful result
+- A Kafka-published job remains queryable through `ENQUEUED` and `PROCESSING`, then returns its saved result as `SUCCEEDED`
 - The successful result contains the persisted `runId`, `requestId`, run type, as-of date, allocations, and open backorder count
 - An unknown job returns `404 Not Found`
 
@@ -506,12 +513,14 @@ Planned feature: [Shared database-work budget](./issues/feature-shared-database-
 **Given** Kafka allocation consumption is enabled and a valid allocation request is available on its configured topic \
 **When** Stockio consumes the record \
 **Then** it invokes the shared allocation execution path using the request's stable identity \
+**And** it executes the UUID record key as the job ID, or uses `requestId` when the key is absent \
 **And** it commits the Kafka offset only after allocation completes or a durable recovery handoff succeeds \
 **And** the existing RabbitMQ allocation consumer remains available
 
 ### High-level technical analysis
 - The current allocation listener is `AllocationRabbitListener`, a RabbitMQ adapter; Kafka requires a separate broker adapter and configuration
-- The Kafka adapter should call `allocationJobExecutor.executeSync(jobId, request)` using a stable logical request identity, as the RabbitMQ adapter currently does
+- The Kafka adapter calls `allocationJobExecutor.executeSync(jobId, request)` using the UUID record key when provided, or `requestId` for unkeyed external producers; the shared executor advances a durable tracking row for REST-published jobs
+- The asynchronous REST publisher sends the raw `AllocationRequest` JSON accepted by external producers, using its generated execution `jobId` as the Kafka key
 - A bounded Kotlin `Channel<AllocationRequest>` and fixed worker set provide a local burst buffer; they do not replace the existing `AllocationAdmission` semaphore or represent durable acceptance
 - `AllocationAdmission` uses non-waiting `Semaphore.tryAcquire()` and throws `AllocationCapacityExceededException` when saturated; Kafka retains that record and retries with bounded-delay backoff rather than dropping it or hot-looping
 - `executeSync` and Spring/JPA work are synchronous; allocation already uses Kotlin coroutines internally for per-SKU workers, so Kafka workers must be separately bounded and must not multiply that concurrency without measurement
@@ -524,7 +533,8 @@ Planned feature: [Shared database-work budget](./issues/feature-shared-database-
 
 ### Acceptance Criteria
 - Kafka consumption can be enabled without removing or silently changing the existing RabbitMQ consumer
-- A consumed record is converted to the agreed allocation contract and delegated to the shared execution path with a stable job identity
+- A consumed record is converted to the agreed allocation contract and delegated to the shared execution path with the record-key identity or compatible `requestId` fallback
+- A Kafka-published REST job is pollable by `jobId` before, during, and after processing even when no JobRunr record exists
 - Offsets do not advance before successful completion or a confirmed durable recovery handoff
 - Concurrent same-request execution through the shared executor is tested; stable request identity and the absence of a cross-broker single-flight guarantee are documented
 - Capacity pressure applies bounded-delay backoff without a retry limit; invalid records and other recoverable failures follow distinct explicit policies
@@ -588,3 +598,32 @@ Planned feature: [Allocation performance harness](./issues/feature-allocation-pe
 - The selected target endpoint and payload contract are documented and reflected consistently in frontend types/client/route/tests
 
 In-progress feature: [Direct structured allocation UI](./issues/feature-direct-structured-allocation-ui.md).
+
+## Scenario 21: Fail fast under allocation lock contention
+
+**Status:** In-progress.
+
+### Gherkin description
+**Given** synchronous allocation (`POST /api/allocation/jobs?async=false`) runs with measured SKU/document lock contention \
+**And** bounded admission is enabled with approved in-flight limits \
+**When** incoming concurrency exceeds the configured admitted execution budget \
+**Then** non-admitted requests are rejected quickly with explicit capacity errors instead of waiting for long lock/connection queues \
+**And** admitted requests preserve existing lock ordering and idempotency semantics while minimizing time spent inside lock-holding transactional sections \
+**And** lock wait budgets and retry behavior are explicit and recoverable for inline and background callers
+
+### High-level technical analysis
+- Current contention symptoms are dominated by waiting in synchronous orchestration (registration, SKU work, projection, completion) rather than explicit fail-fast rejection
+- Existing admission support is opt-in; when disabled or oversized relative to database capacity, requests can accumulate waiting on pessimistic locks and pooled connections
+- The allocation protocol already uses sorted document/SKU/run-or-lifecycle ordering; contention mitigation must preserve this order and existing replay semantics
+- The first increment should combine explicit fail-fast operation policy with shorter lock-holding critical sections, not widen transaction scope
+- Timeouts and retries should distinguish capacity rejection from business validation or partial-progress recovery, especially when allocation has already committed but projection/completion is delayed
+
+### Acceptance Criteria
+- Under configured contention tests, excess synchronous requests fail fast with explicit retryable capacity responses instead of long-tail waiting behavior
+- Existing lock hierarchy (sorted document identities, sorted SKUs, then run/lifecycle/business rows) is preserved and verified
+- Admitted execution path reduces lock-holding residence time for non-essential work without changing allocation correctness rules
+- Lock-wait and statement-timeout policies are explicit, tested, and do not silently mask partial-progress recovery conditions
+- Metrics and run artifacts show before/after impact on p95/p99 latency, rejection ratio, lock waits, and completed throughput
+- Documentation clearly separates local/per-instance admission behavior from cluster-wide or physical database guarantees
+
+In-progress feature: [Fail-fast lock contention mitigation](./issues/feature-fail-fast-lock-contention-mitigation.md).

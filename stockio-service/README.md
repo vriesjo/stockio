@@ -4,8 +4,10 @@ The Kotlin Spring Boot MCP server processes a lot-level stock ledger, allocates 
 
 ## Run
 
-Requirements: JDK 21, PostgreSQL, and RabbitMQ (or Docker Compose for local infrastructure).
-Kafka is optional and disabled by default.
+Requirements: JDK 21, PostgreSQL, and RabbitMQ (or Docker Compose for local
+infrastructure). Default asynchronous allocation submissions also require a
+reachable Kafka broker and provisioned topic; Kafka consumption is disabled by
+default.
 From the repository root, configure the connection and start the service:
 
 ```shell
@@ -90,6 +92,15 @@ values. Their `0` configuration fallbacks mean unset, not an enabled limit.
 | `ALLOCATION_ADMISSION_MAX_DISTINCT_SKUS` | Union of incoming demand, supply and explicitly supplied internal SKU scope. |
 | `ALLOCATION_ADMISSION_MAX_REQUEST_BYTES` | Raw HTTP/RabbitMQ and canonical DTO byte bound; positive and below `2147483647`. |
 
+Optional lock-contention fail-fast controls apply transaction-local database
+wait budgets on allocation lock-taking sections:
+
+| Environment variable | Limit |
+| --- | --- |
+| `ALLOCATION_LOCK_CONTENTION_ENABLED` | Enables transaction-local lock contention controls for allocation critical sections. |
+| `ALLOCATION_LOCK_TIMEOUT` | `SET LOCAL lock_timeout` budget (for example `2s`), required positive when enabled. |
+| `ALLOCATION_STATEMENT_TIMEOUT` | `SET LOCAL statement_timeout` budget (for example `20s`), required positive when enabled. |
+
 Set the same enable flag and byte limit in the separate Next.js process
 (`.env.local`) to bound its streamed body before Axios. The service bounds
 known/unknown-length HTTP bodies before JSON parsing. Canonical DTO validation
@@ -98,7 +109,8 @@ bound the MCP transport itself. Raw and canonical representations must both
 fit, so JSON whitespace/default-field differences can affect acceptance.
 
 Inline capacity rejection returns `503` with
-`code: ALLOCATION_CAPACITY_EXHAUSTED`; count limits return `400`; byte limits
+`code: ALLOCATION_CAPACITY_EXHAUSTED`; lock contention timeout rejection returns
+`503` with `code: ALLOCATION_LOCK_CONTENTION`; count limits return `400`; byte limits
 return `413` with `code: ALLOCATION_REQUEST_TOO_LARGE`. Retry an uncertain
 allocation unchanged, preserving `requestId`. No `Retry-After`, automatic UI
 retry or implicit asynchronous fallback is added. Product resolution and its
@@ -115,9 +127,20 @@ using its three ordinary business retries. Job history/queue age can still grow.
 Drain/reconcile oversized queued work before enabling: invalid messages/jobs
 are not silently grandfathered. Business dates and reservation TTL are unchanged.
 
-### Opt-in Kafka allocation consumer
+### Kafka allocation publishing and opt-in consumer
 
-The service can also consume `AllocationRequest` JSON from Kafka without
+`POST /api/allocation/jobs` with the default `async=true` publishes raw
+`AllocationRequest` JSON to `stockio.allocation.kafka.topic` and uses the
+returned execution `jobId` as the Kafka record key. The REST API returns
+acceptance only after Kafka acknowledges the publish; broker/send failures
+propagate rather than falling back to direct JobRunr enqueueing. Configure
+`KAFKA_BOOTSTRAP_SERVERS` and `ALLOCATION_KAFKA_TOPIC` for the producer.
+The service records each execution job ID in PostgreSQL before publishing and
+tracks it through enqueueing and processing. The existing status endpoint reads
+this tracking data when no JobRunr job exists; ambiguous send acknowledgements
+are reported as `SUBMISSION_UNKNOWN`.
+
+The service can consume `AllocationRequest` JSON from Kafka without
 replacing the RabbitMQ listener. The default local stack is optional; start it
 from the repository root with:
 
@@ -140,9 +163,12 @@ second before DLT recovery, configurable with `ALLOCATION_KAFKA_CAPACITY_BACKOFF
 `localhost:9092`, Schema Registry on `localhost:8081`, and Kafka UI on
 `localhost:8082`; the consumer uses JSON strings and does not require Schema
 Registry.
+Provision the configured source topic when running with the consumer disabled;
+Kafka topic auto-creation is not enabled by this service configuration.
 
-The listener calls the same synchronous allocation path as RabbitMQ, using
-`requestId` as the execution ID. A bounded Kotlin channel and fixed workers
+The listener calls the same synchronous allocation path as RabbitMQ, using a
+UUID record key as the execution ID and falling back to `requestId` for
+external producers without a key. A bounded Kotlin channel and fixed workers
 smooth short bursts; the shared allocation semaphore remains authoritative.
 Channel saturation suspends intake, and semaphore saturation retains the record
 with a 5-10 second backoff. Neither condition commits the record. Offsets become

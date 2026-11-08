@@ -5,7 +5,8 @@ import io.mockk.mockk
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
-import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationLockContentionException
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
 import org.jobrunr.jobs.Job
@@ -61,6 +62,16 @@ class AllocationCapacityRetryFilterTest {
     @Test
     fun `persisted capacity exception types remain retryable without reconstructing the exception`() {
         val failed = FailedState("capacity", AllocationCapacityExceededException::class.java.name,
+            "busy", null, null, "", false, Instant.now())
+        val job = Job(JobDetails("unused", null, "unused", emptyList()), failed)
+        job.amountOfRetries = 0
+        AllocationCapacityRetryFilter().onStateElection(job, failed)
+        assertEquals(StateName.SCHEDULED, job.state)
+    }
+
+    @Test
+    fun `persisted lock contention types remain retryable without reconstructing the exception`() {
+        val failed = FailedState("lock contention", AllocationLockContentionException::class.java.name,
             "busy", null, null, "", false, Instant.now())
         val job = Job(JobDetails("unused", null, "unused", emptyList()), failed)
         job.amountOfRetries = 0

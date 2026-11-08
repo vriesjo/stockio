@@ -2,12 +2,15 @@ package nl.stockio.stock.infra
 
 import jakarta.persistence.Column
 import jakarta.persistence.Entity
+import jakarta.persistence.EnumType
+import jakarta.persistence.Enumerated
 import jakarta.persistence.Id
 import jakarta.persistence.Table
 import jakarta.persistence.UniqueConstraint
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
+import nl.stockio.allocation.domain.job.AllocationJobTrackingState
 
 @Entity
 @Table(name = "stock_projection_lock")
@@ -56,6 +59,23 @@ class AllocationJobResultEntity(
     var jobId: UUID = UUID.randomUUID(),
     @Column(name = "result_json", nullable = false, columnDefinition = "TEXT")
     var resultJson: String = ""
+)
+
+@Entity
+@Table(name = "allocation_job_tracking")
+class AllocationJobTrackingEntity(
+    @Id
+    @Column(name = "job_id", nullable = false)
+    var jobId: UUID = UUID.randomUUID(),
+    @Column(name = "request_id", nullable = false)
+    var requestId: UUID = UUID.randomUUID(),
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 32)
+    var status: AllocationJobTrackingState = AllocationJobTrackingState.PUBLISHING,
+    @Column(name = "created_at", nullable = false)
+    var createdAt: Instant = Instant.now(),
+    @Column(name = "updated_at", nullable = false)
+    var updatedAt: Instant = Instant.now()
 )
 
 @Entity

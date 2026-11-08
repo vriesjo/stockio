@@ -17,21 +17,24 @@ paths:
         request for processing. `requestId` is the logical allocation
         idempotency key; each asynchronous submission receives its own `jobId`.
 
-        By default, `async=true` enqueues a JobRunr job and returns after the
-        enqueue succeeds. With `async=false`, processing runs inline but the
+        By default, `async=true` publishes the raw `AllocationRequest` JSON to
+        the configured Kafka topic, keyed by a unique execution `jobId`, and
+        returns after Kafka acknowledges the publish. PostgreSQL tracking keeps
+        the returned job ID pollable without a JobRunr record. Kafka consumption
+        is separately opt-in. With `async=false`, processing runs inline but the
         endpoint still returns `202 Accepted`. The current inline branch uses
         the allocation run ID as `jobId` without creating a JobRunr job, so the
         returned `Location` is not a valid job-status polling URL for that
         branch.
         When opt-in allocation admission is enabled, configured request-shape
-        limits apply before enqueue or execution. Inline execution can be
-        rejected with 503 before allocation writes; asynchronous acceptance
-        does not reserve an execution permit or bound the durable backlog.
+        limits apply before publishing or execution. Inline execution can be
+        rejected with 503 before allocation writes; asynchronous submission does
+        not reserve an execution permit or bound topic backlog.
       parameters:
         - name: async
           in: query
           required: false
-          description: Enqueue the request for background processing. Defaults to true.
+          description: Publish the request to Kafka for background processing. Defaults to true.
           schema:
             type: boolean
             default: true
@@ -43,7 +46,7 @@ paths:
               $ref: '#/components/schemas/AllocationRequest'
       responses:
         '202':
-          description: Request accepted; for `async=true`, the job was enqueued successfully.
+          description: Request accepted; for `async=true`, Kafka acknowledged the publish.
           headers:
             Location:
               description: Relative URL for querying the job status. Not pollable when `async=false`.
@@ -68,7 +71,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AdmissionErrorResponse'
         '500':
-          description: Processing or enqueue failed, or an unexpected server error occurred.
+          description: Kafka publish failed or its acknowledgement outcome is unknown, or an unexpected server error occurred.
 
   /api/allocation/jobs/{jobId}:
     get:
@@ -77,14 +80,16 @@ paths:
       operationId: getAllocationJobStatus
       summary: Get allocation job status
       description: |
-        Returns the current JobRunr state. A completed job includes its saved
-        allocation result; other states have a null result. A succeeded job
-        without a saved completion is reported as a server consistency error.
+        Returns the current JobRunr state when a JobRunr job exists, otherwise
+        the durable Kafka submission/execution state. A completed job includes
+        its saved allocation result; other states have a null result. A
+        succeeded job without a saved completion is reported as a server
+        consistency error.
       parameters:
         - name: jobId
           in: path
           required: true
-          description: JobRunr execution ID returned by asynchronous submission.
+          description: Execution ID returned by asynchronous submission.
           schema:
             type: string
             format: uuid
@@ -98,7 +103,7 @@ paths:
         '400':
           description: The supplied job ID is not a valid UUID.
         '404':
-          description: No JobRunr job exists for this ID.
+          description: No JobRunr job or Kafka tracking record exists for this ID.
           content:
             application/json:
               schema:
@@ -316,7 +321,7 @@ components:
         jobId:
           type: string
           format: uuid
-          description: JobRunr execution ID for asynchronous requests.
+          description: Execution ID used for asynchronous requests.
         requestId:
           type: string
           format: uuid
@@ -333,7 +338,7 @@ components:
           format: uuid
         status:
           type: string
-          description: Current JobRunr state name.
+          description: Current JobRunr state or Kafka tracking state (for example ENQUEUED, PROCESSING, SUCCEEDED, FAILED, or SUBMISSION_UNKNOWN).
         result:
           type: object
           allOf:

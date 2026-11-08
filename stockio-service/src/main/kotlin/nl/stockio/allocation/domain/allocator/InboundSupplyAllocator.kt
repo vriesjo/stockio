@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.worker
+package nl.stockio.allocation.domain.allocator
 
 import java.time.LocalDate
 import kotlin.math.min
@@ -7,7 +7,7 @@ import nl.stockio.api.dto.AllocationSourceType
 import nl.stockio.allocation.domain.model.InboundReservationChange
 import nl.stockio.allocation.domain.model.InboundSupplyState
 
-class InboundAllocationPolicy {
+class InboundSupplyAllocator {
 
     fun allocate(
         sku: String,

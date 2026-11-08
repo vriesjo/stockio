@@ -17,8 +17,15 @@ import nl.stockio.allocation.domain.port.OpenBackorderRepository
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * Manages allocation-run persistence, replay checks, and final result assembly.
+ *
+ * SKU operations are persisted independently so incomplete runs can resume safely.
+ * A run becomes visible as complete only after all expected SKU operations have
+ * finished and its allocation records and sources have been saved.
+ */
 @Component
-class AllocationRunService(
+class AllocationRunLifecycleService(
     private val runRepository: AllocationRunRepository,
     private val skuOperationRepository: AllocationSkuOperationRepository,
     private val backorderRepository: OpenBackorderRepository,
@@ -26,6 +33,16 @@ class AllocationRunService(
     private val sourceRepository: AllocationSourceRepository
 ) {
 
+    /**
+     * Finds a prior run for [request] and returns its result if it completed.
+     *
+     * [validateConflict] verifies that the previous run is compatible with the
+     * submitted request. Returns `null` when no run exists or the matching run is
+     * still incomplete.
+     *
+     * @throws IllegalArgumentException if the request identity conflicts with the
+     * previous run.
+     */
     @Transactional(readOnly = true)
     fun getRun(
         request: AllocationRequest,
@@ -89,10 +106,18 @@ class AllocationRunService(
             }
     }
 
+    /**
+     * Returns a completed allocation run by its identifier.
+     *
+     * @throws IllegalArgumentException if no completed run exists for [runId].
+     */
     @Transactional(readOnly = true)
     fun getRun(runId: UUID): AllocationRunResult =
         requireNotNull(getRunById(runId)) { "Completed allocation run '$runId' was not found." }
 
+    /**
+     * Returns the completed result for [runId], or `null` if it is absent or incomplete.
+     */
     @Transactional(readOnly = true)
     fun getRunById(runId: UUID): AllocationRunResult? {
         return runRepository.findById(runId)
@@ -148,6 +173,16 @@ class AllocationRunService(
             .orElse(null)
     }
 
+    /**
+     * Creates or resumes the run identified by [request]'s request ID.
+     *
+     * An existing run is reusable only when its contract version, request hash,
+     * run type, and business date match the supplied request.
+     *
+     * @throws IllegalArgumentException if the request ID was previously used for
+     * different request data or an unsupported contract version.
+     * @throws IllegalStateException if the run cannot be found after initialization.
+     */
     @Transactional
     fun beginOrResume(
         request: AllocationRequest,
@@ -173,10 +208,24 @@ class AllocationRunService(
         return run
     }
 
+    /**
+     * Lists the SKUs with persisted, unfinished operations for [runId].
+     */
     @Transactional(readOnly = true)
     fun getOperationSkus(runId: UUID): List<String> =
         skuOperationRepository.findAllByRunId(runId).map { it.sku }
 
+    /**
+     * Persists the final allocation records and marks [runId] complete.
+     *
+     * Completion is allowed only after document initialization and after the
+     * persisted SKU-operation set exactly matches [expectedSkus]. Existing completed
+     * runs return their saved result, making completion safe to retry.
+     *
+     * @throws IllegalArgumentException if [runId] does not exist or expected SKU
+     * operations are incomplete.
+     * @throws IllegalStateException if documents have not been initialized.
+     */
     @Transactional
     fun completeRun(
         runId: UUID,

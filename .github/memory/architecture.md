@@ -4,7 +4,7 @@
 - **Backend:** Spring Boot (Kotlin)
 - **Frontend:** React, NextJs
 - **Database:** PostgreSQL (Spring Data JPA, Flyway, pgvector)
-- **Testing:** JUnit, Testcontainers, Mockito, Playwright
+- **Testing:** JUnit Jupiter, Testcontainers, Mockk, Kotest, Playwright
 - **Build:** Gradle
 
 ## Overview
@@ -39,7 +39,7 @@ The Gradle build includes three modules:
 | `:stockio-api` (`stockio-api/`) | Shared Kotlin DTO library and OpenAPI specifications/generation tasks consumed by the service; also contains the independently run Next.js UI. It has no Spring application entry point. |
 | `:stockio-test-harness` (`stockio-test-harness/`) | Test-only tooling: mock-backed Playwright tests in `e2e/`, future performance guidance in `performance/`, and an independently run JDBC/RabbitMQ sample publisher with tests in `publisher/`. Depends on API DTOs, not the service. |
 
-The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL with pgvector, Flyway, RabbitMQ, opt-in Spring Kafka allocation consumption, JobRunr, Apache POI, HikariCP, and Spring Boot Actuator. Natural-language product allocation also uses the Tavily search API and Ollama embeddings. Allocation work is parallelized across SKUs with Kotlin coroutines.
+The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL with pgvector, Flyway, RabbitMQ, Kafka publishing for asynchronous allocation submissions, opt-in Spring Kafka allocation consumption, JobRunr for consumer recovery and other scheduled work, Apache POI, HikariCP, and Spring Boot Actuator. Natural-language product allocation also uses the Tavily search API and Ollama embeddings. Allocation work is parallelized across SKUs with Kotlin coroutines.
 
 ## System context
 
@@ -55,7 +55,8 @@ flowchart LR
     Harness["Test harness publisher (opt-in)"] -->|"Read catalogue SKUs through JDBC"| DB
     Harness -->|"Publish synthetic allocation requests"| Rabbit["RabbitMQ"]
     Rabbit -->|"Deliver allocation requests"| API
-    Kafka["Kafka (opt-in allocation consumer)"] -->|"AllocationRequest JSON"| API
+    API -->|"Publish async allocation requests (Kafka key = jobId)"| Kafka["Kafka"]
+    Kafka -->|"AllocationRequest JSON (consumer opt-in)"| API
     API -->|"Read"| CSV["Configured allocation CSV"]
     API -->|"Write .xlsx"| Reports["Report directory"]
 ```
@@ -177,7 +178,7 @@ flowchart LR
             ReservationPort["Reservation repository ports<br/>Shipments, supply, reservations"]
             StockPort["Stock repository ports<br/>Live stock, locks, snapshots, sync status"]
             ProductPort["ProductRepository / ProductVectorRepository<br/>Catalog and similarity search"]
-            RuntimePort["AllocationJobResultRepository<br/>Completion persistence"]
+            RuntimePort["AllocationJobResultRepository / AllocationJobTrackingRepository<br/>Completion and Kafka job status"]
         end
 
         subgraph OutAdapters["Outbound adapters"]
@@ -185,7 +186,7 @@ flowchart LR
             SearchAdapter["Tavily / Ollama HTTP clients<br/>Timeouts and response validation"]
             JobAdapter["JobRunr integration<br/>Execution, retries, job storage"]
             AmqpAdapter["Rabbit configuration<br/>Consumer exchange, queue and dead-letter bindings"]
-            KafkaAdapter["Kafka configuration<br/>Opt-in listener, source and DLT topics"]
+            KafkaAdapter["Kafka configuration<br/>Async request publisher, opt-in listener, source and DLT topics"]
             FileAdapter["CSV reader / Apache POI<br/>Filesystem import and .xlsx reports"]
         end
     end
@@ -245,7 +246,8 @@ flowchart LR
     RuntimePort --> PersistenceAdapters
     MessageAdapter -->|"Retry fallback"| JobAdapter
     KafkaMessageAdapter -->|"Retry fallback"| JobAdapter
-    AllocationJob -->|"Direct enqueue and status"| JobAdapter
+    AllocationJob -->|"Kafka publish"| KafkaAdapter
+    AllocationJob -->|"JobRunr fallback and legacy status"| JobAdapter
     AllocationJob -->|"Uses"| RuntimePort
     AmqpAdapter --> Rabbit
     KafkaAdapter --> Kafka
@@ -280,7 +282,9 @@ flowchart TB
 
     subgraph Service["Stockio service container - Kotlin / Spring Boot"]
         Entry["REST controllers / MCP tools<br/>Inbound adapters"]
-        Submission["AllocationJobExecutor.executeAsync<br/>Direct JobRunr submission"]
+        Submission["AllocationJobExecutor.executeAsync<br/>Kafka publish with durable status tracking"]
+        Kafka["Kafka allocation topic<br/>Request key = execution job ID"]
+        KafkaConsumer["AllocationKafkaListener / bounded workers<br/>Synchronous attempt and retry handoff"]
         Consumer["AllocationRabbitListener<br/>Synchronous attempt and retry handoff"]
         Runtime["JobRunr scheduler / workers<br/>Embedded infrastructure"]
         Job["AllocationJobExecutor / AllocationJobRunrService<br/>Execution, status and result persistence"]
@@ -302,7 +306,9 @@ flowchart TB
 
     Clients --> Entry
     Entry --> Submission
-    Submission --> Runtime
+    Submission --> Kafka
+    Kafka --> KafkaConsumer
+    KafkaConsumer --> Job
     Rabbit --> Consumer
     Consumer --> Job
     Consumer -->|"Direct retry enqueue"| Runtime
@@ -434,8 +440,8 @@ hexagonal boundary stricter without changing the use-case components.
 | Method and path | Behavior |
 | --- | --- |
 | `POST /api/products/allocate` | Synchronously performs the agentic product lookup and allocation for a `ProductAllocationRequest`; returns the product-resolution status and allocation result. |
-| `POST /api/allocation/jobs` | Validates today's business-date `asOfDate`; by default (`async=true`) directly enqueues work and returns `202 Accepted`, `{jobId, requestId}`, and `Location: /api/allocation/jobs/{jobId}` after enqueue succeeds. Does not synchronize stock. |
-| `GET /api/allocation/jobs/{jobId}` | Returns JobRunr state and, when succeeded, `result: {jobId, allocationRun}` without a completion version or stock-sync result. An unknown job returns `404`. |
+| `POST /api/allocation/jobs` | Validates today's business-date `asOfDate`; by default (`async=true`) publishes raw `AllocationRequest` JSON to Kafka keyed by a unique `jobId`, then returns `202 Accepted`, `{jobId, requestId}`, and `Location: /api/allocation/jobs/{jobId}` after broker acknowledgement. Does not synchronize stock. |
+| `GET /api/allocation/jobs/{jobId}` | Returns JobRunr state or durable Kafka submission/execution state and, when succeeded, `result: {jobId, allocationRun}` without a completion version or stock-sync result. An unknown job returns `404`. |
 | `GET /api/stock/ledger/status` | Returns the last committed ledger success, snapshot date/counts, next expected execution, stale deadline, and freshness status. |
 | `GET /api/reservations/orders/{orderId}/status` | Returns current reservation lifecycle and deadline, or `404` for an unknown order. |
 | `GET /api/allocation/stock-ledger/status` | Additional ledger-freshness read mapping on `AllocationController`. |
@@ -718,7 +724,9 @@ all that order's lines.
 
 ```mermaid
 sequenceDiagram
-    participant Runtime as JobRunr
+    participant Kafka
+    participant KafkaConsumer as AllocationKafkaListener
+    participant Runtime as JobRunr fallback
     participant Job as ReservationExpiryJob
     participant Service as ReservationExpiryService
     participant Cleanup as ReservationCleanupService
@@ -791,12 +799,15 @@ sequenceDiagram
     Client->>REST: POST /api/allocation/jobs (async=true by default)
     REST->>REST: Validate today's business date
     REST->>Job: executeAsync(request)
-    Job->>Runtime: Directly enqueue executeSync(new jobId, request)
-    Runtime->>DB: Store job
-    Runtime-->>Job: Enqueue accepted
+    Job->>DB: Persist PUBLISHING tracking state
+    Job->>Kafka: Publish raw AllocationRequest (key = jobId)
+    Kafka-->>Job: Broker acknowledgement
+    Job->>DB: Mark ENQUEUED
     Job-->>REST: AllocationJobAccepted(jobId, requestId)
     REST-->>Client: 202 Accepted, job ID and Location
-    Runtime->>Job: executeSync(jobId, request)
+    Kafka->>KafkaConsumer: Deliver request when listener is enabled
+    KafkaConsumer->>Job: executeSync(jobId, request)
+    Job->>DB: Mark PROCESSING
     Job->>DB: Read any saved completion for job ID
     alt Completion already persisted
         Job->>Job: Deserialize AllocationCompletionResult with ObjectMapper
@@ -804,12 +815,14 @@ sequenceDiagram
         Job->>Processing: Run allocation and projection flow
         Processing-->>Job: AllocationRunResult
         Job->>DB: Persist allocation_job_result JSON with jobId and allocationRun
+        Job->>DB: Mark SUCCEEDED
     end
-    Job-->>Runtime: Completion result
-    Runtime->>DB: Record SUCCEEDED
+    Job-->>KafkaConsumer: Completion result
+    KafkaConsumer-->>Kafka: Complete record processing
     Client->>REST: GET /api/allocation/jobs/{jobId}
     REST->>Status: Read execution status
-    Status->>Runtime: Look up JobRunr state
+    Status->>Runtime: Look up JobRunr state when fallback job exists
+    Status->>DB: Read Kafka tracking state when no JobRunr job exists
     opt Job succeeded
         Status->>DB: Load and deserialize saved completion
     end
@@ -827,11 +840,12 @@ not an empty successful response. Completed JSON and run results describe what
 was allocated at execution time; they do not prove those holds are still active.
 
 HTTP submission has no Spring event or after-commit listener and no surrounding
-application transaction. Enqueue errors propagate instead of returning `202`.
-If enqueue succeeds but the HTTP response is lost, the caller has an unknown
-outcome; resubmitting the same logical request may create another execution job,
-while allocation-run idempotency prevents extra reservations. This direct
-handoff is distinct from the ledger's post-commit scheduling gap.
+application transaction. Kafka publish errors propagate instead of returning
+`202`; ambiguous acknowledgements are tracked as `SUBMISSION_UNKNOWN`. If the
+broker accepts a record but the HTTP response is lost, the caller has an
+unknown outcome; resubmitting the same logical request may create another
+execution job, while allocation-run idempotency prevents extra reservations.
+This direct handoff is distinct from the ledger's post-commit scheduling gap.
 
 ### RabbitMQ intake and retry flow
 

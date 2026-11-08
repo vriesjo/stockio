@@ -6,6 +6,7 @@ import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
+import nl.stockio.allocation.domain.performance.AllocationLockContentionPolicy
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.reservation.domain.port.InboundReservationRepository
 import nl.stockio.reservation.domain.port.InboundSupplyRepository
@@ -52,6 +53,7 @@ class StockProjectionProcessor(
     private val claimRepository: AllocationOrderClaimRepository,
     private val clock: Clock,
     private val skuLockRepository: AllocationSkuLockRepository,
+    private val lockContentionPolicy: AllocationLockContentionPolicy,
     private val scopeRepository: StockScopeRepository,
     transactionManager: PlatformTransactionManager
 ) {
@@ -87,6 +89,7 @@ class StockProjectionProcessor(
      */
     @Transactional
     fun processSku(asOfDate: LocalDate, sku: String) {
+        lockContentionPolicy.apply()
         skuLockRepository.insertIfMissing(sku)
         checkNotNull(skuLockRepository.lockBySku(sku)) { "Could not acquire allocation lock for SKU '$sku'." }
 

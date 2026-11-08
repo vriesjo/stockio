@@ -1,7 +1,9 @@
 package nl.stockio.allocation.domain.job.listener
 
 import java.time.Duration
+import java.util.UUID
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
+import nl.stockio.allocation.domain.job.AllocationJobTrackingService
 import org.apache.kafka.clients.admin.NewTopic
 import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.common.TopicPartition
@@ -22,6 +24,7 @@ import org.springframework.kafka.core.DefaultKafkaProducerFactory
 import org.springframework.kafka.core.KafkaAdmin
 import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer
+import org.springframework.kafka.listener.ConsumerRecordRecoverer
 import org.springframework.kafka.listener.DefaultErrorHandler
 import org.springframework.util.backoff.FixedBackOff
 
@@ -117,11 +120,21 @@ class AllocationKafkaConfiguration {
     @Bean
     fun allocationKafkaErrorHandler(
         template: KafkaTemplate<String, String>,
-        properties: AllocationKafkaProperties
+        properties: AllocationKafkaProperties,
+        jobTracking: AllocationJobTrackingService
     ): DefaultErrorHandler {
-        val recoverer = DeadLetterPublishingRecoverer(template) { record, _ ->
+        val deadLetterPublisher = DeadLetterPublishingRecoverer(template) { record, _ ->
             TopicPartition(properties.deadLetterTopic, record.partition())
         }.also { it.setFailIfSendResultIsError(true) }
+        val recoverer = ConsumerRecordRecoverer { record, exception ->
+            deadLetterPublisher.accept(record, exception)
+            val jobId = try {
+                record.key()?.toString()?.let(UUID::fromString)
+            } catch (_: IllegalArgumentException) {
+                null
+            }
+            if (jobId != null) jobTracking.markFailed(jobId)
+        }
         return DefaultErrorHandler(
             recoverer,
             FixedBackOff(properties.retryBackoff.toMillis(), properties.retryAttempts)
