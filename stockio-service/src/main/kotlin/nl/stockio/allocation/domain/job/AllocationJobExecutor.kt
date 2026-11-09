@@ -5,10 +5,13 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import java.util.UUID
 import java.util.concurrent.ExecutionException
 import nl.stockio.api.dto.AllocationRequest
-import nl.stockio.api.dto.AllocationRequestEvent
 import nl.stockio.api.dto.AllocationCompletionResult
 import nl.stockio.api.dto.AllocationJobAccepted
 import nl.stockio.api.dto.AllocationRunResult
+import nl.stockio.allocation.infra.DisabledAllocationRedisGateway
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationLockContentionException
+import nl.stockio.allocation.domain.port.AllocationGateway
 import nl.stockio.allocation.domain.processor.AllocationProcessor
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
@@ -37,7 +40,8 @@ class AllocationJobExecutor(
     private val limits: AllocationRequestLimits,
     private val kafkaTemplate: KafkaTemplate<String, String>,
     private val jobTracking: AllocationJobTrackingService,
-    @param:Value("\${stockio.allocation.kafka.topic:stockio.allocation.requests}") private val topic: String
+    @param:Value("\${stockio.allocation.kafka.topic:stockio.allocation.requests}") private val topic: String,
+    private val allocationRedisGateway: AllocationGateway = DisabledAllocationRedisGateway()
 ) {
 
     /**
@@ -51,33 +55,24 @@ class AllocationJobExecutor(
      * This method does not validate the request's business date or execute allocation itself.
      *
      * @param request allocation request forwarded unchanged to [AllocationJobExecutor.executeSync].
-     * @return the job ID for status polling and request ID for correlation, not an allocation result.
+     * @return the job ID and request ID. The job is not tracked until the Kafka listener takes the record.
      */
     fun executeAsync(request: AllocationRequest): AllocationJobAccepted {
         limits.validate(request)
-        val event = AllocationRequestEvent(UUID.randomUUID(), request)
-        val payload = objectMapper.writeValueAsString(event.request)
-        jobTracking.registerSubmission(event.jobId, event.request.requestId)
+        val jobId = UUID.randomUUID()
+        val payload = objectMapper.writeValueAsString(request)
         logger.info {
-            "Publishing allocation job ${event.jobId} for request ${event.request.requestId} to Kafka topic '$topic'."
+            "Publishing allocation job $jobId for request ${request.requestId} to Kafka topic '$topic'."
         }
         try {
-            kafkaTemplate.send(topic, event.jobId.toString(), payload).get()
+            kafkaTemplate.send(topic, jobId.toString(), payload).get()
         } catch (exception: InterruptedException) {
-            markSubmissionUnknown(event.jobId, exception)
             Thread.currentThread().interrupt()
             throw exception
         } catch (exception: ExecutionException) {
-            val failure = exception.cause ?: exception
-            markSubmissionUnknown(event.jobId, failure)
-            throw failure
-        } catch (exception: Exception) {
-            markSubmissionUnknown(event.jobId, exception)
-            throw exception
+            throw exception.cause ?: exception
         }
-        jobTracking.markEnqueued(event.jobId)
-
-        return AllocationJobAccepted(event.jobId, event.request.requestId)
+        return AllocationJobAccepted(jobId, request.requestId)
     }
 
     /**
@@ -94,6 +89,23 @@ class AllocationJobExecutor(
      */
     @Job(name = "Execute Allocation Request", retries = 3, jobFilters = [AllocationCapacityRetryFilter::class])
     fun executeSync(jobId: UUID, request: AllocationRequest): AllocationCompletionResult {
+        val result = try {
+            runSync(jobId, request)
+        } catch (exception: AllocationCapacityExceededException) {
+            throw exception
+        } catch (exception: AllocationLockContentionException) {
+            throw exception
+        } catch (exception: Exception) {
+            allocationRedisGateway.rollback(request)
+            throw exception
+        }
+
+        // If the allocation was successful, we can settle the request in Redis to release any locks or reservations.
+        allocationRedisGateway.settle(request)
+        return result
+    }
+
+    private fun runSync(jobId: UUID, request: AllocationRequest): AllocationCompletionResult {
         jobTracking.markProcessing(jobId)
         jobResultRepository.findById(jobId).orElse(null)?.let {
             jobTracking.markSucceeded(jobId)
@@ -119,13 +131,5 @@ class AllocationJobExecutor(
         )
         jobTracking.markSucceeded(jobId)
         return result
-    }
-
-    private fun markSubmissionUnknown(jobId: UUID, cause: Throwable) {
-        try {
-            jobTracking.markSubmissionUnknown(jobId)
-        } catch (trackingException: Exception) {
-            cause.addSuppressed(trackingException)
-        }
     }
 }

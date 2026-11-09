@@ -52,12 +52,14 @@ Set as JVM system properties (`-D...`) or environment variables.
 Example:
 
 ```bash
-./gradlew :stockio-test-harness:performanceRun --no-daemon \
+/gradlew :stockio-test-harness:performanceRun --no-daemon \
   -Dstockio.perf.host=127.0.0.1 \
   -Dstockio.perf.port=9090 \
-  -Dstockio.perf.soakRps=40 \
-  -Dstockio.perf.soakSeconds=120
-  -Dstockio.perf.async=false
+  -Dstockio.perf.async=true \
+  -Dstockio.perf.warmupSeconds=10 \
+  -Dstockio.perf.rampSeconds=10 \
+  -Dstockio.perf.soakRps=10 \
+  -Dstockio.perf.soakSeconds=60
 ```
 
 ## What the simulation does

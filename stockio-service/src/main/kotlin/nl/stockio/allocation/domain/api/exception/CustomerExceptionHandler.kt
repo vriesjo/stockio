@@ -2,6 +2,10 @@ package nl.stockio.allocation.domain.api.exception
 
 import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
 import nl.stockio.allocation.domain.performance.AllocationLockContentionException
+import nl.stockio.allocation.infra.AllocationRedisHoldConflictException
+import nl.stockio.allocation.infra.AllocationRedisInsufficientStockException
+import nl.stockio.allocation.infra.AllocationRedisNotReadyException
+import nl.stockio.allocation.infra.AllocationRedisSyncDisabledException
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
 import org.jobrunr.storage.JobNotFoundException
 import org.springframework.http.HttpStatus
@@ -28,6 +32,24 @@ class CustomerExceptionHandler {
     @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
     fun handleLockContention(exception: AllocationLockContentionException): Map<String, String> =
         mapOf("code" to "ALLOCATION_LOCK_CONTENTION", "error" to exception.message.orEmpty())
+
+    @ExceptionHandler(AllocationRedisInsufficientStockException::class, AllocationRedisHoldConflictException::class, AllocationRedisSyncDisabledException::class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    fun handleFastPathConflict(exception: IllegalStateException): Map<String, String> =
+        mapOf(
+            "code" to when (exception) {
+                is AllocationRedisInsufficientStockException -> "REDIS_INSUFFICIENT_STOCK"
+                is AllocationRedisSyncDisabledException -> "REDIS_SYNC_DISABLED"
+                is AllocationRedisHoldConflictException -> "REDIS_HOLD_CONFLICT"
+                else -> "REDIS_HOLD_CONFLICT"
+            },
+            "error" to exception.message.orEmpty()
+        )
+
+    @ExceptionHandler(AllocationRedisNotReadyException::class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    fun handleRedisNotReady(exception: AllocationRedisNotReadyException): Map<String, String> =
+        mapOf("code" to "REDIS_NOT_READY", "error" to exception.message.orEmpty())
 
     @ExceptionHandler(AllocationRequestTooLargeException::class)
     @ResponseStatus(HttpStatus.PAYLOAD_TOO_LARGE)

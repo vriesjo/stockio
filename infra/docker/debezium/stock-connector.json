@@ -1,0 +1,18 @@
+{
+  "name": "stockio-stock",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "logistics",
+    "database.password": "logistics",
+    "database.dbname": "logistics",
+    "topic.prefix": "stockio.cdc",
+    "table.include.list": "public.stock",
+    "plugin.name": "pgoutput",
+    "slot.name": "stockio_stock",
+    "publication.autocreate.mode": "filtered",
+    "tombstones.on.delete": "false",
+    "decimal.handling.mode": "double"
+  }
+}

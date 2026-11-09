@@ -3,6 +3,7 @@ package nl.stockio.allocation.domain.job.listener
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.rabbitmq.client.Channel
 import io.github.oshai.kotlinlogging.KotlinLogging
+import java.util.concurrent.ThreadLocalRandom
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
@@ -34,6 +35,8 @@ import org.springframework.amqp.support.converter.MessageConverter
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.event.ContextClosedEvent
+import org.springframework.context.event.EventListener
 import org.springframework.scheduling.annotation.EnableScheduling
 import org.springframework.stereotype.Component
 
@@ -175,4 +178,26 @@ class AllocationRabbitConfiguration {
                 factory.setMaxConcurrentConsumers(1)
             }
         }
+}
+
+@Component
+class AllocationRabbitCapacityBackoff {
+    @Volatile
+    private var stopping = false
+
+    fun pause() {
+        if (stopping) throw ImmediateRequeueAmqpException("Service stopping; retain the allocation message.")
+        try {
+            Thread.sleep(ThreadLocalRandom.current().nextLong(5_000, 10_001))
+        } catch (exception: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw ImmediateRequeueAmqpException("Consumer interrupted; retain the allocation message.", exception)
+        }
+        if (stopping) throw ImmediateRequeueAmqpException("Service stopping; retain the allocation message.")
+    }
+
+    @EventListener(ContextClosedEvent::class)
+    fun stop() {
+        stopping = true
+    }
 }

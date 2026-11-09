@@ -13,6 +13,7 @@ import nl.stockio.allocation.infra.AllocationSkuOperationEntity
 import nl.stockio.allocation.infra.AllocationSourceEntity
 import nl.stockio.allocation.infra.DemandOrderLineEntity
 import nl.stockio.allocation.infra.OpenBackorderEntity
+import nl.stockio.api.dto.AllocationRequest
 import org.springframework.data.repository.query.Param
 
 interface AllocationOrderClaimRepository {

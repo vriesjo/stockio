@@ -268,6 +268,16 @@ flowchart LR
     class Rest,Mcp,Rabbit,Kafka,Scheduler,Csv,Reports,Tavily,Ollama,Database external
 ```
 
+## Fast path and slow path
+
+PostgreSQL remains the durable stock ledger. When `stockio.local.enabled` is
+true, `POST /api/allocation/jobs` (async only) places a provisional hold in
+Redis before Kafka enqueue. The request path does not write stock or allocation
+rows. Slow-path workers still allocate in PostgreSQL. Committed stock changes
+flow back through Debezium (`stockio.cdc.public.stock`) and replace Redis
+availability with the summed `quantity_available` for each SKU and warehouse.
+See [Redis Fast Path](./issues/feature-redis-fast-path.md).
+
 The following runtime collaboration view keeps the more detailed submission and job
 relationships. It is complementary to the hexagonal dependency view above:
 
@@ -799,15 +809,13 @@ sequenceDiagram
     Client->>REST: POST /api/allocation/jobs (async=true by default)
     REST->>REST: Validate today's business date
     REST->>Job: executeAsync(request)
-    Job->>DB: Persist PUBLISHING tracking state
     Job->>Kafka: Publish raw AllocationRequest (key = jobId)
     Kafka-->>Job: Broker acknowledgement
-    Job->>DB: Mark ENQUEUED
     Job-->>REST: AllocationJobAccepted(jobId, requestId)
     REST-->>Client: 202 Accepted, job ID and Location
     Kafka->>KafkaConsumer: Deliver request when listener is enabled
+    KafkaConsumer->>DB: Insert PROCESSING tracking state
     KafkaConsumer->>Job: executeSync(jobId, request)
-    Job->>DB: Mark PROCESSING
     Job->>DB: Read any saved completion for job ID
     alt Completion already persisted
         Job->>Job: Deserialize AllocationCompletionResult with ObjectMapper
@@ -841,11 +849,12 @@ was allocated at execution time; they do not prove those holds are still active.
 
 HTTP submission has no Spring event or after-commit listener and no surrounding
 application transaction. Kafka publish errors propagate instead of returning
-`202`; ambiguous acknowledgements are tracked as `SUBMISSION_UNKNOWN`. If the
-broker accepts a record but the HTTP response is lost, the caller has an
-unknown outcome; resubmitting the same logical request may create another
-execution job, while allocation-run idempotency prevents extra reservations.
-This direct handoff is distinct from the ledger's post-commit scheduling gap.
+`202`. The accept path does not write job tracking. If the broker accepts a
+record but the HTTP response is lost, the caller has an unknown outcome;
+resubmitting the same logical request may create another execution job, while
+allocation-run idempotency prevents extra reservations. Status for a Kafka job
+appears after the listener inserts `PROCESSING`. This direct handoff is distinct
+from the ledger's post-commit scheduling gap.
 
 ### RabbitMQ intake and retry flow
 

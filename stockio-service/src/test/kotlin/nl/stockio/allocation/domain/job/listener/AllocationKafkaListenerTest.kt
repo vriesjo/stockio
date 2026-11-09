@@ -37,7 +37,8 @@ class AllocationKafkaListenerTest {
         val listener = AllocationKafkaListener(
             ObjectMapper(),
             Mockito.mock(AllocationRequestLimits::class.java),
-            workQueue
+            workQueue,
+            Mockito.mock(nl.stockio.allocation.domain.job.AllocationJobTrackingService::class.java)
         )
 
         assertThrows(IllegalArgumentException::class.java) { listener.receive("null") }
@@ -59,7 +60,8 @@ class AllocationKafkaListenerTest {
         val listener = AllocationKafkaListener(
             mapper,
             Mockito.mock(AllocationRequestLimits::class.java),
-            workQueue
+            workQueue,
+            Mockito.mock(nl.stockio.allocation.domain.job.AllocationJobTrackingService::class.java)
         )
         val executor = Executors.newSingleThreadExecutor()
 
@@ -89,7 +91,8 @@ class AllocationKafkaListenerTest {
         val listener = AllocationKafkaListener(
             mapper,
             Mockito.mock(AllocationRequestLimits::class.java),
-            workQueue
+            workQueue,
+            Mockito.mock(nl.stockio.allocation.domain.job.AllocationJobTrackingService::class.java)
         )
 
         listener.receive(mapper.writeValueAsString(request), jobId.toString())

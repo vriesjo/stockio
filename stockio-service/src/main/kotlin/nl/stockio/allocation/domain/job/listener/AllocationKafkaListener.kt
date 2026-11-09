@@ -22,6 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
+import nl.stockio.allocation.domain.job.AllocationJobTrackingService
 import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
 import nl.stockio.allocation.domain.performance.AllocationLockContentionException
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
@@ -41,7 +42,8 @@ private val logger = KotlinLogging.logger {}
 class AllocationKafkaListener(
     private val objectMapper: ObjectMapper,
     private val limits: AllocationRequestLimits,
-    private val workQueue: AllocationKafkaWorkQueue
+    private val workQueue: AllocationKafkaWorkQueue,
+    private val jobTracking: AllocationJobTrackingService
 ) {
 
     @KafkaListener(
@@ -75,6 +77,7 @@ class AllocationKafkaListener(
                 throw IllegalArgumentException("Kafka allocation record key must be a UUID.", exception)
             }
         } ?: request.requestId
+        jobTracking.beginProcessing(jobId, request.requestId)
         try {
             workQueue.submit(request, jobId).get()
         } catch (exception: InterruptedException) {
@@ -110,6 +113,9 @@ class AllocationKafkaWorkQueue(
     init {
         // Register a gauge metric to track the number of in-flight allocation requests being processed concurrently.
         registry.gauge("stockio.allocation.kafka.inflight", inFlight)
+        // Launch a fixed number of worker coroutines to process allocation requests from the channel.
+        // Each worker coroutine will process requests sequentially from the channel.
+        // Each stays in for (work in channel), waiting for and processing work as it arrives.
         repeat(properties.workerCount) {
             scope.launch {
                 for (work in channel) {
@@ -124,7 +130,7 @@ class AllocationKafkaWorkQueue(
         jobId: java.util.UUID = request.requestId
     ): CompletableFuture<Void> {
         // Create a CompletableFuture to track the completion of the work.
-        /// The inFlight counter is incremented to track the number of concurrent requests being processed.
+        // The inFlight counter is incremented to track the number of concurrent requests being processed.
         val completion = CompletableFuture<Void>()
         inFlight.incrementAndGet()
         // Reset the inFlight counter when the work is completed, regardless of success or failure.

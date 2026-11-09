@@ -9,12 +9,17 @@ import java.time.ZoneOffset
 import java.util.UUID
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
+import nl.stockio.api.dto.DemandOrder
+import nl.stockio.api.dto.DemandOrderLine
 import nl.stockio.api.dto.OrderReservationLine
 import nl.stockio.api.dto.OrderReservationResponse
 import nl.stockio.api.dto.OrderReservationStatus
+import nl.stockio.allocation.infra.DisabledAllocationRedisGateway
+import nl.stockio.allocation.domain.port.AllocationGateway
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import nl.stockio.api.dto.AllocationJobAccepted
 import nl.stockio.api.dto.AllocationJobStatus
+import nl.stockio.api.dto.RedisKeyResponse
 import nl.stockio.allocation.domain.service.AllocationJobRunrService
 import nl.stockio.reservation.domain.service.OrderReservationService
 import nl.stockio.stock.domain.service.StockLedgerService
@@ -137,7 +142,8 @@ class AllocationControllerTest {
         executor: AllocationJobExecutor,
         jobRunrService: AllocationJobRunrService,
         orderReservationService: OrderReservationService,
-        stockLedgerService: StockLedgerService
+        stockLedgerService: StockLedgerService,
+        provisional: AllocationGateway = DisabledAllocationRedisGateway()
     ): MockMvc =
         MockMvcBuilders.standaloneSetup(
             AllocationController(
@@ -145,7 +151,8 @@ class AllocationControllerTest {
                 allocationJobRunrService = jobRunrService,
                 orderReservationService = orderReservationService,
                 ledgerSyncStatusService = stockLedgerService,
-                clock = clock
+                clock = clock,
+                allocationRedisGateway = provisional
             )
         ).setControllerAdvice(CustomerExceptionHandler()).build()
 
@@ -177,5 +184,104 @@ class AllocationControllerTest {
             .andExpect(jsonPath("$.code").value("ALLOCATION_LOCK_CONTENTION"))
             .andExpect(header().doesNotExist("Location"))
         io.mockk.verify(exactly = 0) { executor.executeAsync(any()) }
+    }
+
+    @Test
+    fun `fast path holds in redis then enqueues without inline execution`() {
+        val request = AllocationRequest(
+            requestId = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            asOfDate = today,
+            runType = AllocationRunType.NEW_DEMAND,
+            demandOrders = listOf(
+                DemandOrder(
+                    orderId = "order-1",
+                    customer = "Northwind",
+                    priority = 1,
+                    placedDate = today,
+                    lines = listOf(DemandOrderLine("line-1", "SKU-1", 1, today))
+                )
+            )
+        )
+        val accepted = AllocationJobAccepted(
+            jobId = UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            requestId = request.requestId
+        )
+        val gateway = object : AllocationGateway {
+            override val enabled = true
+            var acceptedRequest = false
+            override fun accept(request: AllocationRequest) { acceptedRequest = true }
+            override fun rollback(request: AllocationRequest) = Unit
+            override fun settle(request: AllocationRequest) = Unit
+            override fun getByKey(key: String) = null
+        }
+        val executor = io.mockk.mockk<AllocationJobExecutor>()
+        io.mockk.every { executor.executeAsync(request) } returns accepted
+        val mvc = createMockMvc(
+            executor,
+            mock(AllocationJobRunrService::class.java),
+            mock(OrderReservationService::class.java),
+            mock(StockLedgerService::class.java),
+            gateway
+        )
+
+        mvc.perform(
+            post("/api/allocation/jobs")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request))
+        ).andExpect(status().isAccepted)
+
+        org.junit.jupiter.api.Assertions.assertTrue(gateway.acceptedRequest)
+        io.mockk.verify(exactly = 1) { executor.executeAsync(request) }
+        io.mockk.verify(exactly = 0) { executor.executeSync(any(), any()) }
+    }
+
+    @Test
+    fun `fast path rejects inline allocation`() {
+        val request = AllocationRequest(UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND)
+        val gateway = object : AllocationGateway {
+            override val enabled = true
+            override fun accept(request: AllocationRequest) = Unit
+            override fun rollback(request: AllocationRequest) = Unit
+            override fun settle(request: AllocationRequest) = Unit
+            override fun getByKey(key: String) = null
+        }
+        val mvc = createMockMvc(
+            io.mockk.mockk<AllocationJobExecutor>(relaxed = true),
+            mock(AllocationJobRunrService::class.java),
+            mock(OrderReservationService::class.java),
+            mock(StockLedgerService::class.java),
+            gateway
+        )
+        mvc.perform(
+            post("/api/allocation/jobs?async=false")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request))
+        )
+            .andExpect(status().isConflict)
+            .andExpect(jsonPath("$.code").value("FAST_PATH_SYNC_DISABLED"))
+    }
+
+    @Test
+    fun `redis key lookup returns the gateway value`() {
+        val gateway = object : AllocationGateway {
+            override val enabled = true
+            override fun accept(request: AllocationRequest) = Unit
+            override fun rollback(request: AllocationRequest) = Unit
+            override fun settle(request: AllocationRequest) = Unit
+            override fun getByKey(key: String) =
+                RedisKeyResponse(key, value = "5").takeIf { key == "stock:sku:SKU-1:MAIN" }
+        }
+        val mvc = createMockMvc(
+            io.mockk.mockk<AllocationJobExecutor>(relaxed = true),
+            mock(AllocationJobRunrService::class.java),
+            mock(OrderReservationService::class.java),
+            mock(StockLedgerService::class.java),
+            gateway
+        )
+        mvc.perform(get("/api/allocation/order-reservation/stock:sku:SKU-1:MAIN/redis"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.value").value("5"))
+        mvc.perform(get("/api/allocation/order-reservation/other/redis"))
+            .andExpect(status().isBadRequest)
     }
 }

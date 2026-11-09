@@ -663,39 +663,23 @@ class AllocationIntegrationTest {
     }
 
     @Test
-    fun `Kafka submission tracking transitions persist across status updates`() {
+    fun `Kafka worker tracking starts at processing`() {
         val jobId = UUID.randomUUID()
         val requestId = UUID.randomUUID()
 
-        allocationJobTracking.registerSubmission(jobId, requestId)
+        allocationJobTracking.beginProcessing(jobId, requestId)
         Assertions.assertEquals(
-            AllocationJobTrackingState.PUBLISHING,
+            AllocationJobTrackingState.PROCESSING,
             allocationJobTracking.findById(jobId).orElseThrow().status
         )
-        allocationJobTracking.markEnqueued(jobId)
-        Assertions.assertEquals(
-            AllocationJobTrackingState.ENQUEUED,
-            allocationJobTracking.findById(jobId).orElseThrow().status
-        )
-        allocationJobTracking.markProcessing(jobId)
         allocationJobTracking.markSucceeded(jobId)
-
         Assertions.assertEquals(
             AllocationJobTrackingState.SUCCEEDED,
             allocationJobTracking.findById(jobId).orElseThrow().status
         )
 
-        val unknownJobId = UUID.randomUUID()
-        allocationJobTracking.registerSubmission(unknownJobId, requestId)
-        allocationJobTracking.markSubmissionUnknown(unknownJobId)
-        Assertions.assertEquals(
-            AllocationJobTrackingState.SUBMISSION_UNKNOWN,
-            allocationJobTracking.findById(unknownJobId).orElseThrow().status
-        )
-
         val failedJobId = UUID.randomUUID()
-        allocationJobTracking.registerSubmission(failedJobId, requestId)
-        allocationJobTracking.markEnqueued(failedJobId)
+        allocationJobTracking.beginProcessing(failedJobId, requestId)
         allocationJobTracking.markFailed(failedJobId)
         Assertions.assertEquals(
             AllocationJobTrackingState.FAILED,

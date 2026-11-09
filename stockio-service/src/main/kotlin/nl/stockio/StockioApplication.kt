@@ -8,7 +8,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.context.annotation.Bean
 
 @SpringBootApplication
-class McpServerRunner {
+class StockioApplication {
 
     @Bean
     fun toolCallbacks(
@@ -18,5 +18,5 @@ class McpServerRunner {
 }
 
 fun main(args: Array<String>) {
-    SpringApplication.run(McpServerRunner::class.java, *args)
+    SpringApplication.run(StockioApplication::class.java, *args)
 }

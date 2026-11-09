@@ -30,13 +30,13 @@ class AllocationJobRunrServiceTest {
         val resultRepository = Mockito.mock(AllocationJobResultRepository::class.java)
         val storageProvider = Mockito.mock(StorageProvider::class.java)
         Mockito.`when`(tracking.findById(jobId)).thenReturn(
-            Optional.of(AllocationJobTrackingEntity(jobId, UUID.randomUUID(), AllocationJobTrackingState.ENQUEUED))
+            Optional.of(AllocationJobTrackingEntity(jobId, UUID.randomUUID(), AllocationJobTrackingState.PROCESSING))
         )
         Mockito.`when`(storageProvider.getJobById(jobId)).thenThrow(JobNotFoundException(jobId))
         Mockito.`when`(resultRepository.findById(jobId)).thenReturn(Optional.empty())
         val service = service(storageProvider, resultRepository, tracking)
 
-        assertEquals(AllocationJobStatus(jobId, "ENQUEUED"), service.getStatusById(jobId))
+        assertEquals(AllocationJobStatus(jobId, "PROCESSING"), service.getStatusById(jobId))
     }
 
     @Test

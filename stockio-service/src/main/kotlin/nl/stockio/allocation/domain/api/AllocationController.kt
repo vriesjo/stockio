@@ -8,9 +8,14 @@ import java.util.UUID
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.OrderReservationResponse
 import nl.stockio.allocation.domain.api.generated.AllocationApi
+import nl.stockio.allocation.infra.DisabledAllocationRedisGateway
+import nl.stockio.allocation.infra.AllocationRedisNotReadyException
 import nl.stockio.reservation.domain.service.OrderReservationService
 import nl.stockio.allocation.domain.service.AllocationJobRunrService
+import nl.stockio.allocation.infra.AllocationRedisSyncDisabledException
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
+import nl.stockio.allocation.domain.fastpath.RedisKeys
+import nl.stockio.allocation.domain.port.AllocationGateway
 import nl.stockio.api.dto.AllocationJobAccepted
 import nl.stockio.api.dto.AllocationJobStatus
 import nl.stockio.stock.domain.service.StockLedgerSyncStatus
@@ -26,7 +31,8 @@ class AllocationController(
     private val allocationJobRunrService: AllocationJobRunrService,
     private val orderReservationService: OrderReservationService,
     private val ledgerSyncStatusService: StockLedgerService,
-    private val clock: Clock
+    private val clock: Clock,
+    private val allocationRedisGateway: AllocationGateway = DisabledAllocationRedisGateway()
 ) : AllocationApi {
 
     override fun submitAllocationJob(
@@ -37,6 +43,19 @@ class AllocationController(
             "Allocation requests on this endpoint require asOfDate to be today."
         }
         logger.info { "Received allocation request ${request.requestId} (async=$async)" }
+        if (allocationRedisGateway.enabled) {
+            if (!async) throw AllocationRedisSyncDisabledException()
+            allocationRedisGateway.accept(request)
+            val accepted = try {
+                allocationJobExecutor.executeAsync(request)
+            } catch (exception: Exception) {
+                allocationRedisGateway.rollback(request)
+                throw exception
+            }
+            return ResponseEntity.accepted()
+                .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))
+                .body(accepted)
+        }
         if (async) {
             val accepted = allocationJobExecutor.executeAsync(request)
             return ResponseEntity.accepted()
@@ -67,4 +86,17 @@ class AllocationController(
         orderReservationService.getOrderReservationStatus(orderId)
             ?.let { ResponseEntity.ok(it) }
             ?: ResponseEntity.notFound().build()
+
+    override fun getAllocationOrderReservationByKey(key: String): ResponseEntity<nl.stockio.api.dto.RedisKeyResponse> {
+        require(RedisKeys.isManaged(key)) {
+            "Key must be a stock:sku, reservation, or expiry:res key."
+        }
+        if (!allocationRedisGateway.enabled) {
+            throw AllocationRedisNotReadyException()
+        }
+        logger.info { "Reading Redis key $key" }
+        return allocationRedisGateway.getByKey(key)
+            ?.let { ResponseEntity.ok(it) }
+            ?: ResponseEntity.notFound().build()
+    }
 }

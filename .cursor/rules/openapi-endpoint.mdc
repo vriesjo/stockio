@@ -1,0 +1,27 @@
+---
+description: Add a Stockio REST endpoint through an OpenAPI spec, then generate and override the interface
+globs: stockio-api/src/main/resources/openapi/**/*.yaml,stockio-service/**/*Controller.kt
+alwaysApply: false
+---
+
+# Add a REST endpoint
+
+Do not put `@RequestMapping` on the controller. The OpenAPI generator owns the route.
+
+1. Add the path, `operationId`, parameters, responses, and schema to the matching spec in `stockio-api/src/main/resources/openapi/`:
+   - `allocation-controller.yaml`
+   - `reservation-controller.yaml`
+   - `product-allocation-controller.yaml`
+2. Generate the interface. `models` is `false`, so a new response type is a handwritten class under `stockio-api/src/main/kotlin/nl/stockio/api/dto/`. Add that schema name to `importMappings` on the matching task in the root `build.gradle`, then run only that task:
+   - allocation: `./gradlew :stockio-api:openApiGenerateAllocation`
+   - reservation: `./gradlew :stockio-api:openApiGenerateReservation`
+   - product allocation: `./gradlew :stockio-api:openApiGenerateProductAllocation`
+3. Override the generated method. `operationId` is the Kotlin method name. The controller already implements the interface (`AllocationApi`, `ReservationApi`, or `ProductAllocationApi`) and keeps `@RestController`.
+
+```kotlin
+override fun getAllocationOrderReservationByKey(key: String): ResponseEntity<RedisKeyResponse> {
+    return ResponseEntity.ok(redisKeyResponse)
+}
+```
+
+`:stockio-service:compileKotlin` regenerates all three interfaces. After a spec change, run the matching generate task before editing the controller so the override matches the new signature.

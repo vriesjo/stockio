@@ -19,9 +19,9 @@ paths:
 
         By default, `async=true` publishes the raw `AllocationRequest` JSON to
         the configured Kafka topic, keyed by a unique execution `jobId`, and
-        returns after Kafka acknowledges the publish. PostgreSQL tracking keeps
-        the returned job ID pollable without a JobRunr record. Kafka consumption
-        is separately opt-in. With `async=false`, processing runs inline but the
+        returns after Kafka acknowledges the publish. Job tracking starts when the
+        Kafka listener takes the record, so the job id is not pollable until then.
+        Kafka consumption is separately opt-in. With `async=false`, processing runs inline but the
         endpoint still returns `202 Accepted`. The current inline branch uses
         the allocation run ID as `jobId` without creating a JobRunr job, so the
         returned `Location` is not a valid job-status polling URL for that
@@ -72,6 +72,38 @@ paths:
                 $ref: '#/components/schemas/AdmissionErrorResponse'
         '500':
           description: Kafka publish failed or its acknowledgement outcome is unknown, or an unexpected server error occurred.
+
+  /api/allocation/order-reservation/{key}/redis:
+    get:
+      tags:
+        - Allocation
+      operationId: getAllocationOrderReservationByKey
+      summary: Get Redis order reservation by key
+      description: |
+        Returns the current value of a key built by `RedisKeys`: `stock:sku:{sku}:{warehouse}`,
+        `reservation:{requestId}:{orderId}:{orderLineId}`, or
+        `expiry:res:{requestId}:{orderId}:{orderLineId}`. String keys return `value`.
+        Reservation hashes return `fields`.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          description: Complete Redis key e.g., `stock:sku:{sku}:{warehouse}`, `reservation:{requestId}:{orderId}:{orderLineId}`, or `expiry:res:{requestId}:{orderId}:{orderLineId}`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The key exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedisKeyResponse'
+        '400':
+          description: The key is not a stock, reservation, or expiry key.
+        '404':
+          description: Redis has no such key.
+        '503':
+          description: The Redis fast path is disabled or still rebuilding.
 
   /api/allocation/jobs/{jobId}:
     get:
@@ -338,7 +370,7 @@ components:
           format: uuid
         status:
           type: string
-          description: Current JobRunr state or Kafka tracking state (for example ENQUEUED, PROCESSING, SUCCEEDED, FAILED, or SUBMISSION_UNKNOWN).
+          description: Current JobRunr state or Kafka tracking state (PROCESSING, SUCCEEDED, or FAILED). Absent until a worker takes the record.
         result:
           type: object
           allOf:
@@ -649,3 +681,23 @@ components:
       properties:
         error:
           type: string
+
+    RedisKeyResponse:
+      type: object
+      required:
+        - key
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+          nullable: true
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+        ttlSeconds:
+          type: integer
+          format: int64
+          nullable: true

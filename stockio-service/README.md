@@ -135,10 +135,10 @@ returned execution `jobId` as the Kafka record key. The REST API returns
 acceptance only after Kafka acknowledges the publish; broker/send failures
 propagate rather than falling back to direct JobRunr enqueueing. Configure
 `KAFKA_BOOTSTRAP_SERVERS` and `ALLOCATION_KAFKA_TOPIC` for the producer.
-The service records each execution job ID in PostgreSQL before publishing and
-tracks it through enqueueing and processing. The existing status endpoint reads
-this tracking data when no JobRunr job exists; ambiguous send acknowledgements
-are reported as `SUBMISSION_UNKNOWN`.
+The service records a job when the Kafka listener takes the record, with status
+`PROCESSING`, then `SUCCEEDED` or `FAILED`. The status endpoint reads this row
+when no JobRunr job exists. Until a worker consumes the record, the job id
+returns `404 Not Found`.
 
 The service can consume `AllocationRequest` JSON from Kafka without
 replacing the RabbitMQ listener. The default local stack is optional; start it

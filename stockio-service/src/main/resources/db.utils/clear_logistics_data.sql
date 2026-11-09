@@ -1,6 +1,3 @@
--- Delete logistics data while retaining the products catalog and Flyway history.
--- Child rows are deleted before their referenced parent rows.
-
 BEGIN;
 
 DELETE FROM allocation_source;

@@ -1,5 +1,22 @@
 # Active Context
 
+## Feature: Redis Fast Path provisional allocation accept
+
+- **Specification:** [Feature specification](./specifications.md#feature-redis-fast-path-provisional-allocation-accept)
+- **Scenario:** [Scenario 22](./scenarios.md#scenario-22-accept-allocation-jobs-on-the-redis-fast-path)
+- **Issue:** [Feature issue](./issues/feature-redis-fast-path.md)
+- **Status:** In-progress
+- **Priority:** Not set
+- **Implementation started:** Yes. Fast-path accept, pre-warm, hold cleanup, and CDC consumer are in progress.
+
+### Steps worked on
+- Turned the Redis fast-path investigation into scenario 22, a specification, and an issue.
+- Fast path stays limited to async `POST /api/allocation/jobs`, with PostgreSQL as the durable ledger.
+
+### Next possible steps (suggestions)
+- Run the service against the compose Redis and Debezium connector when CDC is enabled.
+- Decide whether a later change should add warehouse to `DemandOrderLine`.
+
 ## Feature: Mitigate synchronous allocation lock contention with fail-fast admission
 
 - **Specification:** [Feature specification](./specifications.md#feature-mitigate-synchronous-allocation-lock-contention-with-fail-fast-admission)

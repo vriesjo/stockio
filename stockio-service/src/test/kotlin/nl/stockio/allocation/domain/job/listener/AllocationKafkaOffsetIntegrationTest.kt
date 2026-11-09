@@ -73,7 +73,8 @@ class AllocationKafkaOffsetIntegrationTest {
         val listener = AllocationKafkaListener(
             mapper,
             Mockito.mock(AllocationRequestLimits::class.java),
-            workQueue
+            workQueue,
+            Mockito.mock(nl.stockio.allocation.domain.job.AllocationJobTrackingService::class.java)
         )
         val consumerProperties = KafkaTestUtils.consumerProps(groupId, "false", broker).apply {
             put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
@@ -124,7 +125,8 @@ class AllocationKafkaOffsetIntegrationTest {
         val listener = AllocationKafkaListener(
             jacksonObjectMapper().findAndRegisterModules(),
             Mockito.mock(AllocationRequestLimits::class.java),
-            workQueue
+            workQueue,
+            Mockito.mock(nl.stockio.allocation.domain.job.AllocationJobTrackingService::class.java)
         )
         val consumerProperties = KafkaTestUtils.consumerProps(groupId, "false", broker).apply {
             put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
@@ -195,7 +197,8 @@ class AllocationKafkaOffsetIntegrationTest {
         val listener = AllocationKafkaListener(
             mapper,
             Mockito.mock(AllocationRequestLimits::class.java),
-            workQueue
+            workQueue,
+            Mockito.mock(nl.stockio.allocation.domain.job.AllocationJobTrackingService::class.java)
         )
         val groupConsumerProperties = KafkaTestUtils.consumerProps(groupId, "false", broker).apply {
             put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")

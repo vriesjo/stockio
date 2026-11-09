@@ -71,7 +71,7 @@ class AllocationJobTrackingEntity(
     var requestId: UUID = UUID.randomUUID(),
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
-    var status: AllocationJobTrackingState = AllocationJobTrackingState.PUBLISHING,
+    var status: AllocationJobTrackingState = AllocationJobTrackingState.PROCESSING,
     @Column(name = "created_at", nullable = false)
     var createdAt: Instant = Instant.now(),
     @Column(name = "updated_at", nullable = false)

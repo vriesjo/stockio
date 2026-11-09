@@ -89,8 +89,9 @@ and independently synchronizes the physical stock ledger.
 - Endpoint: `GET /api/allocation/jobs/{jobId}`
 - Controller: `AllocationController`
 - Service: `AllocationJobRunrService`; execution and result persistence: `AllocationJobExecutor`; durable Kafka status persistence: `AllocationJobTrackingService`
-- Status lookup reads JobRunr state when a JobRunr job exists and otherwise reads the durable Kafka tracking row; Kafka states include `ENQUEUED`, `PROCESSING`, `SUCCEEDED`, and `FAILED`
-- Ambiguous producer acknowledgements remain visible as `SUBMISSION_UNKNOWN`; dead-lettered tracked records report `FAILED`
+- Status lookup reads JobRunr state when a JobRunr job exists and otherwise reads the durable Kafka tracking row; tracked states are `PROCESSING`, `SUCCEEDED`, and `FAILED`
+- The tracking row is created when the Kafka listener takes the record. A publish that no worker has consumed yet returns `404 Not Found`
+- Dead-lettered tracked records report `FAILED`
 - Completed results are persisted as an `AllocationCompletionResult` containing `jobId` and `allocationRun`, without a top-level `version` or stock-sync result
 - Job completion is serialized and reused on retries
 
@@ -98,7 +99,8 @@ and independently synchronizes the physical stock ledger.
 - A known JobRunr or Kafka-tracked job returns its current status
 - A completed job returns `status: SUCCEEDED` and a non-null allocation result
 - A `SUCCEEDED` job without saved completion is an explicit consistency error, not an empty successful result
-- A Kafka-published job remains queryable through `ENQUEUED` and `PROCESSING`, then returns its saved result as `SUCCEEDED`
+- A consumed Kafka job is queryable as `PROCESSING`, then returns its saved result as `SUCCEEDED`
+- A published job that no worker has taken returns `404 Not Found`
 - The successful result contains the persisted `runId`, `requestId`, run type, as-of date, allocations, and open backorder count
 - An unknown job returns `404 Not Found`
 
@@ -627,3 +629,35 @@ In-progress feature: [Direct structured allocation UI](./issues/feature-direct-s
 - Documentation clearly separates local/per-instance admission behavior from cluster-wide or physical database guarantees
 
 In-progress feature: [Fail-fast lock contention mitigation](./issues/feature-fail-fast-lock-contention-mitigation.md).
+
+## Scenario 22: Accept allocation jobs on the Redis fast path
+
+**Status:** In-progress.
+
+### Gherkin description
+**Given** Redis fast path is enabled and stock availability has been pre-warmed from PostgreSQL \
+**When** a client submits `POST /api/allocation/jobs` with `async=true` \
+**Then** Stockio places one all-or-nothing provisional hold in Redis and returns `202 Accepted` without writing stock or allocation rows \
+**And** the existing asynchronous worker later allocates in PostgreSQL \
+**And** a failed slow-path allocation releases the Redis hold \
+**And** a successful slow-path allocation settles the provisional keys \
+**And** `async=false` is rejected while fast path is enabled
+
+### High-level technical analysis
+- The first fast-path entry point is `AllocationController.submitAllocationJob`
+- Holds use `requestId`, `orderId`, and `orderLineId` with warehouse `MAIN` when the demand line has no warehouse
+- Availability keys are `stock:sku:{sku}:{warehouseCode}`, summed across lots
+- Abandoned holds expire by Redis TTL; durable pending orders still expire through the existing reservation job
+- Debezium publishes `public.stock` changes; the CDC consumer only replaces Redis availability and does not decide cleanup
+- `/api/products/allocate`, MCP, and other listeners stay on the slow path
+
+### Acceptance Criteria
+- With fast path disabled, `POST /api/allocation/jobs` keeps its current sync and async behavior
+- With fast path enabled, a successful async submit decrements Redis and does not insert stock or allocation rows on the request path
+- One multi-key script covers every demand line; a short line does not leave earlier lines decremented
+- Slow-path failure restores Redis availability; slow-path success removes provisional keys without treating confirm as a ledger commit
+- Startup pre-warm and divergence repair load `SUM(quantity_available)` grouped by SKU and warehouse, and refuse new holds while a rebuild is running
+- CDC applies absolute availability for the affected SKU and warehouse idempotently
+- `GET /api/allocation/order-reservation/{key}/redis` returns a `stock:sku`, `reservation`, or `expiry:res` value when fast path is enabled, and rejects any other key
+
+In-progress feature: [Redis Fast Path provisional allocation accept](./issues/feature-redis-fast-path.md).

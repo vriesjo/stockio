@@ -733,3 +733,55 @@ queues.
 - [Scenario 21: Fail fast under allocation lock contention](./scenarios.md#scenario-21-fail-fast-under-allocation-lock-contention)
 - [Feature issue: fail-fast lock contention mitigation](./issues/feature-fail-fast-lock-contention-mitigation.md)
 - [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+
+## Feature: Redis Fast Path provisional allocation accept
+
+- **Status:** In-progress
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md)
+- **Bounded Context:** Allocation intake and stock availability
+
+### Overview
+
+Add a Redis operational layer in front of `POST /api/allocation/jobs` so a UI
+submit can reserve stock provisionally without a stock write to PostgreSQL.
+PostgreSQL stays the source of truth. Existing allocation, confirm, expiry, and
+ledger jobs stay in place. Committed stock changes sync back to Redis through
+Debezium and Kafka.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Async fast-path accept | When fast path is enabled, `POST /api/allocation/jobs?async=true` runs one multi-key Redis hold and returns `202` without writing stock or allocation rows. |
+| FR-02 | Reject inline execution | When fast path is enabled, `async=false` is rejected. Inline slow-path execution remains available when fast path is disabled. |
+| FR-03 | Natural hold identity | Hold keys use `requestId`, `orderId`, and `orderLineId`. Demand lines use warehouse `MAIN`. |
+| FR-04 | Warehouse availability | Redis stock values are `SUM(quantity_available)` by SKU and warehouse, not one key per lot. |
+| FR-05 | Slow-path handoff | After Kafka processing, success settles provisional keys and failure restores Redis availability. Confirm does not commit the stock ledger. |
+| FR-06 | TTL cleanup | Abandoned Redis holds expire and return quantity. PostgreSQL pending rows still expire through the existing reservation job. |
+| FR-07 | Pre-warm and rebuild | Startup and divergence repair fully reload Redis from PostgreSQL and pause accepts during the reload. |
+| FR-08 | CDC convergence | Debezium stock events replace Redis availability for the affected SKU and warehouse. The consumer does not delete holds. |
+| FR-09 | Redis key lookup | `GET /api/allocation/order-reservation/{key}/redis` returns the string or hash for a `RedisKeys` stock, reservation, or expiry key. Unknown prefixes are rejected. A disabled fast path does not look like a missing key. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Opt-in | Fast path and CDC default to off so current deployments keep the slow path. |
+| NFR-02 | Atomic holds | A request with several lines succeeds or fails as one Redis script. |
+| NFR-03 | Idempotent CDC | Replayed stock events set the same absolute availability. |
+| NFR-04 | Honest latency | Sub-5ms is a local target for the Redis hold, not a production SLO. |
+
+### Plan
+
+1. Record the scenario, issue, and architecture boundary.
+2. Add Redis, key ports, pre-warm, and a closed gate during rebuild.
+3. Hold then enqueue on `submitAllocationJob` when fast path is enabled.
+4. Settle or roll back holds from slow-path completion, and restore stock on TTL expiry.
+5. Add Debezium and an idempotent Kafka consumer.
+6. Cover keys, atomic holds, pre-warm aggregation, and the accept path with tests.
+
+### Resources
+
+- [Scenario 22: Accept allocation jobs on the Redis fast path](./scenarios.md#scenario-22-accept-allocation-jobs-on-the-redis-fast-path)
+- [Feature issue: Redis Fast Path](./issues/feature-redis-fast-path.md)

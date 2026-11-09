@@ -1,11 +1,11 @@
-.PHONY: run-ui run-service run-publisher run-publisher-rabbitmq run-publisher-kafka run-performance open-allocation-swagger test-e2e build test up up-rabbitmq up-postgres up-ollama down logs
+.PHONY: run-ui run-service run-publisher run-publisher-rabbitmq run-publisher-kafka run-performance open-allocation-swagger test-e2e build test up up-rabbitmq up-postgres up-redis stop-redis up-ollama down logs
 
 run-ui:
 	cd stockio-api/src/main/kotlin/nl/stockio/ui && \
 		bash -c '. "$${NVM_DIR:-$$HOME/.nvm}/nvm.sh" --no-use && nvm use && exec npm run dev'
 
 run-service:
-	ALLOCATION_KAFKA_ENABLED=true ./gradlew :stockio-service:bootRun
+	set -a && . stockio-service/.env.service && set +a && ./gradlew :stockio-service:bootRun
 
 run-publisher: run-publisher-rabbitmq
 
@@ -42,6 +42,12 @@ up-rabbitmq:
 
 up-postgres:
 	docker compose -f infra/docker/docker-compose.yml up -d --wait postgres
+
+up-redis:
+	docker compose -f infra/docker/docker-compose.yml up -d --wait redis
+
+stop-redis:
+	docker compose -f infra/docker/docker-compose.yml stop redis
 
 up-ollama:
 	docker compose -f infra/docker/docker-compose.yml up -d --wait ollama

@@ -78,14 +78,12 @@ class AllocationJobExecutorTest {
         every {
             kafkaTemplate.send("stockio.allocation.requests", capture(key), payload)
         } returns CompletableFuture.completedFuture(mockk(relaxed = true))
-        every { jobTracking.registerSubmission(any(), request.requestId) } returns Unit
 
         val accepted = executor.executeAsync(request)
 
         assertEquals(request.requestId, accepted.requestId)
         assertEquals(accepted.jobId, UUID.fromString(key.captured))
-        verify { jobTracking.registerSubmission(accepted.jobId, request.requestId) }
-        verify { jobTracking.markEnqueued(accepted.jobId) }
+        verify(exactly = 0) { jobTracking.beginProcessing(any(), any()) }
         verify(exactly = 0) { repository.save(any()) }
     }
 
@@ -106,19 +104,18 @@ class AllocationJobExecutorTest {
             executor.executeAsync(request.copy(demandOrders = listOf(order, order.copy(orderId = "O2"))))
         }
         verify(exactly = 0) { kafkaTemplate.send(any<String>(), any<String>(), any<String>()) }
-        verify(exactly = 0) { jobTracking.registerSubmission(any(), any()) }
+        verify(exactly = 0) { jobTracking.beginProcessing(any(), any()) }
         verify { repository wasNot Called }
     }
 
     @Test
-    fun `failed Kafka acknowledgement leaves status as submission unknown`() {
+    fun `failed Kafka acknowledgement does not write job tracking`() {
         val publish = CompletableFuture<org.springframework.kafka.support.SendResult<String, String>>()
         publish.completeExceptionally(IllegalStateException("Kafka acknowledgement timed out"))
         every { kafkaTemplate.send(any<String>(), any<String>(), any<String>()) } returns publish
 
         assertThrows(IllegalStateException::class.java) { executor.executeAsync(request) }
 
-        verify { jobTracking.markSubmissionUnknown(any()) }
-        verify(exactly = 0) { jobTracking.markEnqueued(any()) }
+        verify(exactly = 0) { jobTracking.beginProcessing(any(), any()) }
     }
 }

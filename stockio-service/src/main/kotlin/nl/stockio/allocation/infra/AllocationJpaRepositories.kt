@@ -14,6 +14,7 @@ import nl.stockio.allocation.domain.port.AllocationSkuOperationRepository
 import nl.stockio.allocation.domain.port.AllocationSourceRepository
 import nl.stockio.allocation.domain.port.DemandOrderLineRepository
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
+import nl.stockio.stock.infra.StockEntity
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.data.jpa.repository.Lock
 import org.springframework.data.jpa.repository.JpaRepository
@@ -171,4 +172,36 @@ interface OpenBackorderJpaRepository : OpenBackorderRepository, JpaRepository<Op
             "where b.sku = :sku order by b.priority, b.placedDate, b.createdAt, b.orderId, l.sequenceNumber"
     )
     override fun lockAllBySkuOrderByPriorityFifo(@Param("sku") sku: String): List<OpenBackorderEntity>
+}
+
+data class SkuWarehouseAvailability(
+    val sku: String,
+    val warehouseCode: String,
+    val quantityAvailable: Long
+)
+
+@ConditionalOnProperty(prefix = "stockio.allocation.repository", name = ["type"], havingValue = "jpa", matchIfMissing = true)
+interface StockAvailabilityJpaRepository : JpaRepository<StockEntity, UUID> {
+    @Query(
+        """
+        select new nl.stockio.allocation.infra.SkuWarehouseAvailability(
+            s.sku,
+            s.warehouseCode,
+            sum(s.quantityOnHand - s.quantityReserved)
+        )
+        from StockEntity s
+        group by s.sku, s.warehouseCode
+        order by s.sku, s.warehouseCode
+        """
+    )
+    fun sumBySkuAndWarehouse(): List<SkuWarehouseAvailability>
+
+    @Query(
+        """
+        select sum(s.quantityOnHand - s.quantityReserved)
+        from StockEntity s
+        where s.sku = :sku and s.warehouseCode = :warehouseCode
+        """
+    )
+    fun sumAvailable(@Param("sku") sku: String, @Param("warehouseCode") warehouseCode: String): Long?
 }
