@@ -56,7 +56,7 @@ and independently synchronizes the physical stock ledger.
 - Services: `AllocationJobExecutor`, `AllocationJobRunrService`, `AllocationProcessor`, and the allocation workers
 - The controller validates `asOfDate` against the business clock; `AllocationJobExecutor.executeAsync` creates a unique execution `jobId`, serializes the unchanged `AllocationRequest`, and publishes it to the configured Kafka topic with `jobId` as the record key
 - The default REST flow returns `{jobId, requestId}` with `Location: /api/allocation/jobs/{jobId}` only after Kafka acknowledges the publish; serialization and publish failures propagate
-- The Kafka listener uses the UUID record key as the execution ID, falling back to `requestId` for compatible external producers such as the test harness; Kafka consumption remains explicitly opt-in
+- The Kafka listener uses the UUID record key as the execution ID, falling back to `requestId` for compatible external producers such as the test harness; Kafka consumption is enabled unless `ALLOCATION_KAFKA_ENABLED=false`
 - A durable PostgreSQL tracking row records submission, enqueue, processing, and terminal state so accepted Kafka jobs remain pollable without a JobRunr record
 - MCP invokes the processing flow directly rather than publishing an asynchronous Kafka request or returning a REST acceptance response
 - `async=false` executes inline but currently returns the run ID as its job ID without creating a JobRunr job; its returned polling URL is not a valid execution-status contract
@@ -154,7 +154,7 @@ and independently synchronizes the physical stock ledger.
 ### High-level technical analysis
 - REST endpoint: `GET /api/reservations/orders/{orderId}/status`
 - MCP tool: `get_order_reservation_status`
-- Controller: `ReservationController`; `AllocationController` also exposes `GET /api/allocation/order-reservation/{orderId}/status`
+- Controller: `ReservationController`
 - Service: `OrderReservationService`
 - Reservation states are `PENDING_CONFIRMATION`, `CONFIRMED`, and `EXPIRED`
 - The reservation status is authoritative for the current hold; a historical allocation run alone does not prove that a reservation remains active
@@ -471,7 +471,7 @@ Identity, SKU, run and supply protections remain active.
 - Metrics identify admission pressure and processing outcomes with bounded labels, and status/health/ledger/expiry paths are not subjected to the allocation request guard
 - Multi-instance checks show independent limits rather than a claimed distributed cap; production limits require representative workload evidence
 
-Implemented feature: [Fail-fast allocation admission](./issues/feature-fail-fast-allocation-admission.md).
+Implemented feature: [Fail-fast allocation admission](../.github/memory/issues/feature-fail-fast-allocation-admission.md).
 
 ## Scenario 17: Preserve Maintenance Admission Under Database-Work Pressure
 
@@ -505,14 +505,14 @@ Implemented feature: [Fail-fast allocation admission](./issues/feature-fail-fast
 - Background saturation preserves recoverable work without fallback storms, unintended dead-lettering, false success, or falsely advancing ledger freshness; dates and hold deadlines remain unchanged
 - Disabled enforcement preserves existing behavior, invalid enabled configuration fails startup, and metrics/bypass documentation distinguish local admission from physical or distributed guarantees
 
-Planned feature: [Shared database-work budget](./issues/feature-shared-database-work-budget.md).
+Planned feature: [Shared database-work budget](../.github/memory/issues/feature-shared-database-work-budget.md).
 
 ## Scenario 18: Consume an Allocation Request from Kafka
 
 **Status:** Implemented.
 
 ### Gherkin description
-**Given** Kafka allocation consumption is enabled and a valid allocation request is available on its configured topic \
+**Given** Kafka allocation consumption is left at its default enabled setting and a valid allocation request is available on its configured topic \
 **When** Stockio consumes the record \
 **Then** it invokes the shared allocation execution path using the request's stable identity \
 **And** it executes the UUID record key as the job ID, or uses `requestId` when the key is absent \
@@ -543,7 +543,7 @@ Planned feature: [Shared database-work budget](./issues/feature-shared-database-
 - The bounded channel and fixed workers smooth short bursts without replacing or bypassing `AllocationAdmission`; channel-full and semaphore-saturation paths preserve records and do not advance offsets
 - Focused tests cover conversion, execution delegation, offset/retry behavior, duplicates, channel saturation, capacity pressure, and RabbitMQ coexistence
 
-In-progress feature: [Kafka allocation consumer](./issues/feature-concurrent-per-event-allocation.md).
+In-progress feature: [Kafka allocation consumer](../.github/memory/issues/feature-concurrent-per-event-allocation.md).
 
 ## Scenario 19: Exercise allocation-job REST endpoints under controlled load
 
@@ -572,7 +572,7 @@ In-progress feature: [Kafka allocation consumer](./issues/feature-concurrent-per
 - Generated-client usage versus direct DSL calls is intentionally documented with tradeoffs, and chosen behavior is reflected in code/tests/docs
 - Documentation states that results are environment-specific and do not imply production guarantees without representative infrastructure
 
-Planned feature: [Allocation performance harness](./issues/feature-allocation-performance-harness.md).
+Planned feature: [Allocation performance harness](../.github/memory/issues/feature-allocation-performance-harness.md).
 
 ## Scenario 20: Submit structured allocation requests from a direct UI workflow
 
@@ -599,7 +599,7 @@ Planned feature: [Allocation performance harness](./issues/feature-allocation-pe
 - Agentic product-resolution workflow remains intact and separately navigable
 - The selected target endpoint and payload contract are documented and reflected consistently in frontend types/client/route/tests
 
-In-progress feature: [Direct structured allocation UI](./issues/feature-direct-structured-allocation-ui.md).
+In-progress feature: [Direct structured allocation UI](../.github/memory/issues/feature-direct-structured-allocation-ui.md).
 
 ## Scenario 21: Fail fast under allocation lock contention
 
@@ -628,7 +628,7 @@ In-progress feature: [Direct structured allocation UI](./issues/feature-direct-s
 - Metrics and run artifacts show before/after impact on p95/p99 latency, rejection ratio, lock waits, and completed throughput
 - Documentation clearly separates local/per-instance admission behavior from cluster-wide or physical database guarantees
 
-In-progress feature: [Fail-fast lock contention mitigation](./issues/feature-fail-fast-lock-contention-mitigation.md).
+In-progress feature: [Fail-fast lock contention mitigation](../.github/memory/issues/feature-fail-fast-lock-contention-mitigation.md).
 
 ## Scenario 22: Accept allocation jobs on the Redis fast path
 
@@ -658,6 +658,6 @@ In-progress feature: [Fail-fast lock contention mitigation](./issues/feature-fai
 - Slow-path failure restores Redis availability; slow-path success removes provisional keys without treating confirm as a ledger commit
 - Startup pre-warm and divergence repair load `SUM(quantity_available)` grouped by SKU and warehouse, and refuse new holds while a rebuild is running
 - CDC applies absolute availability for the affected SKU and warehouse idempotently
-- `GET /api/allocation/order-reservation/{key}/redis` returns a `stock:sku`, `reservation`, or `expiry:res` value when fast path is enabled, and rejects any other key
+- `GET /api/reservations/orders/{key}/redis` returns a `stock:sku`, `reservation`, or `expiry:res` value when fast path is enabled, and rejects any other key
 
-In-progress feature: [Redis Fast Path provisional allocation accept](./issues/feature-redis-fast-path.md).
+In-progress feature: [Redis Fast Path provisional allocation accept](../.github/memory/issues/feature-redis-fast-path.md).

@@ -11,8 +11,8 @@ after-commit-only callback design is superseded; fulfillment rules are unchanged
 - **Status:** In-progress
 - **Priority:** P1
 - **Bounded Context:** Inventory & Allocation
-- **Specification:** [`../specifications.md`](../specifications.md#feature-automate-backorder-fulfillment-after-physical-inbound-receipt)
-- **Scenario:** [`Scenario 4: Fulfill Open Backorders`](../scenarios.md#scenario-4-fulfill-open-backorders)
+- **Specification:** [`../../../docs/specifications.md`](../../../docs/specifications.md#feature-automate-backorder-fulfillment-after-physical-inbound-receipt)
+- **Scenario:** [`Scenario 4: Fulfill Open Backorders`](../../../docs/scenarios.md#scenario-4-fulfill-open-backorders)
 
 Automate fulfillment of persisted open backorders when stock-ledger
 synchronization physically receives inbound supply. Registering

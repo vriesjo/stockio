@@ -73,38 +73,6 @@ paths:
         '500':
           description: Kafka publish failed or its acknowledgement outcome is unknown, or an unexpected server error occurred.
 
-  /api/allocation/order-reservation/{key}/redis:
-    get:
-      tags:
-        - Allocation
-      operationId: getAllocationOrderReservationByKey
-      summary: Get Redis order reservation by key
-      description: |
-        Returns the current value of a key built by `RedisKeys`: `stock:sku:{sku}:{warehouse}`,
-        `reservation:{requestId}:{orderId}:{orderLineId}`, or
-        `expiry:res:{requestId}:{orderId}:{orderLineId}`. String keys return `value`.
-        Reservation hashes return `fields`.
-      parameters:
-        - name: key
-          in: path
-          required: true
-          description: Complete Redis key e.g., `stock:sku:{sku}:{warehouse}`, `reservation:{requestId}:{orderId}:{orderLineId}`, or `expiry:res:{requestId}:{orderId}:{orderLineId}`.
-          schema:
-            type: string
-      responses:
-        '200':
-          description: The key exists.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RedisKeyResponse'
-        '400':
-          description: The key is not a stock, reservation, or expiry key.
-        '404':
-          description: Redis has no such key.
-        '503':
-          description: The Redis fast path is disabled or still rebuilding.
-
   /api/allocation/jobs/{jobId}:
     get:
       tags:
@@ -161,32 +129,6 @@ paths:
                 $ref: '#/components/schemas/StockLedgerSyncStatus'
         '500':
           description: An unexpected server error occurred while loading status.
-
-  /api/allocation/order-reservation/{orderId}/status:
-    get:
-      tags:
-        - Allocation
-      operationId: getAllocationOrderReservationStatus
-      summary: Get an order's reservation status
-      description: |
-        Returns the current reservation lifecycle and its lines. This is an
-        additional read mapping on AllocationController.
-      parameters:
-        - name: orderId
-          in: path
-          required: true
-          description: Order identifier.
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Current reservation status.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrderReservationResponse'
-        '404':
-          description: No reservation exists for this order.
 
 components:
   schemas:
@@ -610,70 +552,6 @@ components:
           type: string
           nullable: true
 
-    OrderReservationResponse:
-      type: object
-      required:
-        - orderId
-        - lines
-        - status
-        - createdAt
-        - expiresAt
-        - confirmedAt
-        - expiredAt
-        - cleanupPending
-      properties:
-        orderId:
-          type: string
-        lines:
-          type: array
-          items:
-            $ref: '#/components/schemas/OrderReservationLine'
-        status:
-          $ref: '#/components/schemas/OrderReservationStatus'
-        createdAt:
-          type: string
-          format: date-time
-        expiresAt:
-          type: string
-          format: date-time
-          nullable: true
-        confirmedAt:
-          type: string
-          format: date-time
-          nullable: true
-        expiredAt:
-          type: string
-          format: date-time
-          nullable: true
-        cleanupPending:
-          type: boolean
-
-    OrderReservationLine:
-      type: object
-      required:
-        - orderLineId
-        - sku
-        - requestedQuantity
-        - requiredDeliveryDate
-      properties:
-        orderLineId:
-          type: string
-        sku:
-          type: string
-        requestedQuantity:
-          type: integer
-          format: int32
-        requiredDeliveryDate:
-          type: string
-          format: date
-
-    OrderReservationStatus:
-      type: string
-      enum:
-        - PENDING_CONFIRMATION
-        - CONFIRMED
-        - EXPIRED
-
     ErrorResponse:
       type: object
       required:
@@ -681,23 +559,3 @@ components:
       properties:
         error:
           type: string
-
-    RedisKeyResponse:
-      type: object
-      required:
-        - key
-      properties:
-        key:
-          type: string
-        value:
-          type: string
-          nullable: true
-        fields:
-          type: object
-          additionalProperties:
-            type: string
-          nullable: true
-        ttlSeconds:
-          type: integer
-          format: int64
-          nullable: true

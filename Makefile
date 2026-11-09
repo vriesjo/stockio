@@ -5,9 +5,7 @@ run-ui:
 		bash -c '. "$${NVM_DIR:-$$HOME/.nvm}/nvm.sh" --no-use && nvm use && exec npm run dev'
 
 run-service:
-	set -a && . stockio-service/.env.service && set +a && ./gradlew :stockio-service:bootRun
-
-run-publisher: run-publisher-rabbitmq
+	./stockio-service/run-service.sh
 
 run-publisher-rabbitmq:
 	ALLOCATION_RABBITMQ_PUBLISHER_ENABLED=true ./gradlew :stockio-test-harness:bootRun
@@ -18,9 +16,6 @@ run-publisher-kafka:
 run-performance:
 	./gradlew :stockio-test-harness:performanceRun --no-daemon
 
-open-allocation-swagger:
-	./stockio-test-harness/performance/open-allocation-swagger.sh
-
 test-e2e:
 	cd stockio-test-harness && \
 		bash -c '. "$${NVM_DIR:-$$HOME/.nvm}/nvm.sh" --no-use && nvm use && exec npm run test:e2e'
@@ -28,7 +23,7 @@ test-e2e:
 compile-service:
 	./gradlew :stockio-service:compileKotlin --no-daemon
 
-complete-build:
+build:
 	./gradlew clean build --no-daemon
 
 test:
@@ -36,6 +31,9 @@ test:
 
 up:
 	docker compose -f infra/docker/docker-compose.yml up -d
+
+down:
+	docker compose -f infra/docker/docker-compose.yml down
 
 up-rabbitmq:
 	docker compose -f infra/docker/docker-compose.yml up -d --wait rabbitmq
@@ -53,8 +51,11 @@ up-ollama:
 	docker compose -f infra/docker/docker-compose.yml up -d --wait ollama
 	docker compose -f infra/docker/docker-compose.yml run --rm ollama-pull-model
 
-down:
-	docker compose -f infra/docker/docker-compose.yml down
-
-logs:
+postgres-logs:
 	docker compose -f infra/docker/docker-compose.yml ps -a postgres && docker compose -f infra/docker/docker-compose.yml logs --tail 100 postgres
+
+redis-logs:
+	docker compose -f infra/docker/docker-compose.yml ps -a redis && docker compose -f infra/docker/docker-compose.yml logs --tail 100 redis
+
+redis-cli:
+	docker compose -f infra/docker/docker-compose.yml exec redis redis-cli

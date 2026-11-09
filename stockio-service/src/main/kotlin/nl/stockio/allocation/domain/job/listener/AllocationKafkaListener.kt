@@ -51,7 +51,7 @@ class AllocationKafkaListener(
         topics = ["\${stockio.allocation.kafka.topic:stockio.allocation.requests}"],
         groupId = "\${stockio.allocation.kafka.group-id:stockio-allocation}",
         concurrency = "\${stockio.allocation.kafka.listener-concurrency:2}",
-        autoStartup = "\${stockio.allocation.kafka.enabled:false}",
+        autoStartup = "\${stockio.allocation.kafka.enabled:true}",
         containerFactory = "allocationKafkaListenerContainerFactory"
     )
     fun receive(

@@ -6,9 +6,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Frontend Integration & Product Allocation
 - **Implementation started:** Yes; implementation and scoped validation are complete.
-- **Specification:** [Feature specification](../specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
-- **Parent Specs:** [Architecture](../architecture.md), [Product allocation REST contract](../../../stockio-api/src/main/resources/openapi/product-allocation-controller.yaml)
-- **Scenario:** [Scenario 12](../scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http), building on [Scenario 1](../scenarios.md#scenario-1-allocate-a-product-by-name).
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md), [Product allocation REST contract](../../../stockio-api/src/main/resources/openapi/product-allocation-controller.yaml)
+- **Scenario:** [Scenario 12](../../../docs/scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http), building on [Scenario 1](../../../docs/scenarios.md#scenario-1-allocate-a-product-by-name).
 
 ## Context and desired behavior
 
@@ -196,7 +196,7 @@ not as current runtime components.
 
 ## Functional scenario
 
-Source: [Scenario 12](../scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http).
+Source: [Scenario 12](../../../docs/scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http).
 
 ### Gherkin description
 **Given** the Next.js allocation frontend and an independently running `stockio-service` on port `9090` \

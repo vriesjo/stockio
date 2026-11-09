@@ -22,7 +22,7 @@ Stockio is a Kotlin/Spring service with PostgreSQL as its system of record. Flyw
 
 The allocation request includes identifiers and dates in addition to SKU and quantity. New-demand allocation and backorder fulfillment are separate workflows. The existing MCP tools and REST endpoints should be reused or extended; inventory must not be reserved by directly updating tables from the product-resolution feature.
 
-See [architecture.md](architecture.md) for the current modules, request shape, allocation rules, persistence model, and interfaces.
+See [architecture.md](../../../docs/architecture.md) for the current modules, request shape, allocation rules, data model, and interfaces.
 
 ## Request flow
 

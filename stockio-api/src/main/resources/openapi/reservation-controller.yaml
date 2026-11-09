@@ -3,14 +3,14 @@ info:
   title: Stockio Reservation Controller API
   version: 1.0.0
   description: |
-    OpenAPI description of the existing ReservationController endpoint.
+    OpenAPI description of the endpoints implemented by ReservationController.
     No application-level authentication is configured.
 paths:
   /api/reservations/orders/{orderId}/status:
     get:
       tags:
         - Reservation
-      operationId: getOrderReservationStatus
+      operationId: getOrderReservationStatusByOrderId
       summary: Get an order's reservation status
       description: |
         Returns the current reservation lifecycle, lines, and timestamps.
@@ -35,6 +35,38 @@ paths:
           description: No reservation exists for this order.
         '500':
           description: An unexpected server error occurred while loading reservation status.
+
+  /api/reservations/orders/{key}/redis:
+    get:
+      tags:
+        - Reservation
+      operationId: getOrderReservationStatusByRedisKey
+      summary: Get Redis order reservation by key
+      description: |
+        Returns the current value of a key built by `RedisKeys`: `stock:sku:{sku}:{warehouse}`,
+        `reservation:{requestId}:{orderId}:{orderLineId}`, or
+        `expiry:res:{requestId}:{orderId}:{orderLineId}`. String keys return `value`.
+        Reservation hashes return `fields`.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          description: Complete Redis key e.g., `stock:sku:{sku}:{warehouse}`, `reservation:{requestId}:{orderId}:{orderLineId}`, or `expiry:res:{requestId}:{orderId}:{orderLineId}`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The key exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedisKeyResponse'
+        '400':
+          description: The key is not a stock, reservation, or expiry key.
+        '404':
+          description: Redis has no such key.
+        '503':
+          description: The Redis fast path is disabled or still rebuilding.
 
 components:
   schemas:
@@ -101,3 +133,23 @@ components:
         - PENDING_CONFIRMATION
         - CONFIRMED
         - EXPIRED
+
+    RedisKeyResponse:
+      type: object
+      required:
+        - key
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+          nullable: true
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+        ttlSeconds:
+          type: integer
+          format: int64
+          nullable: true

@@ -4,9 +4,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Allocation intake and stock availability
 - **Implementation started:** Yes
-- **Specification:** [Feature specification](../specifications.md#feature-redis-fast-path-provisional-allocation-accept)
-- **Parent Specs:** [Architecture](../architecture.md)
-- **Scenario:** [Scenario 22](../scenarios.md#scenario-22-accept-allocation-jobs-on-the-redis-fast-path)
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-redis-fast-path-provisional-allocation-accept)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md)
+- **Scenario:** [Scenario 22](../../../docs/scenarios.md#scenario-22-accept-allocation-jobs-on-the-redis-fast-path)
 
 ## Context and scope
 
@@ -49,14 +49,14 @@ Out of scope:
 - Slow-path failure restores Redis availability; slow-path success removes provisional keys without treating confirm as a ledger commit.
 - Startup pre-warm and divergence repair load `SUM(quantity_available)` grouped by SKU and warehouse, and refuse new holds while a rebuild is running.
 - CDC applies absolute availability for the affected SKU and warehouse idempotently.
-- `GET /api/allocation/order-reservation/{key}/redis` reads one `RedisKeys` stock, reservation, or expiry key when fast path is enabled, and rejects any other key.
+- `GET /api/reservations/orders/{key}/redis` reads one `RedisKeys` stock, reservation, or expiry key when fast path is enabled, and rejects any other key.
 
 ## Technical analysis and affected components
 
 | Component | Current behavior | Planned change |
 | --- | --- | --- |
 | `AllocationController.submitAllocationJob` | Async publish or inline `executeSync` | When enabled: Redis hold, then Kafka publish, no stock write |
-| `AllocationController.getAllocationOrderReservationByKey` | Not present | `GET /api/allocation/order-reservation/{key}/redis` reads one managed Redis key |
+| `ReservationController.getOrderReservationStatusByRedisKey` | Not present | `GET /api/reservations/orders/{key}/redis` reads one managed Redis key |
 | `AllocationJobExecutor` | Publishes or runs allocation | `executeAsync` publishes to Kafka only; the listener starts tracking; `executeSync` settles or rolls back holds |
 | Redis | Not used | `stock:sku:{sku}:{warehouse}`, `reservation:{requestId}:{orderId}:{orderLineId}`, `expiry:res:...` |
 | `stock` | Lot rows with generated `quantity_available` | Pre-warm and CDC sum by SKU and warehouse |

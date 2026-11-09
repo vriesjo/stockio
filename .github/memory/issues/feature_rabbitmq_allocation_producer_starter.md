@@ -5,8 +5,8 @@
 - **Status:** Draft
 - **Priority:** Not set
 - **Bounded Context:** Messaging Integration & Allocation Contracts
-- **Specification:** [`../specifications.md`](../specifications.md#feature-add-a-reusable-rabbitmq-allocation-producer-starter)
-- **Scenario:** [`Scenario 11: Publish an Allocation Request from Another Spring Boot Application`](../scenarios.md#scenario-11-publish-an-allocation-request-from-another-spring-boot-application)
+- **Specification:** [`../../../docs/specifications.md`](../../../docs/specifications.md#feature-add-a-reusable-rabbitmq-allocation-producer-starter)
+- **Scenario:** [`Scenario 11: Publish an Allocation Request from Another Spring Boot Application`](../../../docs/scenarios.md#scenario-11-publish-an-allocation-request-from-another-spring-boot-application)
 
 Provide a reusable Spring Boot producer starter that lets another application
 publish allocation requests compatible with Stockio's existing RabbitMQ

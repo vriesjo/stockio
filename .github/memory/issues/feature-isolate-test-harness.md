@@ -4,9 +4,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Test Infrastructure & Allocation Messaging
 - **Implementation started:** Yes. Complete, at the user's request.
-- **Specification:** [Feature specification](../specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
-- **Parent Specs:** [Architecture](../architecture.md)
-- **Scenario:** [Scenario 13](../scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness)
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md)
+- **Scenario:** [Scenario 13](../../../docs/scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness)
 
 ## Context and scope
 

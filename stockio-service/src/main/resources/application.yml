@@ -135,7 +135,7 @@ stockio:
       dead-letter-routing-key: ${ALLOCATION_RABBITMQ_DEAD_LETTER_ROUTING_KEY:allocation.failed}
       dead-letter-queue: ${ALLOCATION_RABBITMQ_DEAD_LETTER_QUEUE:stockio.allocation.dead}
     kafka:
-      enabled: ${ALLOCATION_KAFKA_ENABLED:false}
+      enabled: ${ALLOCATION_KAFKA_ENABLED:true}
       topic: ${ALLOCATION_KAFKA_TOPIC:stockio.allocation.requests}
       group-id: ${ALLOCATION_KAFKA_GROUP_ID:stockio-allocation}
       dead-letter-topic: ${ALLOCATION_KAFKA_DEAD_LETTER_TOPIC:stockio.allocation.requests.DLT}

@@ -37,9 +37,10 @@ inbound shipments. Stockio creates reservations, records shortages as backorders
 and maintains forecasts. A separate ledger process applies receipts and confirmed
 deliveries to physical stock.
 
-Requests can arrive through HTTP, MCP tools, or RabbitMQ. Clients retry after
-timeouts, RabbitMQ can redeliver, JobRunr can retry, and several application
-instances may execute concurrently.
+Requests can arrive through HTTP, MCP tools, Kafka, or RabbitMQ. The HTTP
+asynchronous path publishes to Kafka, and that consumer is on by default.
+Clients retry after timeouts, Kafka and RabbitMQ can redeliver, JobRunr can
+retry a fallback job, and several application instances may execute concurrently.
 
 Design the system so that:
 
@@ -120,18 +121,24 @@ intent. Neither substitutes for the other.
 **Current:** Stockio is a modular Spring Boot service, not a collection of
 independently deployed inventory microservices. PostgreSQL is the system of
 record. JPA manages operational entities; JDBC manages derived stock snapshots.
-JobRunr provides background execution, and a separate RabbitMQ consumer provides
-another intake path.
+Kafka is the default asynchronous intake. RabbitMQ remains a second consumer.
+JobRunr runs fallback allocation after a consumer processing failure, plus
+ledger sync and receipt follow-up dispatch.
 
 ```text
-HTTP allocation request
+HTTP allocation request, async=true
   -> AllocationController
   -> AllocationJobExecutor.executeAsync
-  -> direct JobRunr enqueue -> AllocationJobExecutor.executeSync
+  -> Kafka publish, then 202 after the broker acknowledges
+  -> AllocationKafkaListener
+       -> AllocationJobExecutor.executeSync
+       -> same record retried on capacity or lock contention
+       -> JobRunr fallback on other execution failure
                          |
 RabbitMQ -> AllocationRabbitListener
               -> AllocationJobExecutor.executeSync directly
-              -> JobRunr fallback on retryable execution failure
+              -> same pause-and-retry on capacity or lock contention
+              -> JobRunr fallback on other execution failure
                          |
 MCP tools --------------> shared allocation processing
                          |
@@ -150,17 +157,27 @@ MCP tools --------------> shared allocation processing
                persist job completion result
 
 Independent ledger trigger
-  -> StockLedgerProcessor
-  -> expire holds + rebuild projection + apply movements + save sync status
-  -> after commit: enqueue affected-SKU backorder allocation
+  -> StockLedgerProcessor, one SKU transaction at a time
+  -> expire overdue holds outside that transaction when required
+  -> rebuild projection + apply movements + write receipt follow-up
+  -> after the run completes: dispatch pending follow-up to JobRunr
+  -> a minute job dispatches any follow-up still pending
 
 Operational state, checkpoints, projections, and JobRunr storage -> PostgreSQL
 ```
 
-**Important:** the default HTTP path directly enqueues JobRunr work. It uses
-neither an in-process Spring event nor RabbitMQ. Acceptance follows successful
-enqueue, without an application transaction or after-commit listener.
-The independent ledger-receipt path still uses an after-commit callback.
+**Important:** asynchronous HTTP publishes to Kafka and returns `202` after the
+broker acknowledges. It does not enqueue JobRunr on the success path, and it
+does not use RabbitMQ. There is no application transaction around that publish.
+The Redis fast path is off unless `STOCKIO_REDIS_PATH_ENABLED=true`. When it is
+on, only `async=true` is accepted: a Redis hold is taken before the Kafka
+publish, and PostgreSQL remains the ledger. The hold is an integer per SKU and
+warehouse, the sum of available quantity across lots.
+
+Receipt follow-up is a row in `stock_receipt_followup`, inserted in the same
+SKU transaction as the receipt. Dispatch happens after the ledger run completes
+and again from the recurring dispatcher. It is not an in-memory after-commit
+callback.
 
 ### API accuracy matters
 
@@ -172,7 +189,6 @@ The current controllers declare these paths:
 | Poll a job | `GET /api/allocation/jobs/{jobId}` |
 | Read reservation lifecycle | `GET /api/reservations/orders/{orderId}/status` |
 | Read ledger freshness | `GET /api/stock/ledger/status` |
-| Additional reservation read mapping | `GET /api/allocation/order-reservation/{orderId}/status` |
 | Additional ledger read mapping | `GET /api/allocation/stock-ledger/status` |
 
 The asynchronous response is `202 Accepted` with `{jobId, requestId}` and
@@ -191,7 +207,7 @@ record with a consistent identity; neither refinement is implemented here.
 
 An allocation request uses this shape; dates are illustrative, and the HTTP
 controller requires `asOfDate` to equal today according to the business clock
-before either enqueueing or executing inline:
+before either publishing or executing inline:
 
 ```json
 {
@@ -335,9 +351,11 @@ empty success or start an uncoordinated second allocation.
 
 **Current:** an incomplete run can be resumed through coordinated workers.
 Concurrent work may wait for the SKU lock and then reuse a checkpoint or the
-completed run. HTTP submissions return an execution `jobId`; job status exposes
-a result only when the JobRunr state is `SUCCEEDED`. This is not a dedicated
-request-ID-based in-progress response contract.
+completed run. HTTP submissions return an execution `jobId`. Status prefers a
+JobRunr job when one exists and returns its result only in `SUCCEEDED`. A Kafka
+success does not create a JobRunr job: the listener records
+`allocation_job_tracking`, and a saved `allocation_job_result` is reported as
+`SUCCEEDED`. Unknown ids are `404`. This is not a lookup by `requestId`.
 
 **Proposed API contract:** distinguish a completed replay, matching in-progress
 work, and a conflicting payload. Return the saved logical result for completed
@@ -385,10 +403,10 @@ backorders 60. Total reserved is 100, not 160.
 
 **Current worker transaction:**
 
-1. Acquire a shared lock on the stock-projection coordination row.
+1. When lock-contention control is enabled, set a transaction-local lock timeout and statement timeout. It is off by default.
 2. Create the SKU lock row if missing and acquire its pessimistic write lock.
 3. Check the `(runId, sku)` replay checkpoint and completed run.
-4. Lock eligible supply/stock and read relevant reservations.
+4. Lock eligible supply and stock and read relevant reservations.
 5. Calculate allocation and persist counters, reservations, and backorders.
 6. Persist that SKU's serialized result checkpoint in the same transaction.
 7. Commit, releasing the locks.
@@ -403,25 +421,32 @@ Which request obtains it first is not a guarantee of global business priority.
 
 **Answer**
 
-"They protect different scopes."
+"The current service does not take both. The SKU lock is the coordination row.
+The global projection lock is leftover schema."
 
-**Current:** allocation workers take a shared projection lock, so different SKUs
-can progress concurrently. Work on the same SKU serializes through its own
-exclusive row lock. Projection rebuilding and ledger synchronization take the
-exclusive projection lock, excluding allocation while they build/apply a
-consistent view. Document registration uses the shared gate, sorted namespaced
-header/line identity locks, sorted inbound SKU locks, and then the run lock.
-This permits independent registrations to overlap while protecting absent
-identities and inbound amendments. Existing supply rows are locked before
-amendment validation. Run locking follows SKU acquisition so a retry does not
-block worker foreign-key checks while waiting for that worker.
+**Current:** `stock_projection_lock` remains in the database, and tests still
+know the row. No production allocation, projection, ledger, or expiry path
+acquires it. Writers share `allocation_sku_lock`. Different SKUs proceed
+together. One transaction at a time holds a given SKU, including that SKU's
+allocation, projection rebuild, ledger application, and inbound amendment.
+Whole-order expiry locks every SKU on the order, in sorted order.
 
-This is stronger than protecting a single stock counter: ledger processing
-touches receipts, holds, snapshots, and physical balances together.
+Document registration locks sorted document identities, then sorted inbound SKU
+rows, then the run row. Order-only documents do not take a SKU lock at
+registration, so two orders for the same SKU can register together. Existing
+supply rows are locked before amendment validation. The run lock is taken after
+the SKU locks so a registration does not block a worker's foreign-key checks
+while that worker waits for its SKU.
 
-**Tradeoff:** a global exclusive phase limits throughput and can increase tail
-latency. It is an understandable correctness boundary for the current service.
-Partitioning it later requires proving consistency within and across partitions.
+The SKU lock is stronger than a single stock-counter update: the ledger worker
+rebuilds that SKU's forecast and applies receipts, hold conversions, and
+deliveries in the same transaction.
+
+**Tradeoff:** a hot SKU still serializes, and a lock wait can hold a pooled
+connection. There is no global exclusive phase to remove. Adding instances does
+not make two writers update the same SKU at once. Opt-in lock-contention
+control can fail that wait as `503` `ALLOCATION_LOCK_CONTENTION` instead of
+holding the connection. It is off by default.
 
 **Alternative discussion:** optimistic versioning or a conditional update such as
 `UPDATE ... WHERE available >= requested` can work for a simpler counter.
@@ -464,14 +489,14 @@ Walk through the exact boundary rather than saying "retry it":
 
 | Failure point | Current recovery behavior or limitation |
 | --- | --- |
-| Before direct HTTP enqueue succeeds | No acceptance is returned; scheduling errors propagate. |
-| After HTTP enqueue succeeds, before acceptance reaches the caller | The job may already exist or execute. Retry the same logical request; a new execution job can still be created. |
+| Before the Kafka publish is acknowledged | No `202` is returned; the publish error propagates. With the Redis fast path on, a failed publish rolls the hold back. |
+| After Kafka acknowledges, before `202` reaches the caller | The record may already be consumed. Retry the same logical request; HTTP still publishes a new job id. |
 | Before a SKU transaction commits | Its mutations and checkpoint roll back together. |
 | After a SKU commits, before all SKUs finish | Retry reuses committed SKU checkpoints and processes unfinished work. |
 | After run completion, before projection succeeds | Retry reuses the completed allocation and retries the projection; it does not reserve again. |
 | After projection, before job-result persistence | Retry can replay the run and rebuild projections before saving completion. |
-| After job-result persistence, before acknowledgment/response | Execution can return the saved completion result; RabbitMQ may still redeliver. |
-| After a receipt commits, before its after-commit job enqueue | The receipt remains committed, but automatic backorder scheduling can be lost. A durable outbox/recovery process is not shown in that path. |
+| After job-result persistence, before acknowledgment/response | Execution can return the saved completion result. Kafka or RabbitMQ may still redeliver that execution. |
+| After a receipt commits, before JobRunr accepts the follow-up | The receipt and a `stock_receipt_followup` row commit together. The minute dispatcher, and the dispatch after a completed ledger run, enqueue from that row. |
 
 **Current:** `AllocationProcessor` deliberately avoids one outer transaction
 spanning parallel workers and projection refresh. It wraps a post-allocation
@@ -481,29 +506,32 @@ than letting RabbitMQ classify it as invalid demand.
 The recovery objective is the same allocation effect, not necessarily the same
 number of projection rebuilds.
 
-### Q9. RabbitMQ delivers the same request twice. Do you need exactly-once delivery?
+### Q9. Kafka or RabbitMQ delivers the same request twice. Do you need exactly-once delivery?
 
 **Answer**
 
 "I design for at-least-once delivery and idempotent database effects.
 Acknowledgment is not atomically tied to every database commit."
 
-**Current:** `AllocationRabbitListener` calls `AllocationJobExecutor.executeSync` directly.
-It propagates `IllegalArgumentException` as invalid input and delegates other
-execution failures to a JobRunr fallback, checking whether the job already
-exists. It uses `requestId` as the job ID.
+**Current:** the Kafka listener is the default consumer. It calls
+`AllocationJobExecutor.executeSync` with the record key as the job id. HTTP
+publishes that key as a new UUID. A missing key falls back to `requestId`; a
+key that is not a UUID is rejected. The RabbitMQ listener uses
+`request.requestId` as the job id. Both run the work directly. Capacity and
+lock contention pause 5–10 seconds and retry the same delivery; they do not
+enqueue JobRunr. Other execution failures enqueue a JobRunr fallback when that
+job id is not already present. Invalid input and an oversized body are
+dead-lettered.
 
 The durable allocation run, SKU checkpoints, order ownership, and reservation
 constraints are the deeper protection. A job existence check alone is not the
 business correctness boundary.
 
-**Implementation caveat:** the RabbitMQ fallback still has a logging call inside
-its enqueue lambda, whereas the corrected HTTP path contains only the executor
-invocation. JobRunr parses the lambda rather than executing arbitrary closure
-code; the same logging shape caused an `Unknown INVOKEDYNAMIC` enqueue failure
-on the HTTP path. Mocked listener tests do not verify actual fallback lambda
-serialization. Treat fallback scheduling as a remaining integration risk, not
-as proven reliable delivery.
+**Implementation caveat:** both fallback lambdas log and then call
+`executeSync`. JobRunr parses the lambda rather than running arbitrary closure
+code. A logging call inside that lambda has previously failed enqueue with
+`Unknown INVOKEDYNAMIC`. Listener tests that mock the scheduler do not prove
+the lambda serializes. Treat fallback scheduling as an integration risk.
 
 Distinguish failure classes: malformed/conflicting commands should not consume
 infinite retries; transient infrastructure failures can be retried with limits
@@ -562,58 +590,35 @@ Idempotency protects against duplicate effects, but does not by itself guarantee
 that work eventually happens. Durable handoff, retries, and recovery provide
 the liveness side of the design.
 
-### Q10. Does `afterCommit()` guarantee eventual backorder execution?
+### Q10. Does committing a receipt guarantee the backorder job runs?
 
 **Answer**
 
-"No. It prevents scheduling work for a rolled-back receipt, but it does not
-atomically persist the receipt and the intention to schedule."
+"The receipt and the intention to schedule commit together. JobRunr acceptance
+is a later step, and that step can be repeated safely."
 
-**Current:** `StockLedgerProcessor` registers a transaction synchronization.
-After receipt commit, it derives stable request/job IDs from the receipt date and
-sorted shipment-line IDs and enqueues a scoped `BackorderAllocationJob`.
+**Current:** `StockLedgerSkuWorker` applies the receipt and inserts
+`stock_receipt_followup` in the same transaction. The follow-up id is derived
+from the business date and the sorted received shipment-line ids. The job id is
+derived from that follow-up id. `StockReceiptFollowupDispatcher` reads pending
+rows after the ledger run completes, and a recurring job reads them every
+minute. It enqueues `BackorderAllocationJob`, then sets `dispatched_at`.
 
-A crash after commit but before enqueue loses the in-memory callback.
-An enqueue exception cannot undo the receipt. Because a later ledger run sees
-those lines as already received, it need not reconstruct the same trigger.
-Stable IDs help with repeated enqueue attempts; they do not close the missing
-enqueue window.
+A crash after the receipt commit leaves the row pending. The next dispatch
+picks it up. A crash after enqueue and before `dispatched_at` can enqueue
+again; the stable job id is what makes that repeat harmless, provided JobRunr
+rejects the duplicate id. A failed enqueue records `last_error` and leaves the
+row pending. Marking the row dispatched before enqueue is not what the code does.
 
-**Proposed: transactional outbox**
+JobRunr enqueue does not join the receipt transaction. Sharing PostgreSQL with
+JobRunr does not make those two writes atomic.
 
-```text
-Ledger database transaction
-  update stock + mark shipment lines received
-  insert durable outbox event with unique event ID and affected SKU scope
-  commit both
-
-Outbox dispatcher
-  claim pending events with bounded leases / row locking
-  enqueue work using a stable command identity
-  mark dispatched after durable acceptance
-  retry failures with backoff and monitoring
-
-Backorder worker
-  validate command identity
-  apply reservations transactionally with the existing SKU coordination
-```
-
-A dispatcher can crash after enqueue but before marking the outbox row sent.
-That produces a duplicate, which must be harmless. Marking sent before enqueue
-instead risks loss.
-
-JobRunr sharing PostgreSQL does not prove its enqueue joins the application's
-transaction. Verify actual integration/connection behavior before claiming
-atomicity.
-
-**Contrast with HTTP:** there is no HTTP `AFTER_COMMIT` scheduling path anymore.
-With no business mutation to commit during submission, direct enqueue before
-returning acceptance avoids the old event-to-enqueue handoff. It still leaves
-response-loss uncertainty: enqueue can succeed before the caller receives its
-job ID. Request idempotency protects the business effects, but does not provide
-a request-ID-to-job lookup. If submission must atomically accompany a business
-write, use an outbox or verify a genuinely shared transaction rather than
-assuming direct enqueue makes the two writes atomic.
+**Contrast with HTTP:** asynchronous submit publishes to Kafka and returns
+`202` after the broker acknowledges. There is no business row committed in that
+request. Losing the response can still leave a published record whose job id
+the caller never saw. Retrying with the same `requestId` protects the
+allocation run and can still publish another job. There is no lookup from
+`requestId` to job id.
 
 ### Q11. How do you avoid receiving or delivering stock twice?
 
@@ -623,10 +628,14 @@ assuming direct enqueue makes the two writes atomic.
 and a single database transaction. I would not blindly apply an old forecast
 again."
 
-**Current:** `StockLedgerProcessor` takes the exclusive projection lock, expires
-overdue pending holds, rebuilds today's projections, validates aggregate/lot
-agreement, applies physical changes, marks arrived shipment lines received,
-consumes due confirmed reservations, and records success in the transaction.
+**Current:** `StockLedgerProcessor` admits one ledger owner through
+`stock_ledger_coordinator` and processes today's manifest one SKU at a time.
+Each worker locks that SKU before it reads. Overdue pending orders are expired
+in a separate whole-order transaction, then the SKU is retried. The SKU
+transaction rebuilds today's projection, checks that lot closing quantities sum
+to the daily snapshot, applies receipts and due confirmed deliveries, marks
+arrived shipment lines received, writes the receipt follow-up, and checkpoints
+the SKU. The parent run is completed only after every SKU checkpoint exists.
 
 Subsequent runs rebuild from the new live state: received lines are no longer
 new receipts, and consumed reservations are gone. Rollback preserves the prior
@@ -723,7 +732,6 @@ public class SkuReservationWorker {
 
     @Transactional
     public String allocate(UUID runId, String sku, String expectedHash) {
-        store.acquireSharedProjectionLock();
         store.createAndLockSku(sku);
         store.validateRunIdentity(runId, expectedHash);
 
@@ -743,7 +751,6 @@ public class SkuReservationWorker {
     }
 
     public interface AllocationStore {
-        void acquireSharedProjectionLock();
         void createAndLockSku(String sku);
         void validateRunIdentity(UUID runId, String expectedHash);
         String findCheckpoint(UUID runId, String sku, String expectedHash);
@@ -769,7 +776,7 @@ reservation mutation must not commit separately from `saveCheckpoint`.
 | What about checked exceptions in Java? | Spring's usual default rollback rules cover runtime exceptions/errors, not every checked exception. Configure `rollbackFor` when the failure contract requires it. |
 | Can I catch an exception and return success? | Not safely. A persistence failure may leave the transaction rollback-only, and a success-shaped result hides unfinished work. |
 | Should we always use `REQUIRES_NEW`? | No. A nontransactional orchestrator calling a `REQUIRED` worker already gets a worker transaction. Nested transaction policies need a reason. |
-| Why not Redis `SETNX`? | It adds lease, expiry, and fencing concerns. The authoritative PostgreSQL mutations still require correctness protections. |
+| Why not Redis `SETNX`? | An opt-in Redis hold decrements available quantity per SKU and warehouse before publish. It is off by default and is not the lock. PostgreSQL SKU locks and reservation rows remain the correctness boundary. A Redis lock would still need leases and fencing. |
 | What about deadlocks? | Use a consistent lock order, short transactions, no remote calls while holding locks, and bounded whole-transaction retries after deadlock/serialization failure. |
 
 ### Q14. Which constraints would you defend in a schema discussion?
@@ -817,8 +824,8 @@ state after completion or rollback.
 | Fail projection after allocation commit | Allocation remains committed; retry refreshes projections without repeating allocation. |
 | Retry an initialized order near expiry | Original deadline is unchanged; expired lines are not re-reserved. |
 | Run manual and scheduled ledger sync concurrently | A shipment line is received once; physical balances remain consistent. |
-| Roll back receipt synchronization | No receipt/snapshot/success-state changes commit, and its post-commit enqueue does not occur. |
-| Kill the process after receipt commit, before enqueue | Demonstrates the current scheduling gap; a proposed outbox design must recover it. |
+| Roll back receipt synchronization | No receipt, snapshot, follow-up row, or success state commits, so nothing is dispatched for that attempt. |
+| Kill the process after the receipt commits, before JobRunr accepts the follow-up | The follow-up row remains pending and a later dispatch enqueues it. |
 | Lose acknowledgment after successful processing | Redelivery has no additional business effect. |
 | Reuse a scoped backorder command ID with different scope | Establish and enforce the intended identity contract; do not assume the current hash covers it. |
 | Redeliver one event to two proposed downstream consumers | Each consumer applies its own effect once; neither consumer suppresses the other. |
@@ -828,8 +835,8 @@ state after completion or rollback.
 **Existing examples to study:** `AllocationIntegrationTest` covers independent
 SKU/idempotent aggregation, projection-failure resume, overlapping ledger runs,
 ledger rollback, document ownership races, expiry, and unchanged deadlines on
-resume. `AllocationRabbitListenerTest` exercises listener failure/fallback
-behavior. This table is an interview test plan, not a claim that every drill
+resume. `AllocationKafkaListenerTest` and `AllocationRabbitListenerTest` exercise
+listener failure and fallback behavior. This table is an interview test plan, not a claim that every drill
 already has an automated test.
 
 ## 9. Scaling and operations follow-ups
@@ -837,17 +844,21 @@ already has an automated test.
 ### "How would this scale?"
 
 Start with measurements, not a broker replacement. Examine transaction duration,
-SKU lock wait, exclusive projection lock wait, connection-pool saturation,
-JobRunr queue age, and projection rebuild cost.
+SKU lock wait, connection-pool saturation, Kafka consumer lag, JobRunr queue
+age, and projection rebuild cost.
 
 **Current:** SKU concurrency is configurable, with a default of four per
 allocation service dispatcher. That is not a global concurrency limit across
-instances, jobs, or the separate new-demand/backorder services.
+instances, jobs, or the separate new-demand and backorder services. An opt-in
+per-instance semaphore can reject allocation when `max-in-flight` permits are
+taken. It is off unless every admission limit is set to a positive number.
+Opt-in lock-contention control can bound a lock wait. Neither one is a shared
+database-work budget. That budget is not implemented.
 
-**Proposed:** bound aggregate admission and database concurrency, tune batch
-sizes, optimize measured query bottlenecks, and partition coordination only when
-the domain permits independent stock scopes. A hot SKU remains a contention
-point even if more application instances are added.
+**Proposed:** measure before enabling those guards, then tune batch sizes and
+query cost. Partition coordination only when the domain permits independent
+stock scopes. A hot SKU remains a contention point even if more application
+instances are added.
 
 For sizing practice, let the interviewer supply assumptions. If requests arrive
 at rate `R` and each touches `S` distinct SKUs on average, the starting workload
@@ -888,12 +899,12 @@ eviction policy must not accidentally authorize old demand again.
 | "A hash of the order is always a better key." | Define retry versus legitimate new-command semantics first; a payload fingerprint serves a different purpose. |
 | "The duplicate can always return the previous response." | The first execution may still be running; define an in-progress/status contract. |
 | "Use `synchronized`." | Coordinate all writers through the authoritative database, across JVMs. |
-| "Use Kafka exactly once." | Stockio uses RabbitMQ/JobRunr; transport guarantees do not automatically cover PostgreSQL or remote warehouse effects. |
+| "Use Kafka exactly once." | Kafka is the default intake, and RabbitMQ and JobRunr remain. A broker guarantee does not cover PostgreSQL reservations or a remote warehouse call. |
 | "Our consumer deduplicates, so the whole event chain is safe." | Every downstream side-effect boundary needs its own duplicate protection. |
 | "Wrap everything in one transaction." | Explain independent SKU commits and resumability; a database transaction does not include arbitrary remote calls. |
 | "The HTTP timeout means failure." | The operation may have committed; retry/query with the same identity. |
 | "The order was allocated, so stock shipped." | A reservation, confirmation state, projection, and physical movement are different concepts. |
-| "After commit means the job cannot be lost." | It prevents premature scheduling, not the commit-to-enqueue crash gap. |
+| "After commit means the job cannot be lost." | The follow-up row commits with the receipt. JobRunr acceptance is the next step, and the dispatcher retries while that row is pending. |
 | "One unique reservation row prevents overselling." | Quantity changes and competing demand still need transactional supply coordination. |
 | "Priority sorting guarantees global fairness." | Current batches have ordering rules; cross-request fairness needs an explicit admission/scheduling policy. |
 
@@ -904,25 +915,27 @@ eviction policy must not accidentally authorize old demand again.
 > plus a request fingerprint. Order and line identities stop another request ID
 > from recreating the same new demand.
 >
-> Within allocation, each SKU has a transactional worker. A shared projection
-> lock coordinates with ledger/projection writers, and a pessimistic SKU lock
-> serializes competing reservations. The worker commits its stock and
-> reservation changes together with a replay checkpoint. Different SKUs can
-> commit independently, so a failed request resumes unfinished work instead of
-> reserving successful lines again. Finalization persists the completed run;
-> projection and job completion happen afterward and can be retried.
+> Within allocation, each SKU has a transactional worker. A pessimistic SKU
+> lock serializes allocation, projection, and ledger work for that SKU.
+> Different SKUs proceed together. The worker commits its stock and reservation
+> changes together with a replay checkpoint. A failed request resumes unfinished
+> SKUs instead of reserving successful lines again. Finalization persists the
+> completed run; projection and job completion happen afterward and can be
+> retried. The old global projection lock is not part of this protocol.
 >
 > I assume at-least-once message delivery, not magical exactly-once execution.
-> Replays converge on durable business state. Physical ledger synchronization
-> is separate: it rebuilds today's projection under an exclusive lock and
-> commits receipts, due confirmed deliveries, and success metadata together.
+> Replays converge on durable business state. Asynchronous HTTP publishes to
+> Kafka and returns after the broker acknowledges. Physical ledger
+> synchronization is separate: one owner processes today's SKUs, and each SKU
+> transaction rebuilds that SKU's projection and commits receipts, due confirmed
+> deliveries, the receipt follow-up, and its checkpoint together.
 >
-> Stockio already has much of this database-side foundation. I would explicitly
-> qualify the after-commit enqueue gap: stable job IDs prevent neither a lost
-> callback nor a missing enqueue. A transactional outbox would durably record
-> the intent to fulfill backorders. I would also verify command fingerprint
-> coverage, completion-cache validation, and the synchronous status-identity
-> mismatch rather than claim guarantees the code does not provide.
+> Stockio already has this database-side foundation. The receipt follow-up row
+> closes the old in-memory callback gap. I would still qualify the window after
+> JobRunr accepts the job and before `dispatched_at` is set, and I would verify
+> command fingerprint coverage, completion-cache validation, and the synchronous
+> status-identity mismatch rather than claim guarantees the code does not
+> provide.
 >
 > For downstream integrations, each consumer needs its own transactional inbox.
 > A remote dispatch also needs a stable fulfillment reference and reconciliation
@@ -940,7 +953,7 @@ Score each area from 0 to 2: **0** = missed, **1** = named the concept,
 | Explained concurrent duplicates, in-progress responses, and conflicting payloads | 2 |
 | Explained overselling prevention and lock scope | 2 |
 | Explained SKU checkpoints and projection-failure recovery | 2 |
-| Identified the post-commit gap, outbox duplicate window, and per-consumer inbox boundary | 2 |
+| Identified the receipt follow-up window, a duplicate dispatch, and the per-consumer inbox boundary | 2 |
 | Explained Java/Spring proxies and executor transaction boundaries | 2 |
 | Separated reservation, lifecycle, forecast, and physical stock | 2 |
 | Proposed adversarial database-backed tests | 2 |
@@ -956,18 +969,18 @@ identity validation, and the state persisted before each return:
 
 | Topic | Source |
 | --- | --- |
-| Architecture and supported flows | [Architecture](../.github/memory/architecture.md), [scenarios](../.github/memory/scenarios.md), [specifications](../.github/memory/specifications.md), [active context](../.github/memory/active-context.md) |
-| HTTP contracts | [AllocationController](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/api/AllocationController.kt), [ReservationController](../stockio-service/src/main/kotlin/nl/stockio/reservation/domain/api/ReservationController.kt), [StockController](../stockio-service/src/main/kotlin/nl/stockio/stock/api/StockController.kt), [request DTOs](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/api/dto/AllocationRequest.kt) |
-| HTTP enqueue, completion, and status | [AllocationJobExecutor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt), [AllocationJobRunrService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationJobRunrService.kt), [completion models](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/model/AllocationModels.kt) |
-| Run identity and finalization | [AllocationService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationService.kt), [AllocationRunService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationRunService.kt), [Hasher](../stockio-service/src/main/kotlin/nl/stockio/util/Hasher.kt) |
-| Order ownership and unchanged deadlines | [AllocationDocumentService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationDocumentService.kt) |
-| Transactional worker, ports, and checkpoints | [AllocationSkuWorker](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/tools/AllocationSkuWorker.kt), [allocation ports](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/port/AllocationRepositories.kt), [stock ports](../stockio-service/src/main/kotlin/nl/stockio/stock/domain/port/StockRepository.kt), [allocation adapters](../stockio-service/src/main/kotlin/nl/stockio/allocation/infra/AllocationJpaRepositories.kt), [stock adapters](../stockio-service/src/main/kotlin/nl/stockio/stock/infra/StockJpaRepositories.kt) |
-| Schema evolution and constraints | [V3: request idempotency](../stockio-service/src/main/resources/db/migration/V3__add_request_idempotency.sql), [V11: parallel SKU allocation](../stockio-service/src/main/resources/db/migration/V11__support_parallel_sku_allocations.sql), [V15: multiline identities](../stockio-service/src/main/resources/db/migration/V15__order_and_shipment_lines.sql) |
-| Projection and execution replay | [AllocationProcessor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/processor/AllocationProcessor.kt), [StockProjectionProcessor](../stockio-service/src/main/kotlin/nl/stockio/stock/domain/processor/StockProjectionProcessor.kt), [AllocationJobExecutor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt) |
-| Message redelivery and fallback | [AllocationRabbitListener](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/listener/AllocationRabbitListener.kt) |
-| Physical receipt and backorder trigger | [StockLedgerProcessor](../stockio-service/src/main/kotlin/nl/stockio/stock/domain/processor/StockLedgerProcessor.kt), [BackorderAllocationService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/BackorderAllocationService.kt) |
-| Database-backed examples | [AllocationIntegrationTest](../stockio-service/src/test/kotlin/nl/stockio/allocation/domain/service/AllocationIntegrationTest.kt) |
-| Listener failure examples | [AllocationRabbitListenerTest](../stockio-service/src/test/kotlin/nl/stockio/allocation/domain/job/AllocationRabbitListenerTest.kt) |
+| Architecture, flows, and data model | [Architecture](../architecture.md), [supported flows](../arch_supported_flows.md), [data model](../arch_data_model.md), [backpressure](../arch_backpressure_admission_control.md), [scenarios](../scenarios.md), [specifications](../specifications.md), [active context](../../.github/memory/active-context.md) |
+| HTTP contracts | [AllocationController](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/api/AllocationController.kt), [ReservationController](../../stockio-service/src/main/kotlin/nl/stockio/reservation/domain/api/ReservationController.kt), [StockController](../../stockio-service/src/main/kotlin/nl/stockio/stock/api/StockController.kt), [request DTO](../../stockio-api/src/main/kotlin/nl/stockio/api/dto/AllocationRequest.kt) |
+| Kafka publish, completion, and status | [AllocationJobExecutor](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt), [AllocationJobRunrService](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationJobRunrService.kt), [completion DTOs](../../stockio-api/src/main/kotlin/nl/stockio/api/dto/AllocationRunResult.kt) |
+| Run identity and finalization | [AllocationService](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationService.kt), [AllocationRunLifecycleService](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationRunLifecycleService.kt), [Hasher](../../stockio-service/src/main/kotlin/nl/stockio/util/Hasher.kt) |
+| Order ownership and unchanged deadlines | [AllocationDocumentService](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationDocumentService.kt) |
+| Transactional worker, ports, and checkpoints | [SkuAllocationProcessor](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/processor/SkuAllocationProcessor.kt), [allocation ports](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/port/AllocationRepositories.kt), [stock ports](../../stockio-service/src/main/kotlin/nl/stockio/stock/domain/port/StockRepository.kt), [allocation adapters](../../stockio-service/src/main/kotlin/nl/stockio/allocation/infra/AllocationJpaRepositories.kt), [stock adapters](../../stockio-service/src/main/kotlin/nl/stockio/stock/infra/StockJpaRepositories.kt) |
+| Schema evolution and constraints | [V3: request idempotency](../../stockio-service/src/main/resources/db/migration/V3__add_request_idempotency.sql), [V11: parallel SKU allocation](../../stockio-service/src/main/resources/db/migration/V11__support_parallel_sku_allocations.sql), [V15: multiline identities](../../stockio-service/src/main/resources/db/migration/V15__order_and_shipment_lines.sql), [V18: ledger follow-up](../../stockio-service/src/main/resources/db/migration/V18__per_sku_stock_processing.sql) |
+| Projection and execution replay | [AllocationProcessor](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/processor/AllocationProcessor.kt), [StockProjectionProcessor](../../stockio-service/src/main/kotlin/nl/stockio/stock/domain/processor/StockProjectionProcessor.kt), [AllocationJobExecutor](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt) |
+| Message redelivery and fallback | [AllocationKafkaListener](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/listener/AllocationKafkaListener.kt), [AllocationRabbitListener](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/listener/AllocationRabbitListener.kt) |
+| Physical receipt and backorder trigger | [StockLedgerProcessor](../../stockio-service/src/main/kotlin/nl/stockio/stock/domain/processor/StockLedgerProcessor.kt), [StockLedgerSkuWorker](../../stockio-service/src/main/kotlin/nl/stockio/stock/domain/processor/StockLedgerSkuWorker.kt), [receipt follow-up](../../stockio-service/src/main/kotlin/nl/stockio/stock/domain/job/StockReceiptFollowupDispatcher.kt), [AllocationBackorderService](../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationBackorderService.kt) |
+| Database-backed examples | [AllocationIntegrationTest](../../stockio-service/src/test/kotlin/nl/stockio/allocation/domain/service/AllocationIntegrationTest.kt) |
+| Listener failure examples | [AllocationKafkaListenerTest](../../stockio-service/src/test/kotlin/nl/stockio/allocation/domain/job/listener/AllocationKafkaListenerTest.kt), [AllocationRabbitListenerTest](../../stockio-service/src/test/kotlin/nl/stockio/allocation/domain/job/listener/AllocationRabbitListenerTest.kt) |
 
 When repository prose and executable mappings differ, inspect the implementation
 and its tests before using the prose as an interview claim.
@@ -991,8 +1004,9 @@ between safe replay, new business commands, and unknown remote outcomes.
 | Every downstream consumer needs duplicate protection | 8-9 | Q9 follow-up: consumer-scoped inbox, atomic local effects, and separate remote-effect protection. |
 | Repeat delivery versus one intended effect | 9-10 | Q9: scoped exactly-once claims, idempotent effects, and durable recovery; closing answer. |
 
-The in-progress contract, outbox, inbox schema, and external-operation state
-machine are design elaborations for interview practice, not claims that the
-article supplies their full implementation or that Stockio already has them.
+The in-progress request contract, the downstream consumer inbox, and the
+external-operation state machine are design elaborations for interview practice.
+Stockio does not have them. The receipt follow-up row is implemented: it is the
+durable handoff from a committed receipt to backorder allocation.
 Pages after the interview contain site material and responses; they are not
 treated as additional requirements.

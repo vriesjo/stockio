@@ -11,17 +11,12 @@ import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.api.dto.DemandOrder
 import nl.stockio.api.dto.DemandOrderLine
-import nl.stockio.api.dto.OrderReservationLine
-import nl.stockio.api.dto.OrderReservationResponse
-import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.infra.DisabledAllocationRedisGateway
 import nl.stockio.allocation.domain.port.AllocationGateway
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import nl.stockio.api.dto.AllocationJobAccepted
 import nl.stockio.api.dto.AllocationJobStatus
-import nl.stockio.api.dto.RedisKeyResponse
 import nl.stockio.allocation.domain.service.AllocationJobRunrService
-import nl.stockio.reservation.domain.service.OrderReservationService
 import nl.stockio.stock.domain.service.StockLedgerService
 import nl.stockio.stock.domain.service.StockLedgerSyncStatus
 import nl.stockio.allocation.domain.api.exception.CustomerExceptionHandler
@@ -63,7 +58,6 @@ class AllocationControllerTest {
         val mockMvc = createMockMvc(
             executor = executor,
             jobRunrService = mock(AllocationJobRunrService::class.java),
-            orderReservationService = mock(OrderReservationService::class.java),
             stockLedgerService = mock(StockLedgerService::class.java)
         )
 
@@ -99,24 +93,9 @@ class AllocationControllerTest {
         val stockLedgerService = mock(StockLedgerService::class.java)
         `when`(stockLedgerService.getStatusLastSyncRun()).thenReturn(stockStatus)
 
-        val reservation = OrderReservationResponse(
-            orderId = "ORDER-1",
-            lines = listOf(OrderReservationLine("LINE-1", "SKU-1", 2, today)),
-            status = OrderReservationStatus.PENDING_CONFIRMATION,
-            createdAt = now,
-            expiresAt = now.plusSeconds(900),
-            confirmedAt = null,
-            expiredAt = null,
-            cleanupPending = false
-        )
-        val reservationService = mock(OrderReservationService::class.java)
-        `when`(reservationService.getOrderReservationStatus("ORDER-1")).thenReturn(reservation)
-        `when`(reservationService.getOrderReservationStatus("MISSING")).thenReturn(null)
-
         val mockMvc = createMockMvc(
             executor = mock(AllocationJobExecutor::class.java),
             jobRunrService = jobRunrService,
-            orderReservationService = reservationService,
             stockLedgerService = stockLedgerService
         )
 
@@ -126,22 +105,14 @@ class AllocationControllerTest {
         mockMvc.perform(get("/api/allocation/stock-ledger/status"))
             .andExpect(status().isOk)
             .andExpect(jsonPath("$.skuCount").value(3))
-        mockMvc.perform(get("/api/allocation/order-reservation/ORDER-1/status"))
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.status").value("PENDING_CONFIRMATION"))
-        mockMvc.perform(get("/api/allocation/order-reservation/MISSING/status"))
-            .andExpect(status().isNotFound)
 
         verify(jobRunrService).getStatusById(jobId)
         verify(stockLedgerService).getStatusLastSyncRun()
-        verify(reservationService).getOrderReservationStatus("ORDER-1")
-        verify(reservationService).getOrderReservationStatus("MISSING")
     }
 
     private fun createMockMvc(
         executor: AllocationJobExecutor,
         jobRunrService: AllocationJobRunrService,
-        orderReservationService: OrderReservationService,
         stockLedgerService: StockLedgerService,
         provisional: AllocationGateway = DisabledAllocationRedisGateway()
     ): MockMvc =
@@ -149,7 +120,6 @@ class AllocationControllerTest {
             AllocationController(
                 allocationJobExecutor = executor,
                 allocationJobRunrService = jobRunrService,
-                orderReservationService = orderReservationService,
                 ledgerSyncStatusService = stockLedgerService,
                 clock = clock,
                 allocationRedisGateway = provisional
@@ -162,7 +132,7 @@ class AllocationControllerTest {
         val executor = io.mockk.mockk<AllocationJobExecutor>()
         io.mockk.every { executor.executeSync(any(), request) } throws AllocationCapacityExceededException()
         val mvc = createMockMvc(executor, mock(AllocationJobRunrService::class.java),
-            mock(OrderReservationService::class.java), mock(StockLedgerService::class.java))
+            mock(StockLedgerService::class.java))
         mvc.perform(post("/api/allocation/jobs?async=false").contentType(MediaType.APPLICATION_JSON)
             .content(objectMapper.writeValueAsString(request)))
             .andExpect(status().isServiceUnavailable)
@@ -177,7 +147,7 @@ class AllocationControllerTest {
         val executor = io.mockk.mockk<AllocationJobExecutor>()
         io.mockk.every { executor.executeSync(any(), request) } throws AllocationLockContentionException()
         val mvc = createMockMvc(executor, mock(AllocationJobRunrService::class.java),
-            mock(OrderReservationService::class.java), mock(StockLedgerService::class.java))
+            mock(StockLedgerService::class.java))
         mvc.perform(post("/api/allocation/jobs?async=false").contentType(MediaType.APPLICATION_JSON)
             .content(objectMapper.writeValueAsString(request)))
             .andExpect(status().isServiceUnavailable)
@@ -219,7 +189,6 @@ class AllocationControllerTest {
         val mvc = createMockMvc(
             executor,
             mock(AllocationJobRunrService::class.java),
-            mock(OrderReservationService::class.java),
             mock(StockLedgerService::class.java),
             gateway
         )
@@ -248,7 +217,6 @@ class AllocationControllerTest {
         val mvc = createMockMvc(
             io.mockk.mockk<AllocationJobExecutor>(relaxed = true),
             mock(AllocationJobRunrService::class.java),
-            mock(OrderReservationService::class.java),
             mock(StockLedgerService::class.java),
             gateway
         )
@@ -259,29 +227,5 @@ class AllocationControllerTest {
         )
             .andExpect(status().isConflict)
             .andExpect(jsonPath("$.code").value("FAST_PATH_SYNC_DISABLED"))
-    }
-
-    @Test
-    fun `redis key lookup returns the gateway value`() {
-        val gateway = object : AllocationGateway {
-            override val enabled = true
-            override fun accept(request: AllocationRequest) = Unit
-            override fun rollback(request: AllocationRequest) = Unit
-            override fun settle(request: AllocationRequest) = Unit
-            override fun getByKey(key: String) =
-                RedisKeyResponse(key, value = "5").takeIf { key == "stock:sku:SKU-1:MAIN" }
-        }
-        val mvc = createMockMvc(
-            io.mockk.mockk<AllocationJobExecutor>(relaxed = true),
-            mock(AllocationJobRunrService::class.java),
-            mock(OrderReservationService::class.java),
-            mock(StockLedgerService::class.java),
-            gateway
-        )
-        mvc.perform(get("/api/allocation/order-reservation/stock:sku:SKU-1:MAIN/redis"))
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.value").value("5"))
-        mvc.perform(get("/api/allocation/order-reservation/other/redis"))
-            .andExpect(status().isBadRequest)
     }
 }

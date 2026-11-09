@@ -5,8 +5,8 @@
 - **Status:** Done for `AllocationController`, `ReservationController`, and the user-selected `ProductAllocationController`.
 - **Priority:** Not set
 - **Bounded Context:** REST API / selected controller
-- **Specification:** [`../specifications.md`](../specifications.md#feature-generate-openapi-interfaces-for-rest-controllers)
-- **Implementation scenarios:** [Scenario 1](../scenarios.md#scenario-1-allocate-a-product-by-name), [Scenario 2](../scenarios.md#scenario-2-allocate-structured-new-demand), [Scenario 3](../scenarios.md#scenario-3-monitor-an-allocation-job), [Scenario 5](../scenarios.md#scenario-5-inspect-an-order-reservation), and [Scenario 7](../scenarios.md#scenario-7-monitor-stock-ledger-freshness). Determine applicable scenarios after the user selects another controller.
+- **Specification:** [`../../../docs/specifications.md`](../../../docs/specifications.md#feature-generate-openapi-interfaces-for-rest-controllers)
+- **Implementation scenarios:** [Scenario 1](../../../docs/scenarios.md#scenario-1-allocate-a-product-by-name), [Scenario 2](../../../docs/scenarios.md#scenario-2-allocate-structured-new-demand), [Scenario 3](../../../docs/scenarios.md#scenario-3-monitor-an-allocation-job), [Scenario 5](../../../docs/scenarios.md#scenario-5-inspect-an-order-reservation), and [Scenario 7](../../../docs/scenarios.md#scenario-7-monitor-stock-ledger-freshness). Determine applicable scenarios after the user selects another controller.
 
 At the start of each new controller run, ask: **"Which controller should I use?
 Please provide its source path or class name."** Do not assume
@@ -188,12 +188,14 @@ different validation or nullability. Verify generated signatures against the
 existing `AllocationRequest`, `AllocationJobAccepted`, `AllocationJobStatus`,
 `OrderReservationResponse`, and `StockLedgerSyncStatus` types.
 
-The current OpenAPI operation IDs (`submitAllocationJob`,
-`getAllocationJobStatus`, `getAllocationStockLedgerStatus`, and
-`getAllocationOrderReservationStatus`) differ from the Kotlin method names.
-Either align operation IDs with the current method names or deliberately rename
-the implementation methods when adding `override`. Configure mapping
-annotations on one layer only to avoid duplicate or ambiguous Spring routes.
+The allocation OpenAPI operation IDs (`submitAllocationJob`,
+`getAllocationJobStatus`, and `getAllocationStockLedgerStatus`) match
+`AllocationController`. `ReservationController` implements
+`getOrderReservationStatusByOrderId` and `getOrderReservationStatusByRedisKey`. When
+adding another interface, align operation IDs
+with the method names or rename the implementation when adding `override`.
+Configure mapping annotations on one layer only to avoid duplicate or ambiguous
+Spring routes.
 
 ## Functional Requirements
 
@@ -281,10 +283,10 @@ annotations on one layer only to avoid duplicate or ambiguous Spring routes.
 ## Resources
 
 - [Initial OpenAPI example](../../../stockio-api/src/main/resources/openapi/allocation-controller.yaml)
-- [Architecture](../architecture.md)
-- [Scenario 2: Allocate Structured New Demand](../scenarios.md#scenario-2-allocate-structured-new-demand)
-- [Scenario 3: Monitor an Allocation Job](../scenarios.md#scenario-3-monitor-an-allocation-job)
-- [Scenario 5: Inspect an Order Reservation](../scenarios.md#scenario-5-inspect-an-order-reservation)
-- [Scenario 7: Monitor Stock-Ledger Freshness](../scenarios.md#scenario-7-monitor-stock-ledger-freshness)
+- [Architecture](../../../docs/architecture.md)
+- [Scenario 2: Allocate Structured New Demand](../../../docs/scenarios.md#scenario-2-allocate-structured-new-demand)
+- [Scenario 3: Monitor an Allocation Job](../../../docs/scenarios.md#scenario-3-monitor-an-allocation-job)
+- [Scenario 5: Inspect an Order Reservation](../../../docs/scenarios.md#scenario-5-inspect-an-order-reservation)
+- [Scenario 7: Monitor Stock-Ledger Freshness](../../../docs/scenarios.md#scenario-7-monitor-stock-ledger-freshness)
 - [OpenAPI Generator Gradle plugin documentation](https://openapi-generator.tech/docs/plugins/#gradle)
 - [Kotlin Spring generator options](https://openapi-generator.tech/docs/generators/kotlin-spring/)

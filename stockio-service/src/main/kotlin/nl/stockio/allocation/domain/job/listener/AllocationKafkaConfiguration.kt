@@ -35,7 +35,7 @@ import org.springframework.util.backoff.FixedBackOff
  */
 @ConfigurationProperties("stockio.allocation.kafka")
 data class AllocationKafkaProperties(
-    val enabled: Boolean = false,
+    val enabled: Boolean = true,
     val topic: String = "stockio.allocation.requests",
     val groupId: String = "stockio-allocation",
     val deadLetterTopic: String = "$topic.DLT",

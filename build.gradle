@@ -88,10 +88,6 @@ project(":stockio-api") {
             AllocationSource: 'nl.stockio.api.dto.AllocationSource',
             AllocationSourceType: 'nl.stockio.api.dto.AllocationSourceType',
             StockLedgerSyncStatus: 'nl.stockio.stock.domain.service.StockLedgerSyncStatus',
-            OrderReservationResponse: 'nl.stockio.api.dto.OrderReservationResponse',
-            OrderReservationLine: 'nl.stockio.api.dto.OrderReservationLine',
-            OrderReservationStatus: 'nl.stockio.api.dto.OrderReservationStatus',
-            RedisKeyResponse: 'nl.stockio.api.dto.RedisKeyResponse',
             AdmissionErrorResponse: 'kotlin.collections.Map',
             ErrorResponse: 'kotlin.collections.Map'
         ])
@@ -135,7 +131,8 @@ project(":stockio-api") {
         importMappings.set([
             OrderReservationResponse: 'nl.stockio.api.dto.OrderReservationResponse',
             OrderReservationLine: 'nl.stockio.api.dto.OrderReservationLine',
-            OrderReservationStatus: 'nl.stockio.api.dto.OrderReservationStatus'
+            OrderReservationStatus: 'nl.stockio.api.dto.OrderReservationStatus',
+            RedisKeyResponse: 'nl.stockio.api.dto.RedisKeyResponse'
         ])
         globalProperties.set([
             apis: '',

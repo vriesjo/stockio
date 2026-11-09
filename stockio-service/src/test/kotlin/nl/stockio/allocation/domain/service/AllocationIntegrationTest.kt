@@ -109,6 +109,7 @@ import org.testcontainers.junit.jupiter.Testcontainers
     classes = [McpServerRunner::class],
     properties = [
         "spring.rabbitmq.listener.simple.auto-startup=false",
+        "stockio.allocation.kafka.enabled=false",
         "jobrunr.dashboard.enabled=false",
         "stockio.allocation.ledger-sync.enabled=false",
         "stockio.allocation.reservation.expiry-interval=1d",

@@ -5,8 +5,8 @@
 - **Status:** Done
 - **Priority:** Not set
 - **Bounded Context:** Allocation Messaging & Ingress
-- **Specification:** [`../specifications.md`](../specifications.md#feature-add-a-kafka-allocation-consumer-alongside-rabbitmq)
-- **Scenario:** [`Scenario 18: Consume an Allocation Request from Kafka`](../scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
+- **Specification:** [`../../../docs/specifications.md`](../../../docs/specifications.md#feature-add-a-kafka-allocation-consumer-alongside-rabbitmq)
+- **Scenario:** [`Scenario 18: Consume an Allocation Request from Kafka`](../../../docs/scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
 
 Publish default asynchronous REST allocation submissions to Kafka, and consume
 Kafka allocation requests alongside the existing RabbitMQ consumer. The Kafka
@@ -34,10 +34,10 @@ semaphore remains the authoritative execution bulkhead.
 - Persist Kafka job state separately from JobRunr so the existing status endpoint
   can report queued and processing jobs, completed results, and ambiguous
   submission outcomes.
-- Keep Kafka consumption disabled by default; asynchronous REST submission
-  requires a reachable, provisioned Kafka topic. Configure topic, group, worker
-  count, channel capacity, retry delay, and dead-letter topic through service
-  properties.
+- Keep Kafka consumption enabled by default. Set `ALLOCATION_KAFKA_ENABLED=false`
+  to stop the listener. Asynchronous REST submission still requires a reachable
+  Kafka topic. Configure topic, group, worker count, channel capacity, retry
+  delay, and dead-letter topic through service properties.
 - Mirror the current RabbitMQ failure policy: retain and back off capacity
   rejections, dead-letter invalid/oversized requests, and enqueue a durable
   JobRunr fallback for other synchronous failures. Kafka offset progress follows
@@ -166,7 +166,7 @@ before rollout.
 | --- | --- | --- |
 | NFR-01 | At-least-once safety | Assume records can be redelivered; do not claim exactly-once stock allocation from Kafka offset transactions alone. |
 | NFR-02 | Bounded resource use | Bound the local channel and active workers; preserve the existing allocation admission and stock-coordination guarantees, and never treat in-memory channel enqueueing as durable acceptance. |
-| NFR-03 | Opt-in rollout | Kafka listener activation and connection settings must be explicit so introducing Kafka does not unexpectedly alter existing RabbitMQ operation. |
+| NFR-03 | Default consumer | The Kafka listener starts unless `ALLOCATION_KAFKA_ENABLED` is false. RabbitMQ consumption remains available beside it. |
 | NFR-04 | Honest performance claims | Do not claim non-blocking processing, throughput improvement, or latency bounds without representative measurements. |
 | NFR-05 | Compatible message contract | Keep the Kafka value as raw `AllocationRequest` JSON and preserve request-ID fallback for producers that do not send an execution key. |
 | NFR-06 | Honest status and delivery outcomes | Preserve the REST status-polling contract and represent ambiguous broker acknowledgements explicitly rather than claiming the message was accepted or rejected without evidence. |
@@ -182,8 +182,8 @@ before rollout.
   owns `executeSync`; the RabbitMQ listener passes `request.requestId` as its
   `jobId`.
 - `AllocationJobExecutor.executeAsync` publishes to the configured Kafka topic;
-  the service Kafka listener remains disabled by default and can consume those
-  records when explicitly enabled.
+  the service Kafka listener consumes those records by default and stays off
+  only when `ALLOCATION_KAFKA_ENABLED=false`.
 - Kafka-submitted job status does not depend on JobRunr storage: accepted
   messages are tracked through execution and completion in PostgreSQL.
 - `AllocationAdmission` uses a non-waiting `Semaphore.tryAcquire()` for
@@ -265,8 +265,8 @@ before rollout.
 
 ## Resources
 
-- [Scenario 18: Consume an Allocation Request from Kafka](../scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
-- [Feature specification](../specifications.md#feature-add-a-kafka-allocation-consumer-alongside-rabbitmq)
-- [Architecture](../architecture.md)
+- [Scenario 18: Consume an Allocation Request from Kafka](../../../docs/scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
+- [Feature specification](../../../docs/specifications.md#feature-add-a-kafka-allocation-consumer-alongside-rabbitmq)
+- [Architecture](../../../docs/architecture.md)
 - Current RabbitMQ adapter: `stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/listener/AllocationRabbitListener.kt`
 - Shared execution path: `stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt`

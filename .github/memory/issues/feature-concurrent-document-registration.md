@@ -4,9 +4,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Allocation & Reservation Concurrency
 - **Implementation started:** Yes. Complete, at the user's request.
-- **Parent Specs:** [Architecture](../architecture.md)
-- **Specification:** [Feature specification](../specifications.md#feature-allow-concurrent-allocation-document-registration)
-- **Scenario:** [Scenario 14](../scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md)
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-allow-concurrent-allocation-document-registration)
+- **Scenario:** [Scenario 14](../../../docs/scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
 
 ## Context
 

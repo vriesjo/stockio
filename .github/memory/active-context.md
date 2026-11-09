@@ -2,8 +2,8 @@
 
 ## Feature: Redis Fast Path provisional allocation accept
 
-- **Specification:** [Feature specification](./specifications.md#feature-redis-fast-path-provisional-allocation-accept)
-- **Scenario:** [Scenario 22](./scenarios.md#scenario-22-accept-allocation-jobs-on-the-redis-fast-path)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-redis-fast-path-provisional-allocation-accept)
+- **Scenario:** [Scenario 22](../../docs/scenarios.md#scenario-22-accept-allocation-jobs-on-the-redis-fast-path)
 - **Issue:** [Feature issue](./issues/feature-redis-fast-path.md)
 - **Status:** In-progress
 - **Priority:** Not set
@@ -19,8 +19,8 @@
 
 ## Feature: Mitigate synchronous allocation lock contention with fail-fast admission
 
-- **Specification:** [Feature specification](./specifications.md#feature-mitigate-synchronous-allocation-lock-contention-with-fail-fast-admission)
-- **Scenario:** [Scenario 21](./scenarios.md#scenario-21-fail-fast-under-allocation-lock-contention)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-mitigate-synchronous-allocation-lock-contention-with-fail-fast-admission)
+- **Scenario:** [Scenario 21](../../docs/scenarios.md#scenario-21-fail-fast-under-allocation-lock-contention)
 - **Issue:** [Feature issue](./issues/feature-fail-fast-lock-contention-mitigation.md)
 - **Status:** In-progress
 - **Priority:** Not set
@@ -40,8 +40,8 @@
 
 ## Feature: Add a direct structured allocation UI alongside the agentic page
 
-- **Specification:** [Feature specification](./specifications.md#feature-add-a-direct-structured-allocation-ui-alongside-the-agentic-page)
-- **Scenario:** [Scenario 20](./scenarios.md#scenario-20-submit-structured-allocation-requests-from-a-direct-ui-workflow)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-add-a-direct-structured-allocation-ui-alongside-the-agentic-page)
+- **Scenario:** [Scenario 20](../../docs/scenarios.md#scenario-20-submit-structured-allocation-requests-from-a-direct-ui-workflow)
 - **Issue:** [Feature issue](./issues/feature-direct-structured-allocation-ui.md)
 - **Status:** In-progress
 - **Priority:** Not set
@@ -59,8 +59,8 @@
 
 ## Feature: Add an allocation performance harness for job endpoints
 
-- **Specification:** [Feature specification](./specifications.md#feature-add-an-allocation-performance-harness-for-job-endpoints)
-- **Scenario:** [Scenario 19](./scenarios.md#scenario-19-exercise-allocation-job-rest-endpoints-under-controlled-load)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-add-an-allocation-performance-harness-for-job-endpoints)
+- **Scenario:** [Scenario 19](../../docs/scenarios.md#scenario-19-exercise-allocation-job-rest-endpoints-under-controlled-load)
 - **Issue:** [Feature issue](./issues/feature-allocation-performance-harness.md)
 - **Status:** In-progress
 - **Priority:** Not set
@@ -78,8 +78,8 @@
 
 ## Feature: Add a Kafka allocation consumer alongside RabbitMQ
 
-- **Specification:** [Feature specification](./specifications.md#feature-add-a-kafka-allocation-consumer-alongside-rabbitmq)
-- **Scenario:** [Scenario 18](./scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-add-a-kafka-allocation-consumer-alongside-rabbitmq)
+- **Scenario:** [Scenario 18](../../docs/scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
 - **Issue:** [Feature issue](./issues/feature-concurrent-per-event-allocation.md)
 - **Status:** Done
 - **Priority:** Not set
@@ -105,8 +105,8 @@
 
 ## Feature: Bound database work while preserving ledger and expiry headroom
 
-- **Specification:** [Feature specification](./specifications.md#feature-bound-database-work-while-preserving-ledger-and-expiry-headroom)
-- **Scenario:** [Scenario 17](./scenarios.md#scenario-17-preserve-maintenance-admission-under-database-work-pressure)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-bound-database-work-while-preserving-ledger-and-expiry-headroom)
+- **Scenario:** [Scenario 17](../../docs/scenarios.md#scenario-17-preserve-maintenance-admission-under-database-work-pressure)
 - **Issue:** [Feature issue](./issues/feature-shared-database-work-budget.md)
 - **Status:** Draft
 - **Priority:** Not set
@@ -124,8 +124,8 @@
 
 ## Feature: Bound allocation execution with a fail-fast bulkhead
 
-- **Specification:** [Feature specification](./specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead)
-- **Scenario:** [Scenario 16](./scenarios.md#scenario-16-reject-allocation-work-when-execution-capacity-is-exhausted)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead)
+- **Scenario:** [Scenario 16](../../docs/scenarios.md#scenario-16-reject-allocation-work-when-execution-capacity-is-exhausted)
 - **Issue:** [Feature issue](./issues/feature-fail-fast-allocation-admission.md)
 - **Status:** Done
 - **Priority:** Not set
@@ -147,8 +147,8 @@
 
 ## Feature: Coordinate stock processing through a per-SKU protocol
 
-- **Specification:** [Feature specification](./specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
-- **Scenario:** [Scenario 15](./scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Scenario:** [Scenario 15](../../docs/scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
 - **Issue:** [Feature issue](./issues/feature-per-sku-stock-processing.md)
 - **Status:** Done
 - **Priority:** Not set
@@ -169,8 +169,8 @@
 
 ## Feature: Allow concurrent allocation document registration
 
-- **Specification:** [Feature specification](./specifications.md#feature-allow-concurrent-allocation-document-registration)
-- **Scenario:** [Scenario 14](./scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-allow-concurrent-allocation-document-registration)
+- **Scenario:** [Scenario 14](../../docs/scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
 - **Issue:** [Feature issue](./issues/feature-concurrent-document-registration.md)
 - **Status:** Done
 - **Priority:** Not set
@@ -192,8 +192,8 @@
 
 ## Feature: Isolate browser tests and synthetic publishing in a test harness
 
-- **Specification:** [Feature specification](./specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
-- **Scenario:** [Scenario 13](./scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness)
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
+- **Scenario:** [Scenario 13](../../docs/scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness)
 - **Issue:** [Feature issue](./issues/feature-isolate-test-harness.md)
 - **Status:** Done
 - **Priority:** Not set
@@ -215,8 +215,8 @@
 
 ## Feature: Replace the frontend MCP bridge with an Axios service client
 
-- **Specification:** [Feature specification](./specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
-- **Scenario:** [Scenario 12](./scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http), building on [Scenario 1](./scenarios.md#scenario-1-allocate-a-product-by-name).
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
+- **Scenario:** [Scenario 12](../../docs/scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http), building on [Scenario 1](../../docs/scenarios.md#scenario-1-allocate-a-product-by-name).
 - **Issue:** [Feature issue](./issues/feature-frontend-axios-service-client.md)
 - **Status:** Done
 - **Priority:** Not set
@@ -242,8 +242,8 @@
 
 ## Feature: Automate backorder fulfillment after physical inbound receipt
 
-- **Specification:** `.github/memory/specifications.md#feature-automate-backorder-fulfillment-after-physical-inbound-receipt`
-- **Scenario:** `.github/memory/scenarios.md#scenario-4-fulfill-open-backorders`
+- **Specification:** `docs/specifications.md#feature-automate-backorder-fulfillment-after-physical-inbound-receipt`
+- **Scenario:** `docs/scenarios.md#scenario-4-fulfill-open-backorders`
 - **Issue:** `.github/memory/issues/feature_automate-backorder-fulfillment-after-inbound-receipt.md`
 
 ### Steps worked on
@@ -266,8 +266,8 @@ Tell us what is the current active context for the agent. This should include:
 
 ## Planned feature: Add a reusable RabbitMQ allocation producer starter
 
-- **Specification:** `.github/memory/specifications.md#feature-add-a-reusable-rabbitmq-allocation-producer-starter`
-- **Scenario:** `.github/memory/scenarios.md#scenario-11-publish-an-allocation-request-from-another-spring-boot-application`
+- **Specification:** `docs/specifications.md#feature-add-a-reusable-rabbitmq-allocation-producer-starter`
+- **Scenario:** `docs/scenarios.md#scenario-11-publish-an-allocation-request-from-another-spring-boot-application`
 - **Issue:** `.github/memory/issues/feature_rabbitmq_allocation_producer_starter.md`
 - **Implementation started:** No. This is a draft implementation handoff; application code has not been changed.
 
@@ -283,9 +283,9 @@ Tell us what is the current active context for the agent. This should include:
 
 ## Feature: Generate OpenAPI interfaces for REST controllers
 
-- **Specification:** `.github/memory/specifications.md#feature-generate-openapi-interfaces-for-rest-controllers`
+- **Specification:** `docs/specifications.md#feature-generate-openapi-interfaces-for-rest-controllers`
 - **Issue:** `.github/memory/issues/feature_add_interfaces_to_the_controllers.md`
-- **Affected scenarios:** [1](scenarios.md#scenario-1-allocate-a-product-by-name), plus initial coverage for [2](scenarios.md#scenario-2-allocate-structured-new-demand), [3](scenarios.md#scenario-3-monitor-an-allocation-job), [5](scenarios.md#scenario-5-inspect-an-order-reservation), and [7](scenarios.md#scenario-7-monitor-stock-ledger-freshness).
+- **Affected scenarios:** [1](../../docs/scenarios.md#scenario-1-allocate-a-product-by-name), plus initial coverage for [2](../../docs/scenarios.md#scenario-2-allocate-structured-new-demand), [3](../../docs/scenarios.md#scenario-3-monitor-an-allocation-job), [5](../../docs/scenarios.md#scenario-5-inspect-an-order-reservation), and [7](../../docs/scenarios.md#scenario-7-monitor-stock-ledger-freshness).
 - **Status:** Done for the initial `AllocationController`, `ReservationController`, and user-selected `ProductAllocationController` integrations.
 - **Implementation:** Each controller now implements its generated Kotlin Spring API from a controller-specific OpenAPI specification; `stockio-service` compiles generated sources directly from `stockio-api/build`.
 

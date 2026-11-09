@@ -10,15 +10,15 @@ Use the following files as the source of truth for feature work:
 
 | File | Purpose |
 | --- | --- |
-| [`.github/memory/architecture.md`](.github/memory/architecture.md) | Current system architecture, C4 views, technologies, and design boundaries. |
-| [`.github/memory/scenarios.md`](.github/memory/scenarios.md) | Supported user and operational flows in Gherkin, with technical analysis and acceptance criteria. |
-| [`.github/memory/specifications.md`](.github/memory/specifications.md) | Feature specifications and links between features, scenarios, and architectural baselines. |
+| [`docs/architecture.md`](docs/architecture.md) | Current system architecture, technologies, and design boundaries. |
+| [`docs/scenarios.md`](docs/scenarios.md) | Supported user and operational flows in Gherkin, with technical analysis and acceptance criteria. |
+| [`docs/specifications.md`](docs/specifications.md) | Feature specifications and links between features, scenarios, and architectural baselines. |
 | [`.github/memory/active-context.md`](.github/memory/active-context.md) | Current work-in-progress and handoff context. |
 | [`.github/memory/issues/`](.github/memory/issues/) | Feature implementation documents containing synchronized requirements and technical analysis. |
 | [`.github/memory/tasks/lessons-learned.md`](.github/memory/tasks/lessons-learned.md) | Reusable process lessons discovered during repository work. |
 
 The active feature-specification file is
-`.github/memory/specifications.md`; use that filename consistently in new
+`docs/specifications.md`; use that filename consistently in new
 documentation and links.
 
 ## General operating rules
@@ -64,7 +64,7 @@ planning unless the user has decided that.
 ### 2. Add or update the functional scenario
 
 Read the scenario structure in
-[`scenarios.md`](.github/memory/scenarios.md) before editing it.
+[`scenarios.md`](docs/scenarios.md) before editing it.
 
 Add a scenario when the feature introduces a new user or operational flow.
 Update an existing scenario when the feature changes a supported flow. Preserve
@@ -82,7 +82,7 @@ stable heading such as `Scenario N: <name>` and keep scenario numbering unique.
 ### 3. Add the feature specification and link the scenario
 
 Read the established structure in
-[`specifications.md`](.github/memory/specifications.md) before editing it.
+[`specifications.md`](docs/specifications.md) before editing it.
 
 Add or update a feature entry containing:
 

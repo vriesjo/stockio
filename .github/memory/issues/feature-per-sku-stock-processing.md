@@ -4,9 +4,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Allocation, Reservations & Stock Ledger
 - **Implementation started:** Yes. Complete, at the user's request.
-- **Parent Specs:** [Architecture](../architecture.md), [Concurrent document registration](../specifications.md#feature-allow-concurrent-allocation-document-registration)
-- **Specification:** [Feature specification](../specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
-- **Scenario:** [Scenario 15](../scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md), [Concurrent document registration](../../../docs/specifications.md#feature-allow-concurrent-allocation-document-registration)
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Scenario:** [Scenario 15](../../../docs/scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
 
 ## Context and relationship to completed work
 

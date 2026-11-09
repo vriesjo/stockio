@@ -55,9 +55,9 @@ sequenceDiagram
 Follow [AGENTS.md](AGENTS.md):
 
 - Add scenario for provisional Fast Path accept on `POST /api/allocation/jobs` (extend Scenario 2 / new scenario).
-- Add `## Feature: Redis Fast Path provisional allocation accept` in [`.github/memory/specifications.md`](.github/memory/specifications.md) with FR/NFR from the skill.
+- Add `## Feature: Redis Fast Path provisional allocation accept` in [`../../docs/specifications.md`](../../docs/specifications.md) with FR/NFR from the skill.
 - Create [`.github/memory/issues/feature-redis-fast-path.md`](.github/memory/issues/feature-redis-fast-path.md) as the implementation handoff (decisions, key model, cleanup matrix, deferred items).
-- Update [`.github/memory/architecture.md`](.github/memory/architecture.md) dual-path persistence boundaries.
+- Update [`../../docs/architecture.md`](../../docs/architecture.md) dual-path persistence boundaries.
 - Update [`.github/memory/active-context.md`](.github/memory/active-context.md).
 - Slim [`.cursor/skills/redis-fast-path/SKILL.md`](.cursor/skills/redis-fast-path/SKILL.md) to a short pointer at the issue (trigger terms + “read the issue”).
 

@@ -4,9 +4,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Allocation Application Orchestration & Concurrency Control
 - **Implementation started:** Yes. Initial contention fail-fast implementation is in progress.
-- **Specification:** [Feature specification](../specifications.md#feature-mitigate-synchronous-allocation-lock-contention-with-fail-fast-admission)
-- **Parent Specs:** [Architecture](../architecture.md), [Fail-fast bulkhead](../specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead), [Per-SKU protocol](../specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
-- **Scenario:** [Scenario 21](../scenarios.md#scenario-21-fail-fast-under-allocation-lock-contention)
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-mitigate-synchronous-allocation-lock-contention-with-fail-fast-admission)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md), [Fail-fast bulkhead](../../../docs/specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead), [Per-SKU protocol](../../../docs/specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Scenario:** [Scenario 21](../../../docs/scenarios.md#scenario-21-fail-fast-under-allocation-lock-contention)
 
 ## Context and scope
 

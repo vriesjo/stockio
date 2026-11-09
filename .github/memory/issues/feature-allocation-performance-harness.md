@@ -4,9 +4,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Test Infrastructure & Performance Validation
 - **Implementation started:** Yes. Initial Gatling harness implementation is in progress.
-- **Specification:** [Feature specification](../specifications.md#feature-add-an-allocation-performance-harness-for-job-endpoints)
-- **Parent Specs:** [Architecture](../architecture.md), [Feature: Isolate browser tests and synthetic publishing in a test harness](../specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
-- **Scenario:** [Scenario 19](../scenarios.md#scenario-19-exercise-allocation-job-rest-endpoints-under-controlled-load)
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-add-an-allocation-performance-harness-for-job-endpoints)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md), [Feature: Isolate browser tests and synthetic publishing in a test harness](../../../docs/specifications.md#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
+- **Scenario:** [Scenario 19](../../../docs/scenarios.md#scenario-19-exercise-allocation-job-rest-endpoints-under-controlled-load)
 
 ## Context and scope
 

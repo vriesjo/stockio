@@ -4,9 +4,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Allocation, Reservations & Stock Ledger / Database Admission
 - **Implementation started:** No. Analysis and proposed design only; policies require approval.
-- **Parent Specs:** [Architecture](../architecture.md#cross-cutting-concurrency-idempotency-and-rollout), [Allocation admission](../specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead), [Per-SKU stock processing](../specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
-- **Specification:** [Feature specification](../specifications.md#feature-bound-database-work-while-preserving-ledger-and-expiry-headroom)
-- **Scenario:** [Scenario 17](../scenarios.md#scenario-17-preserve-maintenance-admission-under-database-work-pressure)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md#cross-cutting-concurrency-idempotency-and-rollout), [Allocation admission](../../../docs/specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead), [Per-SKU stock processing](../../../docs/specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-bound-database-work-while-preserving-ledger-and-expiry-headroom)
+- **Scenario:** [Scenario 17](../../../docs/scenarios.md#scenario-17-preserve-maintenance-admission-under-database-work-pressure)
 
 ## Context and scope
 
@@ -261,7 +261,7 @@ resource bound even though the SKU consistency protocol remains unchanged.
 
 ## Resources
 
-- [Backpressure design discussion](../../../docs/system_design_backpressure_admission_control.md#second-increment-protect-the-shared-database-budget)
+- [Backpressure design discussion](../../../docs/arch_backpressure_admission_control.md#not-implemented)
 - [Implemented allocation admission](./feature-fail-fast-allocation-admission.md)
 - [Implemented per-SKU protocol](./feature-per-sku-stock-processing.md)
 - [Active context](../active-context.md#feature-bound-database-work-while-preserving-ledger-and-expiry-headroom)

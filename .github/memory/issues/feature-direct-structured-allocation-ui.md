@@ -4,9 +4,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Frontend Integration & Allocation API Workflows
 - **Implementation started:** Yes. Direct page, route/client, and tests are in progress.
-- **Specification:** [Feature specification](../specifications.md#feature-add-a-direct-structured-allocation-ui-alongside-the-agentic-page)
-- **Parent Specs:** [Architecture](../architecture.md), [Feature: Replace the frontend MCP bridge with an Axios service client](../specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
-- **Scenario:** [Scenario 20](../scenarios.md#scenario-20-submit-structured-allocation-requests-from-a-direct-ui-workflow)
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-add-a-direct-structured-allocation-ui-alongside-the-agentic-page)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md), [Feature: Replace the frontend MCP bridge with an Axios service client](../../../docs/specifications.md#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
+- **Scenario:** [Scenario 20](../../../docs/scenarios.md#scenario-20-submit-structured-allocation-requests-from-a-direct-ui-workflow)
 
 ## Context and scope
 

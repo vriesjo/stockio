@@ -165,7 +165,7 @@ Keep these corrections when refining the design; do not silently reintroduce the
 
 ## How to use this skill
 
-1. Read `.github/memory/architecture.md`, `active-context.md`, and relevant
+1. Read `../architecture.md`, `active-context.md`, and relevant
    scenarios/specs before proposing design.
 2. Prefer questions and options over premature implementation.
 3. When a decision is made, update this skill immediately. Keep memory docs in

@@ -4,9 +4,9 @@
 - **Priority:** Not set
 - **Bounded Context:** Allocation Application Orchestration & Ingress Adapters
 - **Implementation started:** Yes. Complete, at the user's request.
-- **Parent Specs:** [Architecture](../architecture.md#cross-cutting-concurrency-idempotency-and-rollout), [Per-SKU stock processing](../specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
-- **Specification:** [Feature specification](../specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead)
-- **Scenario:** [Scenario 16](../scenarios.md#scenario-16-reject-allocation-work-when-execution-capacity-is-exhausted)
+- **Parent Specs:** [Architecture](../../../docs/architecture.md#cross-cutting-concurrency-idempotency-and-rollout), [Per-SKU stock processing](../../../docs/specifications.md#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Specification:** [Feature specification](../../../docs/specifications.md#feature-bound-allocation-execution-with-a-fail-fast-bulkhead)
+- **Scenario:** [Scenario 16](../../../docs/scenarios.md#scenario-16-reject-allocation-work-when-execution-capacity-is-exhausted)
 
 ## Context and scope
 
@@ -320,7 +320,7 @@ anchors, synchronized requirements/plan/scenario and whitespace.
 
 ## Resources
 
-- [Backpressure and admission-control design](../../../docs/system_design_backpressure_admission_control.md)
+- [Backpressure and admission-control design](../../../docs/arch_backpressure_admission_control.md)
 - [Current allocation processor](../../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/processor/AllocationProcessor.kt)
 - [Current job executor](../../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt)
 - [Current RabbitMQ listener](../../../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/listener/AllocationRabbitListener.kt)

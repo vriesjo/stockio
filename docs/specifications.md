@@ -25,7 +25,7 @@ This feature implements a separate scheduled stock-ledger synchronization proces
 The goal is to ensure that stock-ledger updates are performed independently,allowing for better scalability and maintainability of the system.
 
 ### Resources
-- [Feature: separate scheduled stock-ledger synchronization from allocation](./issues/feature_stock_ledger_sync_job.md)
+- [Feature: separate scheduled stock-ledger synchronization from allocation](../.github/memory/issues/feature_stock_ledger_sync_job.md)
 - [Scenario 6: Synchronize the Physical Stock Ledger](./scenarios.md#scenario-6-synchronize-the-physical-stock-ledger)
 
 ## Feature: Add a reusable RabbitMQ allocation producer starter
@@ -77,7 +77,7 @@ behavior.
 ### Resources
 
 - [Scenario 11: Publish an Allocation Request from Another Spring Boot Application](./scenarios.md#scenario-11-publish-an-allocation-request-from-another-spring-boot-application)
-- [Feature issue: reusable RabbitMQ allocation producer starter](./issues/feature_rabbitmq_allocation_producer_starter.md)
+- [Feature issue: reusable RabbitMQ allocation producer starter](../.github/memory/issues/feature_rabbitmq_allocation_producer_starter.md)
 - [Architecture](./architecture.md)
 
 ## Feature: Add a Kafka allocation consumer alongside RabbitMQ
@@ -90,14 +90,14 @@ behavior.
 ### Overview
 
 Route default asynchronous REST allocation submissions through the configured
-Kafka topic, alongside the opt-in Kafka consumer and existing RabbitMQ
-consumer. Publish the raw `AllocationRequest` JSON with a unique execution
-`jobId` as its Kafka key so the REST acceptance and status-polling contract
-remain intact. The consumer uses that key as its execution ID, with
+Kafka topic. The Kafka consumer is enabled by default and coexists with the
+RabbitMQ consumer. Publish the raw `AllocationRequest` JSON with a unique
+execution `jobId` as its Kafka key so the REST acceptance and status-polling
+contract remain intact. The consumer uses that key as its execution ID, with
 `requestId` fallback for compatible external producers. Preserve bounded
-admission, explicit offset/recovery semantics, and the consumer's disabled-by-
-default configuration. This is a stock allocation workflow, not payment
-processing.
+admission and explicit offset/recovery semantics. Set
+`ALLOCATION_KAFKA_ENABLED=false` to stop the listener without removing
+RabbitMQ. This is a stock allocation workflow, not payment processing.
 
 ### Functional Requirements (FR)
 
@@ -119,7 +119,7 @@ processing.
 | --- | --- | --- |
 | NFR-01 | At-least-once safety | Assume records can be redelivered; do not claim exactly-once stock allocation from Kafka offset transactions alone. |
 | NFR-02 | Bounded resource use | Bound the local channel and active workers; preserve the existing allocation admission and stock-coordination guarantees, and never treat in-memory channel enqueueing as durable acceptance. |
-| NFR-03 | Opt-in rollout | Kafka listener activation and connection settings must be explicit so introducing Kafka does not unexpectedly alter existing RabbitMQ operation. |
+| NFR-03 | Default consumer | The Kafka listener starts unless `ALLOCATION_KAFKA_ENABLED` is false. RabbitMQ consumption remains available beside it. |
 | NFR-04 | Honest performance claims | Do not claim non-blocking processing, throughput improvement, or latency bounds without representative measurements. |
 | NFR-05 | Compatible message contract | Keep the Kafka value as raw `AllocationRequest` JSON and preserve request-ID fallback for producers that do not send an execution key. |
 | NFR-06 | Honest status and delivery outcomes | Preserve the REST status-polling contract and represent ambiguous broker acknowledgements explicitly rather than claiming the message was accepted or rejected without evidence. |
@@ -131,13 +131,13 @@ processing.
 3. Persist Kafka submission and execution status, including ambiguous publishing outcomes, and resolve status from JobRunr or Kafka tracking without misreporting completion.
 4. Implement synchronous listener completion backed by a bounded Kotlin channel and fixed workers; preserve per-partition order and commit offsets only after execution or durable JobRunr handoff.
 5. Mirror RabbitMQ's capacity backoff and JobRunr fallback behavior, dead-letter malformed/oversized requests, and preserve records on channel/bulkhead saturation.
-6. Merge the supplied local Kafka stack into the existing Docker Compose file and document publisher requirements plus disabled-by-default listener configuration.
+6. Merge the supplied local Kafka stack into the existing Docker Compose file and document publisher requirements. The listener is enabled unless `ALLOCATION_KAFKA_ENABLED=false`.
 7. Add focused publisher, tracking, status, listener, queue, retry/DLT, duplicate-delivery, context lifecycle, and broker-backed tests; measure before setting production concurrency or claiming throughput improvements.
 
 ### Resources
 
 - [Scenario 18: Consume an Allocation Request from Kafka](./scenarios.md#scenario-18-consume-an-allocation-request-from-kafka)
-- [Feature issue: Kafka allocation consumer](./issues/feature-concurrent-per-event-allocation.md)
+- [Feature issue: Kafka allocation consumer](../.github/memory/issues/feature-concurrent-per-event-allocation.md)
 - [Architecture](./architecture.md)
 
 ## Feature: Generate OpenAPI interfaces for REST controllers
@@ -193,10 +193,10 @@ sources directly without depending on the MCP client artifact.
 
 ### Resources
 
-- [Feature issue: Generate OpenAPI interfaces for REST controllers](./issues/feature_add_interfaces_to_the_controllers.md)
-- [Initial AllocationController OpenAPI document](../../stockio-api/src/main/resources/openapi/allocation-controller.yaml)
-- [ReservationController OpenAPI document](../../stockio-api/src/main/resources/openapi/reservation-controller.yaml)
-- [ProductAllocationController OpenAPI document](../../stockio-api/src/main/resources/openapi/product-allocation-controller.yaml)
+- [Feature issue: Generate OpenAPI interfaces for REST controllers](../.github/memory/issues/feature_add_interfaces_to_the_controllers.md)
+- [Initial AllocationController OpenAPI document](../stockio-api/src/main/resources/openapi/allocation-controller.yaml)
+- [ReservationController OpenAPI document](../stockio-api/src/main/resources/openapi/reservation-controller.yaml)
+- [ProductAllocationController OpenAPI document](../stockio-api/src/main/resources/openapi/product-allocation-controller.yaml)
 - [Scenario 1: Allocate a Product by Name](./scenarios.md#scenario-1-allocate-a-product-by-name)
 - [Scenario 5: Inspect an Order Reservation](./scenarios.md#scenario-5-inspect-an-order-reservation)
 - [Scenario 2: Allocate Structured New Demand](./scenarios.md#scenario-2-allocate-structured-new-demand)
@@ -257,14 +257,14 @@ existing MCP backorder tool remains available as a manual and recovery trigger.
 ### Resources
 
 - [Scenario 4: Fulfill Open Backorders](./scenarios.md#scenario-4-fulfill-open-backorders)
-- [Feature issue: automate backorder fulfillment after physical inbound receipt](./issues/feature_automate-backorder-fulfillment-after-inbound-receipt.md)
+- [Feature issue: automate backorder fulfillment after physical inbound receipt](../.github/memory/issues/feature_automate-backorder-fulfillment-after-inbound-receipt.md)
 - [Architecture](./architecture.md)
 
 ## Feature: Replace the frontend MCP bridge with an Axios service client
 
 - **Status:** Done
 - **Priority:** Not set
-- **Parent Specs:** [Architecture](./architecture.md), [Product allocation REST contract](../../stockio-api/src/main/resources/openapi/product-allocation-controller.yaml)
+- **Parent Specs:** [Architecture](./architecture.md), [Product allocation REST contract](../stockio-api/src/main/resources/openapi/product-allocation-controller.yaml)
 - **Bounded Context:** Frontend Integration & Product Allocation
 
 ### Overview
@@ -315,7 +315,7 @@ and scoped validation are complete; priority remains unset.
 
 - [Scenario 12: Allocate a Product from the Frontend through Direct Service HTTP](./scenarios.md#scenario-12-allocate-a-product-from-the-frontend-through-direct-service-http)
 - [Scenario 1: Allocate a Product by Name](./scenarios.md#scenario-1-allocate-a-product-by-name)
-- [Feature issue: Replace the frontend MCP bridge with an Axios service client](./issues/feature-frontend-axios-service-client.md)
+- [Feature issue: Replace the frontend MCP bridge with an Axios service client](../.github/memory/issues/feature-frontend-axios-service-client.md)
 - [Frontend architecture boundary](./architecture.md#frontend-http-integration)
 
 ## Feature: Isolate browser tests and synthetic publishing in a test harness
@@ -361,7 +361,7 @@ service but never depends on the executable service module.
 ### Resources
 
 - [Scenario 13: Run Tests and Synthetic Traffic from a Separate Harness](./scenarios.md#scenario-13-run-tests-and-synthetic-traffic-from-a-separate-harness)
-- [Feature issue: isolate test harness](./issues/feature-isolate-test-harness.md)
+- [Feature issue: isolate test harness](../.github/memory/issues/feature-isolate-test-harness.md)
 
 ## Feature: Allow concurrent allocation document registration
 
@@ -407,8 +407,8 @@ document identity, sorted inbound SKU and run-row protections remain in force.
 ### Resources
 
 - [Scenario 14: Register Independent Allocation Documents Concurrently](./scenarios.md#scenario-14-register-independent-allocation-documents-concurrently)
-- [Feature issue: concurrent document registration](./issues/feature-concurrent-document-registration.md)
-- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+- [Feature issue: concurrent document registration](../.github/memory/issues/feature-concurrent-document-registration.md)
+- [Backpressure design discussion](./arch_backpressure_admission_control.md)
 
 ## Feature: Bound database work while preserving ledger and expiry headroom
 
@@ -464,8 +464,8 @@ guarantee, and ungoverned borrowers/replicas must be accounted for explicitly.
 ### Resources
 
 - [Scenario 17: Preserve Maintenance Admission Under Database-Work Pressure](./scenarios.md#scenario-17-preserve-maintenance-admission-under-database-work-pressure)
-- [Feature issue: shared database-work budget](./issues/feature-shared-database-work-budget.md)
-- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md#second-increment-protect-the-shared-database-budget)
+- [Feature issue: shared database-work budget](../.github/memory/issues/feature-shared-database-work-budget.md)
+- [Backpressure design discussion](./arch_backpressure_admission_control.md#not-implemented)
 
 ## Feature: Bound allocation execution with a fail-fast bulkhead
 
@@ -520,8 +520,8 @@ dates/holds and pre-enable reconciliation of existing oversized work.
 ### Resources
 
 - [Scenario 16: Reject Allocation Work When Execution Capacity Is Exhausted](./scenarios.md#scenario-16-reject-allocation-work-when-execution-capacity-is-exhausted)
-- [Feature issue: fail-fast allocation admission](./issues/feature-fail-fast-allocation-admission.md)
-- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+- [Feature issue: fail-fast allocation admission](../.github/memory/issues/feature-fail-fast-allocation-admission.md)
+- [Backpressure design discussion](./arch_backpressure_admission_control.md)
 
 ## Feature: Coordinate stock processing through a per-SKU protocol
 
@@ -575,9 +575,9 @@ runs through today's manifest, and requires coordinated all-writer deployment.
 ### Resources
 
 - [Scenario 15: Process Stock Operations Concurrently by SKU](./scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
-- [Feature issue: per-SKU stock processing](./issues/feature-per-sku-stock-processing.md)
-- [Completed registration baseline](./issues/feature-concurrent-document-registration.md)
-- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+- [Feature issue: per-SKU stock processing](../.github/memory/issues/feature-per-sku-stock-processing.md)
+- [Completed registration baseline](../.github/memory/issues/feature-concurrent-document-registration.md)
+- [Backpressure design discussion](./arch_backpressure_admission_control.md)
 
 ## Feature: Add an allocation performance harness for job endpoints
 
@@ -626,8 +626,8 @@ remaining safe for local and CI execution.
 ### Resources
 
 - [Scenario 19: Exercise allocation-job REST endpoints under controlled load](./scenarios.md#scenario-19-exercise-allocation-job-rest-endpoints-under-controlled-load)
-- [Feature issue: allocation performance harness](./issues/feature-allocation-performance-harness.md)
-- [Harness performance README seed](../../stockio-test-harness/performance/README.md)
+- [Feature issue: allocation performance harness](../.github/memory/issues/feature-allocation-performance-harness.md)
+- [Harness performance README seed](../stockio-test-harness/performance/README.md)
 
 ## Feature: Add a direct structured allocation UI alongside the agentic page
 
@@ -677,9 +677,9 @@ with the `AllocationRequest` shape from `allocation-controller.yaml`.
 ### Resources
 
 - [Scenario 20: Submit structured allocation requests from a direct UI workflow](./scenarios.md#scenario-20-submit-structured-allocation-requests-from-a-direct-ui-workflow)
-- [Feature issue: direct structured allocation UI](./issues/feature-direct-structured-allocation-ui.md)
-- [Current page](../../stockio-api/src/main/kotlin/nl/stockio/ui/app/page.tsx)
-- [Allocation jobs OpenAPI](../../stockio-api/src/main/resources/openapi/allocation-controller.yaml)
+- [Feature issue: direct structured allocation UI](../.github/memory/issues/feature-direct-structured-allocation-ui.md)
+- [Current page](../stockio-api/src/main/kotlin/nl/stockio/ui/app/page.tsx)
+- [Allocation jobs OpenAPI](../stockio-api/src/main/resources/openapi/allocation-controller.yaml)
 
 ## Feature: Mitigate synchronous allocation lock contention with fail-fast admission
 
@@ -731,8 +731,8 @@ queues.
 ### Resources
 
 - [Scenario 21: Fail fast under allocation lock contention](./scenarios.md#scenario-21-fail-fast-under-allocation-lock-contention)
-- [Feature issue: fail-fast lock contention mitigation](./issues/feature-fail-fast-lock-contention-mitigation.md)
-- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+- [Feature issue: fail-fast lock contention mitigation](../.github/memory/issues/feature-fail-fast-lock-contention-mitigation.md)
+- [Backpressure design discussion](./arch_backpressure_admission_control.md)
 
 ## Feature: Redis Fast Path provisional allocation accept
 
@@ -761,7 +761,7 @@ Debezium and Kafka.
 | FR-06 | TTL cleanup | Abandoned Redis holds expire and return quantity. PostgreSQL pending rows still expire through the existing reservation job. |
 | FR-07 | Pre-warm and rebuild | Startup and divergence repair fully reload Redis from PostgreSQL and pause accepts during the reload. |
 | FR-08 | CDC convergence | Debezium stock events replace Redis availability for the affected SKU and warehouse. The consumer does not delete holds. |
-| FR-09 | Redis key lookup | `GET /api/allocation/order-reservation/{key}/redis` returns the string or hash for a `RedisKeys` stock, reservation, or expiry key. Unknown prefixes are rejected. A disabled fast path does not look like a missing key. |
+| FR-09 | Redis key lookup | `ReservationController` serves `GET /api/reservations/orders/{key}/redis` and returns the string or hash for a `RedisKeys` stock, reservation, or expiry key. Unknown prefixes are rejected. A disabled fast path does not look like a missing key. |
 
 ### Non-Functional Requirements (NFR)
 
@@ -784,4 +784,4 @@ Debezium and Kafka.
 ### Resources
 
 - [Scenario 22: Accept allocation jobs on the Redis fast path](./scenarios.md#scenario-22-accept-allocation-jobs-on-the-redis-fast-path)
-- [Feature issue: Redis Fast Path](./issues/feature-redis-fast-path.md)
+- [Feature issue: Redis Fast Path](../.github/memory/issues/feature-redis-fast-path.md)

@@ -2,9 +2,13 @@ package nl.stockio.reservation.domain.api
 
 import java.time.Instant
 import java.time.LocalDate
+import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.OrderReservationLine
 import nl.stockio.api.dto.OrderReservationResponse
 import nl.stockio.api.dto.OrderReservationStatus
+import nl.stockio.api.dto.RedisKeyResponse
+import nl.stockio.allocation.domain.api.exception.CustomerExceptionHandler
+import nl.stockio.allocation.domain.port.AllocationGateway
 import nl.stockio.reservation.domain.service.OrderReservationService
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
@@ -51,5 +55,26 @@ class ReservationControllerTest {
 
         verify(service).getOrderReservationStatus("ORDER-1")
         verify(service).getOrderReservationStatus("MISSING")
+    }
+
+    @Test
+    fun `generated interface maps redis key lookup`() {
+        val gateway = object : AllocationGateway {
+            override val enabled = true
+            override fun accept(request: AllocationRequest) = Unit
+            override fun rollback(request: AllocationRequest) = Unit
+            override fun settle(request: AllocationRequest) = Unit
+            override fun getByKey(key: String) =
+                RedisKeyResponse(key, value = "5").takeIf { key == "stock:sku:SKU-1:MAIN" }
+        }
+        val mockMvc = MockMvcBuilders.standaloneSetup(
+            ReservationController(mock(OrderReservationService::class.java), gateway)
+        ).setControllerAdvice(CustomerExceptionHandler()).build()
+
+        mockMvc.perform(get("/api/reservations/orders/stock:sku:SKU-1:MAIN/redis"))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.value").value("5"))
+        mockMvc.perform(get("/api/reservations/orders/other/redis"))
+            .andExpect(status().isBadRequest)
     }
 }
