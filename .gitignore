@@ -37,3 +37,7 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### Environment ###
+/stockio-service/.env.service
+/stockio-test-harness/.env.test.harness
