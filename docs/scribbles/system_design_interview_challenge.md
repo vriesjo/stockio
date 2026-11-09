@@ -1,4 +1,4 @@
-# System design interview: prevent Stockio from allocating the same stock twice
+# System design interview challenge: prevent Stockio from allocating the same stock twice
 
 ## Purpose and source
 
