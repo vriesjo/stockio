@@ -10,7 +10,7 @@ class StockioApplicationTest {
 
     @Test
     fun `MCP registration retains allocation tools without product allocation tool`() {
-        val tools = McpServerRunner().toolCallbacks(mock(AllocationMcpTools::class.java))
+        val tools = StockioApplication().toolCallbacks(mock(AllocationMcpTools::class.java))
             .map { it.toolDefinition.name() }
 
         assertTrue("allocation_and_stock_projection" in tools)

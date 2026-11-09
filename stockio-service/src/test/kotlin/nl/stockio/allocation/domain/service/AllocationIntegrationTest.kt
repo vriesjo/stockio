@@ -49,7 +49,7 @@ import nl.stockio.allocation.infra.AllocationRecordJpaRepository
 import nl.stockio.allocation.infra.AllocationRunJpaRepository
 import nl.stockio.allocation.infra.AllocationSourceJpaRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
-import nl.stockio.McpServerRunner
+import nl.stockio.StockioApplication
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
@@ -106,7 +106,7 @@ import org.testcontainers.junit.jupiter.Testcontainers
 
 @Testcontainers
 @SpringBootTest(
-    classes = [McpServerRunner::class],
+    classes = [StockioApplication::class],
     properties = [
         "spring.rabbitmq.listener.simple.auto-startup=false",
         "stockio.allocation.kafka.enabled=false",
@@ -463,6 +463,7 @@ class AllocationIntegrationTest {
 
         val acceptedResponse = mockMvc.perform(
             MockMvcRequestBuilders.post("/api/allocation/jobs")
+                .param("async", "false")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(
                     """
@@ -499,18 +500,11 @@ class AllocationIntegrationTest {
             acceptedResponse.response.getHeader("Location")
         )
 
-        Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted {
-            mockMvc.perform(
-                MockMvcRequestBuilders
-                    .get("/api/allocation/jobs/$jobId")
-            )
-                .andExpect(MockMvcResultMatchers.status().isOk)
-                .andExpect(MockMvcResultMatchers.jsonPath("$.status").value("SUCCEEDED"))
-                .andExpect(
-                    MockMvcResultMatchers.jsonPath("$.result.allocationRun.allocations[0].allocatedFromInventory").value(2))
-                .andExpect(MockMvcResultMatchers.jsonPath("$.result.jobId").value(jobId.toString()))
-                .andExpect(MockMvcResultMatchers.jsonPath("$.result.stockSync").doesNotExist())
-        }
+        val completion = jobResultRepository.findAll().single()
+        val result = objectMapper.readValue(completion.resultJson, AllocationCompletionResult::class.java)
+        Assertions.assertEquals(jobId, result.allocationRun.runId)
+        Assertions.assertEquals(2, result.allocationRun.allocations.single().allocatedFromInventory)
+        Assertions.assertFalse(completion.resultJson.contains("stockSync"))
 
         val updatedStock = stockRepository.findAll().single()
         Assertions.assertEquals(5, updatedStock.quantityOnHand)
