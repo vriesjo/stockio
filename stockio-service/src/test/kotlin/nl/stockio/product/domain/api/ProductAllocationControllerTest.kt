@@ -9,7 +9,7 @@ import nl.stockio.api.dto.ProductAllocationResponse
 import nl.stockio.api.dto.ProductAllocationStatus
 import nl.stockio.product.domain.service.ProductAllocationService
 import nl.stockio.allocation.domain.api.exception.CustomerExceptionHandler
-import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test

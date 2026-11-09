@@ -101,5 +101,7 @@ do not by themselves guarantee completed allocation.
 
 ## Performance tests
 
-See [`performance/README.md`](./performance/README.md). No performance
-framework, workload, or pass/fail threshold has been selected.
+See [`performance/README.md`](./performance/README.md). The harness now includes
+an initial Gatling Kotlin suite (using Gatling's async HTTP DSL) and a
+`make run-performance` target. Thresholds and workload phases are configurable
+and environment-specific.

@@ -1,9 +1,12 @@
 package nl.stockio.product.resolution
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
+import nl.stockio.allocation.domain.performance.AllocationAdmission
+import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.api.dto.DemandOrder
@@ -12,7 +15,7 @@ import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import nl.stockio.allocation.domain.service.AllocationService
 import nl.stockio.allocation.domain.processor.AllocationProcessor
-import nl.stockio.allocation.domain.service.BackorderAllocationService
+import nl.stockio.allocation.domain.service.AllocationBackorderService
 import nl.stockio.api.dto.ProductAllocationRequest
 import nl.stockio.api.dto.ProductAllocationStatus
 import nl.stockio.product.domain.service.OllamaEmbeddingClient
@@ -413,10 +416,10 @@ class ProductAllocationServiceTest {
             processingService = AllocationProcessor(
                 allocationService,
                 mock(StockProjectionProcessor::class.java),
-                mock(BackorderAllocationService::class.java),
-                nl.stockio.allocation.domain.service.AllocationAdmission(
-                    nl.stockio.allocation.domain.service.AllocationAdmissionProperties(),
-                    io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+                mock(AllocationBackorderService::class.java),
+                AllocationAdmission(
+                    AllocationAdmissionProperties(),
+                    SimpleMeterRegistry()
                 ),
                 mock(nl.stockio.allocation.domain.service.AllocationRequestLimits::class.java)
             ),

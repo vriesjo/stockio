@@ -89,14 +89,15 @@ behavior.
 
 ### Overview
 
-Add an opt-in Kafka consumer for Stockio allocation requests while retaining
-the current RabbitMQ consumer. The Kafka adapter should invoke the same
-synchronous allocation execution path and preserve stable request identity,
-bounded admission, and explicit offset/recovery semantics. This is a stock allocation workflow, not payment processing. Consume the existing
-`AllocationRequest` JSON with `requestId` as the stable job ID. Mirror
-RabbitMQ's capacity backoff, invalid-message dead-lettering, and durable JobRunr
-fallback for other failures. Keep Kafka disabled by default and merge the
-user-supplied local broker baseline into the existing Compose stack.
+Route default asynchronous REST allocation submissions through the configured
+Kafka topic, alongside the opt-in Kafka consumer and existing RabbitMQ
+consumer. Publish the raw `AllocationRequest` JSON with a unique execution
+`jobId` as its Kafka key so the REST acceptance and status-polling contract
+remain intact. The consumer uses that key as its execution ID, with
+`requestId` fallback for compatible external producers. Preserve bounded
+admission, explicit offset/recovery semantics, and the consumer's disabled-by-
+default configuration. This is a stock allocation workflow, not payment
+processing.
 
 ### Functional Requirements (FR)
 
@@ -109,6 +110,8 @@ user-supplied local broker baseline into the existing Compose stack.
 | FR-05 | Bounded consumption | Use a bounded local Kotlin channel and fixed worker concurrency to smooth short bursts; keep the existing `AllocationAdmission` semaphore authoritative, preserve records on channel or semaphore saturation, and do not launch unbounded per-record coroutines or buffers. |
 | FR-06 | RabbitMQ coexistence | Keep the RabbitMQ listener and its contract operational; document behavior when both brokers deliver the same logical request. |
 | FR-07 | Operational visibility | Log and measure bounded-cardinality consumption outcomes, retries, capacity deferrals, and processing duration without using request or SKU identifiers as metric labels. |
+| FR-08 | Asynchronous REST publisher | Serialize the unchanged `AllocationRequest` and publish to the configured Kafka topic using a unique execution job ID as the record key; return acceptance only after the broker acknowledges the publish. |
+| FR-09 | Durable Kafka job status | Persist submission, enqueue, processing, and terminal states so accepted Kafka jobs can be polled by their returned execution ID without requiring a JobRunr record. |
 
 ### Non-Functional Requirements (NFR)
 
@@ -118,14 +121,18 @@ user-supplied local broker baseline into the existing Compose stack.
 | NFR-02 | Bounded resource use | Bound the local channel and active workers; preserve the existing allocation admission and stock-coordination guarantees, and never treat in-memory channel enqueueing as durable acceptance. |
 | NFR-03 | Opt-in rollout | Kafka listener activation and connection settings must be explicit so introducing Kafka does not unexpectedly alter existing RabbitMQ operation. |
 | NFR-04 | Honest performance claims | Do not claim non-blocking processing, throughput improvement, or latency bounds without representative measurements. |
+| NFR-05 | Compatible message contract | Keep the Kafka value as raw `AllocationRequest` JSON and preserve request-ID fallback for producers that do not send an execution key. |
+| NFR-06 | Honest status and delivery outcomes | Preserve the REST status-polling contract and represent ambiguous broker acknowledgements explicitly rather than claiming the message was accepted or rejected without evidence. |
 
 ### Plan
 
 1. Add opt-in Spring Kafka dependencies, typed service configuration, source and DLT topic declarations, and a raw-string consumer compatible with the existing `AllocationRequest` JSON contract.
-2. Implement synchronous listener completion backed by a bounded Kotlin channel and fixed workers; preserve per-partition order and commit offsets only after execution or durable JobRunr handoff.
-3. Mirror RabbitMQ's capacity backoff and JobRunr fallback behavior, dead-letter malformed/oversized requests, and preserve records on channel/bulkhead saturation.
-4. Merge the supplied local Kafka stack into the existing Docker Compose file and document disabled-by-default configuration and startup.
-5. Add focused listener, queue, retry/DLT, duplicate-delivery, context lifecycle, and broker-backed tests; measure before setting production concurrency or claiming throughput improvements.
+2. Implement the asynchronous REST publisher with broker-acknowledged sends and execution IDs in Kafka record keys; preserve the existing REST acceptance/status contract.
+3. Persist Kafka submission and execution status, including ambiguous publishing outcomes, and resolve status from JobRunr or Kafka tracking without misreporting completion.
+4. Implement synchronous listener completion backed by a bounded Kotlin channel and fixed workers; preserve per-partition order and commit offsets only after execution or durable JobRunr handoff.
+5. Mirror RabbitMQ's capacity backoff and JobRunr fallback behavior, dead-letter malformed/oversized requests, and preserve records on channel/bulkhead saturation.
+6. Merge the supplied local Kafka stack into the existing Docker Compose file and document publisher requirements plus disabled-by-default listener configuration.
+7. Add focused publisher, tracking, status, listener, queue, retry/DLT, duplicate-delivery, context lifecycle, and broker-backed tests; measure before setting production concurrency or claiming throughput improvements.
 
 ### Resources
 
@@ -570,4 +577,159 @@ runs through today's manifest, and requires coordinated all-writer deployment.
 - [Scenario 15: Process Stock Operations Concurrently by SKU](./scenarios.md#scenario-15-process-stock-operations-concurrently-by-sku)
 - [Feature issue: per-SKU stock processing](./issues/feature-per-sku-stock-processing.md)
 - [Completed registration baseline](./issues/feature-concurrent-document-registration.md)
+- [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)
+
+## Feature: Add an allocation performance harness for job endpoints
+
+- **Status:** In-progress
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Feature: Isolate browser tests and synthetic publishing in a test harness](#feature-isolate-browser-tests-and-synthetic-publishing-in-a-test-harness)
+- **Bounded Context:** Test Infrastructure & Performance Validation
+
+### Overview
+
+Define and implement a repository-owned performance harness in
+`stockio-test-harness/performance` for allocation-job REST traffic. The initial
+request is based on a generic Gatling prompt and needs scoping: parameterized
+workload phases and measurable artifacts are in scope; hardcoded production
+SLA claims, mandatory auth assumptions, and unverifiable "production-ready"
+language are not. The harness should support representative measurements while
+remaining safe for local and CI execution.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Harness-owned load suite | Add a dedicated Gatling Kotlin suite in `stockio-test-harness/performance` with Gradle execution and no runtime dependency from service/UI modules. |
+| FR-02 | Endpoint flow coverage | Exercise `POST /api/allocation/jobs` and correlated `GET /api/allocation/jobs/{id}` polling with realistic payload variation and ID extraction. |
+| FR-03 | Parameterized workload profile | Support configurable warm-up/ramp/soak phases (defaults from the request), target host/protocol/port, and request pacing via environment or JVM properties. |
+| FR-04 | Explicit transport and checks | Centralize protocol headers/timeouts and reusable request blocks; validate expected HTTP status and response fields needed for downstream polling. |
+| FR-05 | Reproducible run artifacts | Capture effective runtime configuration, assertion results, and generated reports so runs are comparable across environments. |
+| FR-06 | Challenge unsupported assumptions | Document and gate assumptions around auth headers, generated OpenAPI client usage, and fixed SLA thresholds; defaults must not imply unsupported guarantees. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Honest performance claims | Do not claim production capacity or latency guarantees from local/developer runs; require representative infrastructure evidence for such statements. |
+| NFR-02 | Safe defaults | Keep defaults non-destructive and suitable for dedicated non-production targets only; avoid hidden retries or traffic amplification that obscures failures. |
+| NFR-03 | Bounded complexity | Prefer direct, inspectable Gatling scenario logic; generated HTTP clients are optional and must not reduce observability/debuggability. |
+
+### Plan
+
+1. Convert `stockio-test-harness/performance/README.md` from prompt-style content into repository-specific workload design, assumptions, and run contract.
+2. Add Gradle/Gatling wiring and a modular Kotlin simulation layout (protocol, feeders, actions, scenario, setup) with environment/property-driven configuration.
+3. Implement create-job + poll-job flow with correlation, assertions, and configurable auth-header handling.
+4. Add run scripts/targets and artifact documentation; execute baseline runs in local infrastructure and record observed limits without overclaiming.
+5. Synchronize scenario/specification/issue/active-context and update guidance after first validated run.
+
+### Resources
+
+- [Scenario 19: Exercise allocation-job REST endpoints under controlled load](./scenarios.md#scenario-19-exercise-allocation-job-rest-endpoints-under-controlled-load)
+- [Feature issue: allocation performance harness](./issues/feature-allocation-performance-harness.md)
+- [Harness performance README seed](../../stockio-test-harness/performance/README.md)
+
+## Feature: Add a direct structured allocation UI alongside the agentic page
+
+- **Status:** In-progress
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Feature: Replace the frontend MCP bridge with an Axios service client](#feature-replace-the-frontend-mcp-bridge-with-an-axios-service-client)
+- **Bounded Context:** Frontend Integration & Allocation API Workflows
+
+### Overview
+
+Extend the current Next.js allocation UI with a second, direct structured flow:
+SKU-first input with explicit order metadata, request identity preview, and JSON
+preview. Keep the existing agentic product-resolution flow unchanged. Reuse
+same-origin server-side Axios transport and established UI behavior patterns.
+
+This feature uses the allocation jobs contract (`POST /api/allocation/jobs`)
+with the `AllocationRequest` shape from `allocation-controller.yaml`.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Separate direct workflow surface | Add a dedicated UI route/page for direct structured allocation requests without replacing the existing "Find the right product. Allocate with confidence" page. |
+| FR-02 | SKU-first form fields | Capture SKU, quantity, priority, order ID, customer, placed date, required delivery date, and as-of date with clear validation and defaults where appropriate. |
+| FR-03 | Consistent navigation shell | Include a simple default Tailwind navbar and clear navigation between the existing agentic flow and the new direct flow. |
+| FR-04 | Request identity and preview | Show request identity and a JSON preview of the exact outbound payload, with explicit behavior for unchanged retries versus edited requests. |
+| FR-05 | Axios submission path | Submit through server-side Axios using same-origin Next.js route patterns, preserving explicit HTTP/network error handling. |
+| FR-06 | Contract alignment | Align direct-page types, route/client, docs, and tests to `POST /api/allocation/jobs` with `AllocationRequest`. |
+| FR-07 | Response rendering | Render response outcomes and errors explicitly, without implying success guarantees beyond returned API status/body. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Backward compatibility | Keep existing agentic page behavior, request/response parsing, and tests intact unless intentionally updated with approved scope. |
+| NFR-02 | Transport safety | Keep service URL configuration server-side, maintain no-store behavior and bounded timeout/error mapping patterns used by current Axios route. |
+| NFR-03 | Honest UX semantics | Distinguish accepted, failed, and uncertain outcomes clearly; do not claim allocation completion where API semantics do not guarantee it. |
+
+### Plan
+
+1. Use `allocation-controller.yaml` + `AllocationRequest` as the direct-page contract baseline and keep route naming explicit.
+2. Introduce direct-flow request types/builders and Axios client/route wiring aligned with the selected contract.
+3. Implement new page UI (navbar, form, request identity, JSON preview, submit/result sections) while preserving agentic page behavior.
+4. Add focused unit/route/browser coverage for field validation, payload shape, request identity behavior, and error mapping.
+5. Synchronize architecture/run guidance/scenario/specification/issue/active-context with implemented behavior.
+
+### Resources
+
+- [Scenario 20: Submit structured allocation requests from a direct UI workflow](./scenarios.md#scenario-20-submit-structured-allocation-requests-from-a-direct-ui-workflow)
+- [Feature issue: direct structured allocation UI](./issues/feature-direct-structured-allocation-ui.md)
+- [Current page](../../stockio-api/src/main/kotlin/nl/stockio/ui/app/page.tsx)
+- [Allocation jobs OpenAPI](../../stockio-api/src/main/resources/openapi/allocation-controller.yaml)
+
+## Feature: Mitigate synchronous allocation lock contention with fail-fast admission
+
+- **Status:** In-progress
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Bound allocation execution with a fail-fast bulkhead](#feature-bound-allocation-execution-with-a-fail-fast-bulkhead), [Coordinate stock processing through a per-SKU protocol](#feature-coordinate-stock-processing-through-a-per-sku-protocol)
+- **Bounded Context:** Allocation Application Orchestration & Concurrency Control
+
+### Overview
+
+Reduce synchronous allocation tail latency under contention by combining two
+practical controls: (1) explicit fail-fast admission at realistic in-flight
+limits and (2) reduced lock-holding critical-section duration for admitted
+requests. Preserve the existing sorted lock protocol and idempotent recovery
+contracts while preventing overload from turning into long lock/connection wait
+queues.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Explicit fail-fast operation | Define and enforce an approved fail-fast admission profile for synchronous allocation paths so overload rejects quickly instead of queueing behind lock contention. |
+| FR-02 | Capacity-aligned limits | Set in-flight limits from measured database and lock behavior, not static defaults; include per-instance and replica-budget guidance. |
+| FR-03 | Preserve lock protocol | Keep existing sorted document/SKU/run-or-lifecycle lock ordering unchanged while implementing contention mitigation. |
+| FR-04 | Shorter lock-holding sections | Reduce time spent in lock-holding transactional sections by moving non-essential work outside those sections where correctness permits. |
+| FR-05 | Timeout and retry policy | Define explicit lock-wait/statement timeout and retry behavior that distinguishes capacity rejection, validation failure, and partial-progress recovery. |
+| FR-06 | Adapter-consistent overload handling | Keep inline HTTP, MCP, and background execution overload behavior explicit and recoverable without fallback storms or false success semantics. |
+| FR-07 | Contention observability | Expose and review admission outcomes, rejection ratio, p95/p99 latency, lock waits, pool pressure, and completion throughput for tuning decisions. |
+| FR-08 | Controlled rollout | Enable only after representative contention testing, documented operational limits, and synchronized behavior documentation. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Correctness first | Preserve allocation correctness, idempotency, FIFO/priority behavior, reservation semantics, and projection/ledger compatibility. |
+| NFR-02 | No hidden queues | Do not introduce implicit permit wait queues or unbounded executor backlogs as a substitute for explicit admission policy. |
+| NFR-03 | Honest guarantees | Document per-instance control boundaries clearly; avoid claims of global throughput or guaranteed latency without representative evidence. |
+| NFR-04 | Low-cardinality metrics | Keep observability labels bounded; avoid identity-bearing tags. |
+
+### Plan
+
+1. Baseline contention behavior for synchronous allocation using current harness artifacts and service metrics (latency percentiles, lock waits, pool pressure, throughput).
+2. Approve an operational admission profile (enabled flag + in-flight limits + rejection semantics) for representative environments.
+3. Identify lock-holding sections in registration/SKU/projection/completion flow and move safe non-lock-critical work outside those sections.
+4. Add explicit lock-wait and statement-timeout policy plus retry guidance for inline/background callers, preserving partial-progress recovery semantics.
+5. Validate with focused contention scenarios (independent/hot SKUs, projection pressure, mixed callers) and compare before/after outcomes.
+6. Synchronize scenario/specification/issue/active-context and update service guidance before rollout.
+
+### Resources
+
+- [Scenario 21: Fail fast under allocation lock contention](./scenarios.md#scenario-21-fail-fast-under-allocation-lock-contention)
+- [Feature issue: fail-fast lock contention mitigation](./issues/feature-fail-fast-lock-contention-mitigation.md)
 - [Backpressure design discussion](../../docs/system_design_backpressure_admission_control.md)

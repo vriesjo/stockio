@@ -9,8 +9,15 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * Service responsible for registering inbound shipments and their associated supplies.
+ *
+ * This service ensures that inbound shipments and their lines are correctly registered in the system,
+ * validating that shipment lines do not change their registered membership and that they do not conflict
+ * with existing shipment lines. It operates within a mandatory transaction context to ensure data integrity.
+ */
 @Service
-class InboundSupplyService(
+class InboundShipmentRegistrationService(
     private val shipmentRepository: InboundShipmentRepository,
     private val supplyRepository: InboundSupplyRepository
 ) {

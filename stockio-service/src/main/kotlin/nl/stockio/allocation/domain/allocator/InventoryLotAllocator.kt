@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.worker
+package nl.stockio.allocation.domain.allocator
 
 import java.time.LocalDate
 import java.util.UUID
@@ -8,8 +8,22 @@ import nl.stockio.api.dto.AllocationSourceType
 import nl.stockio.allocation.domain.model.InventoryLotState
 import nl.stockio.allocation.domain.model.StockReservationChange
 
-class InventoryAllocationPolicy {
+/**
+ * Allocates requested quantities from available inventory lots for each SKU.
+ *
+ * The allocator updates the in-memory lot and reservation state and records the
+ * inventory lots used as allocation sources.
+ */
+class InventoryLotAllocator {
 
+    /**
+     * Reserves as much of [requested] as possible from [sku]'s inventory lots.
+     *
+     * Updates each consumed lot's reserved quantity, accumulates reservation
+     * changes by order line and stock item, and appends the consumed lots to
+     * [sources]. Returns the quantity allocated; this may be less than [requested]
+     * when inventory is insufficient.
+     */
     fun allocate(
         sku: String,
         requested: Int,

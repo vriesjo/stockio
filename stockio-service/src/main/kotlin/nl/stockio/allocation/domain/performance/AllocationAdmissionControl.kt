@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.service
+package nl.stockio.allocation.domain.performance
 
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer

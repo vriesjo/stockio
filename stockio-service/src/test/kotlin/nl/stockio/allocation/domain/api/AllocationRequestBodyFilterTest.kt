@@ -2,8 +2,9 @@ package nl.stockio.allocation.domain.api
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import nl.stockio.allocation.domain.api.filter.AllocationRequestBodyFilter
 import nl.stockio.allocation.domain.job.listener.AllocationRabbitConfiguration
-import nl.stockio.allocation.domain.service.AllocationAdmissionProperties
+import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
 import org.junit.jupiter.api.Assertions.*

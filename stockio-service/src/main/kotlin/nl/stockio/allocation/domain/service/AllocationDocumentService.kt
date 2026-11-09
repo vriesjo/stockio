@@ -3,6 +3,7 @@ package nl.stockio.allocation.domain.service
 import java.time.Clock
 import java.time.Instant
 import java.util.UUID
+import nl.stockio.allocation.domain.performance.AllocationLockContentionPolicy
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.api.dto.DemandOrder
@@ -49,12 +50,14 @@ class AllocationDocumentService(
     private val allocationRunRepository: AllocationRunRepository,
     private val orderClaimRepository: AllocationOrderClaimRepository,
     private val demandOrderLineRepository: DemandOrderLineRepository,
-    private val inboundSupplyService: InboundSupplyService,
+    private val inboundShipmentRegistrationService: InboundShipmentRegistrationService,
+    private val lockContentionPolicy: AllocationLockContentionPolicy,
     private val properties: ReservationProperties,
     private val clock: Clock
 ) {
     @Transactional
     fun initialize(runId: UUID, request: AllocationRequest) {
+        lockContentionPolicy.apply()
         lockDocuments(request)
         lockInboundSkus(request)
 
@@ -66,7 +69,7 @@ class AllocationDocumentService(
         if (request.runType == AllocationRunType.NEW_DEMAND) {
             request.demandOrders.forEach { order -> handleOrderClaim(order, runId) }
         }
-        inboundSupplyService.registerInboundSupply(request.inboundShipments)
+        inboundShipmentRegistrationService.registerInboundSupply(request.inboundShipments)
 
         run.documentsInitialized = true
     }

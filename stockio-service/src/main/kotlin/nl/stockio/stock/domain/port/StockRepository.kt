@@ -1,10 +1,13 @@
 package nl.stockio.stock.domain.port
 
+import java.time.Instant
 import java.time.LocalDate
 import java.util.Optional
 import java.util.UUID
+import nl.stockio.allocation.domain.job.AllocationJobTrackingState
 import nl.stockio.api.dto.StockSyncResult
 import nl.stockio.stock.infra.AllocationJobResultEntity
+import nl.stockio.stock.infra.AllocationJobTrackingEntity
 import nl.stockio.stock.infra.StockDailyLotSnapshot
 import nl.stockio.stock.infra.StockDailySnapshot
 import nl.stockio.stock.infra.StockEntity
@@ -59,4 +62,15 @@ interface StockSnapshotRepository {
 interface AllocationJobResultRepository {
     fun findById(jobId: UUID): Optional<AllocationJobResultEntity>
     fun <S : AllocationJobResultEntity> save(entity: S): S
+}
+
+interface AllocationJobTrackingRepository {
+    fun findById(jobId: UUID): Optional<AllocationJobTrackingEntity>
+    fun <S : AllocationJobTrackingEntity> save(entity: S): S
+    fun transition(
+        jobId: UUID,
+        fromStatuses: Collection<AllocationJobTrackingState>,
+        toStatus: AllocationJobTrackingState,
+        updatedAt: Instant
+    ): Int
 }

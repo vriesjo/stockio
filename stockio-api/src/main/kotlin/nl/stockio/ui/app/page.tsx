@@ -10,6 +10,7 @@ import {
   type ProductAllocationRequest,
 } from "@/lib/allocation";
 import AllocationResultView from "./allocation-result";
+import TopNav from "./top-nav";
 
 const initialForm: AllocationForm = {
   orderId: "",
@@ -128,16 +129,7 @@ export default function AllocationPage() {
 
   return (
     <div className="min-h-screen">
-      <header className="border-b border-stone-200 bg-white/80">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 sm:px-8">
-          <a href="/" className="flex items-center gap-3 text-xl font-bold tracking-tight" aria-label="Stockio home">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-900 text-lg text-white" aria-hidden="true">s.</span>
-            stockio<span className="font-normal text-stone-400">/</span>
-            <span className="hidden text-sm font-normal tracking-normal text-stone-500 sm:inline">Allocation workspace</span>
-          </a>
-          <span className="rounded-full border border-stone-200 px-3 py-1 text-xs text-stone-600">Catalog + knowledge + inventory</span>
-        </div>
-      </header>
+      <TopNav active="agentic" />
 
       <main className="mx-auto max-w-7xl px-5 py-10 sm:px-8 sm:py-14">
         <p className="mb-3 text-xs font-bold tracking-[0.2em] text-emerald-800">PRODUCT ALLOCATION</p>

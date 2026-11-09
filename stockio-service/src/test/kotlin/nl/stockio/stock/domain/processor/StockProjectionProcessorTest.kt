@@ -16,6 +16,7 @@ import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
 import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
+import nl.stockio.allocation.domain.performance.AllocationLockContentionPolicy
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.OpenBackorderEntity
 import nl.stockio.reservation.domain.port.InboundReservationRepository
@@ -61,6 +62,7 @@ class StockProjectionProcessorTest {
         claimRepository,
         clock,
         lockRepository,
+        mockk<AllocationLockContentionPolicy>(relaxed = true),
         mockk<StockScopeRepository>(relaxed = true),
         mockk<PlatformTransactionManager>(relaxed = true)
     )

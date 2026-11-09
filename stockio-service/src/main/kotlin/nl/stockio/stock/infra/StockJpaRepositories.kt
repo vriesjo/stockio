@@ -7,13 +7,16 @@ import java.time.LocalDate
 import java.util.Optional
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Lock
+import org.springframework.data.jpa.repository.Modifying
 import org.springframework.data.jpa.repository.Query
 import org.springframework.data.repository.query.Param
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 import java.util.UUID
+import nl.stockio.allocation.domain.job.AllocationJobTrackingState
 import nl.stockio.api.dto.StockSyncResult
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
+import nl.stockio.stock.domain.port.AllocationJobTrackingRepository
 import nl.stockio.stock.domain.port.StockLedgerSyncStatusRepository
 import nl.stockio.stock.domain.port.StockProjectionLockRepository
 import nl.stockio.stock.domain.port.StockRepository
@@ -56,6 +59,26 @@ interface StockJpaRepository : StockRepository, JpaRepository<StockEntity, UUID>
 interface AllocationJobResultJpaRepository : AllocationJobResultRepository, JpaRepository<AllocationJobResultEntity, UUID> {
     override fun findById(jobId: UUID): Optional<AllocationJobResultEntity>
     override fun <S : AllocationJobResultEntity> save(entity: S): S
+}
+
+interface AllocationJobTrackingJpaRepository :
+    AllocationJobTrackingRepository,
+    JpaRepository<AllocationJobTrackingEntity, UUID> {
+    override fun findById(jobId: UUID): Optional<AllocationJobTrackingEntity>
+    override fun <S : AllocationJobTrackingEntity> save(entity: S): S
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query(
+        "update AllocationJobTrackingEntity tracking set tracking.status = :toStatus, " +
+            "tracking.updatedAt = :updatedAt where tracking.jobId = :jobId and tracking.status in :fromStatuses"
+    )
+    override fun transition(
+        @Param("jobId") jobId: UUID,
+        @Param("fromStatuses") fromStatuses: Collection<AllocationJobTrackingState>,
+        @Param("toStatus") toStatus: AllocationJobTrackingState,
+        @Param("updatedAt") updatedAt: Instant
+    ): Int
 }
 
 interface StockReservationJpaRepository : StockReservationRepository, JpaRepository<StockReservationEntity, UUID> {

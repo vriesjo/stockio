@@ -1,4 +1,4 @@
-package nl.stockio.allocation.domain.worker
+package nl.stockio.allocation.domain.allocator
 
 import java.time.LocalDate
 import nl.stockio.allocation.domain.model.AllocationCalculationResult
@@ -12,9 +12,16 @@ import nl.stockio.allocation.domain.model.InboundSupplyState
 import nl.stockio.allocation.domain.model.InventoryLotState
 import nl.stockio.allocation.domain.model.StockReservationChange
 
+/**
+ * Calculator responsible for determining the allocation of orders based on available inventory and inbound supply.
+ *
+ * This class takes a list of orders, current inventory states, inbound supply states, and reservation changes,
+ * and calculates the allocation results. It uses the StockAllocator and InboundSupplyAllocator to perform
+ * the allocation logic for inventory and inbound supply respectively.
+ */
 class AllocationCalculator(
-    private val inventoryAllocationPolicy: InventoryAllocationPolicy,
-    private val inboundAllocationPolicy: InboundAllocationPolicy
+    private val inventoryLotAllocator: InventoryLotAllocator,
+    private val inboundSupplyAllocator: InboundSupplyAllocator
 ) {
 
     fun calculate(
@@ -58,7 +65,7 @@ class AllocationCalculator(
                 val sources = mutableListOf<AllocationSource>()
                 var remaining = order.quantity
                 val deliveryDate = order.requiredDeliveryDate.coerceAtLeast(asOfDate)
-                val fromInventory = inventoryAllocationPolicy.allocate(
+                val fromInventory = inventoryLotAllocator.allocate(
                     sku = order.sku,
                     requested = remaining,
                     lotsBySku = inventoryBySku,
@@ -68,7 +75,7 @@ class AllocationCalculator(
                     reservationsByOrderAndStock = stockReservationsByKey,
                     deliveryDate = deliveryDate
                 ).also { remaining -= it }
-                val fromInbound = inboundAllocationPolicy.allocate(
+                val fromInbound = inboundSupplyAllocator.allocate(
                     sku = order.sku,
                     latestArrivalDate = order.requiredDeliveryDate,
                     requested = remaining,

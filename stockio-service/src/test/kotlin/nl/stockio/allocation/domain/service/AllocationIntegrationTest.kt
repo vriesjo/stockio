@@ -25,6 +25,8 @@ import nl.stockio.api.dto.InboundShipmentLine
 import nl.stockio.api.dto.ProcessDailyStockRequest
 import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
+import nl.stockio.allocation.domain.job.AllocationJobTrackingService
+import nl.stockio.allocation.domain.job.AllocationJobTrackingState
 import nl.stockio.api.dto.AllocationCompletionResult
 import nl.stockio.api.dto.AllocationJobAccepted
 import nl.stockio.api.dto.AllocationProcessingOutcome
@@ -38,7 +40,7 @@ import nl.stockio.stock.infra.AllocationJobResultJpaRepository
 import nl.stockio.stock.infra.StockLedgerSyncStatusJdbcTemplateRepository
 import nl.stockio.reservation.domain.job.ReservationExpiryJob
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
-import nl.stockio.allocation.domain.worker.AllocationSkuWorker
+import nl.stockio.allocation.domain.processor.SkuAllocationProcessor
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
 import nl.stockio.stock.domain.processor.StockLedgerSkuWorker
 import nl.stockio.stock.domain.port.StockLedgerRunRepository
@@ -48,6 +50,9 @@ import nl.stockio.allocation.infra.AllocationRunJpaRepository
 import nl.stockio.allocation.infra.AllocationSourceJpaRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
 import nl.stockio.McpServerRunner
+import nl.stockio.allocation.domain.performance.AllocationAdmission
+import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
 import nl.stockio.reservation.infra.InboundSupplyJpaRepository
 import nl.stockio.allocation.infra.OpenBackorderJpaRepository
 import nl.stockio.stock.infra.StockSnapshotRepositoryJdbcTemplate
@@ -84,6 +89,7 @@ import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.http.MediaType
 import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.jdbc.datasource.DriverManagerDataSource
+import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.test.annotation.DirtiesContext
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
@@ -138,10 +144,13 @@ class AllocationIntegrationTest {
     private lateinit var allocationService: AllocationService
 
     @Autowired
-    private lateinit var backorderAllocationService: BackorderAllocationService
+    private lateinit var allocationBackorderService: AllocationBackorderService
 
     @Autowired
     private lateinit var allocationJobExecutor: AllocationJobExecutor
+
+    @Autowired
+    private lateinit var allocationJobTracking: AllocationJobTrackingService
 
     @Autowired
     private lateinit var processingService: AllocationProcessor
@@ -156,10 +165,10 @@ class AllocationIntegrationTest {
     private lateinit var jobResultRepository: AllocationJobResultJpaRepository
 
     @Autowired
-    private lateinit var allocationSkuWorker: AllocationSkuWorker
+    private lateinit var skuAllocationProcessor: SkuAllocationProcessor
 
     @Autowired
-    private lateinit var allocationRunService: AllocationRunService
+    private lateinit var allocationRunLifecycleService: AllocationRunLifecycleService
 
     @Autowired
     private lateinit var documentService: AllocationDocumentService
@@ -169,6 +178,9 @@ class AllocationIntegrationTest {
 
     @Autowired
     private lateinit var objectMapper: ObjectMapper
+
+    @Autowired
+    private lateinit var kafkaTemplate: KafkaTemplate<String, String>
 
     @Autowired
     private lateinit var reportGenerator: ExcelReportProcessor
@@ -613,9 +625,12 @@ class AllocationIntegrationTest {
         val registry = io.micrometer.core.instrument.simple.SimpleMeterRegistry()
         val admission = AllocationAdmission(admissionProperties, registry)
         val limits = AllocationRequestLimits(admissionProperties, objectMapper, registry)
-        val guarded = AllocationProcessor(allocationService, stockProjectionProcessor, backorderAllocationService,
+        val guarded = AllocationProcessor(allocationService, stockProjectionProcessor, allocationBackorderService,
             admission, limits)
-        val guardedExecutor = AllocationJobExecutor(guarded, jobResultRepository, jobScheduler, objectMapper, limits)
+        val guardedExecutor = AllocationJobExecutor(
+            guarded, jobResultRepository, objectMapper, limits, kafkaTemplate, allocationJobTracking,
+            "stockio.allocation.requests"
+        )
         val today = LocalDate.now()
         stockRepository.save(
             StockEntity(sku = "MAKI-ZALM", lotId = "ALLOCATION-RETRY-LOT", receivedDate = today, quantityOnHand = 5)
@@ -632,6 +647,7 @@ class AllocationIntegrationTest {
         Assertions.assertThrows(AllocationProjectionException::class.java) {
             guardedExecutor.executeSync(request.requestId, request)
         }
+
         Assertions.assertEquals(0.0, registry.get("stockio.allocation.admission.active").gauge().value())
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
@@ -647,12 +663,53 @@ class AllocationIntegrationTest {
     }
 
     @Test
+    fun `Kafka submission tracking transitions persist across status updates`() {
+        val jobId = UUID.randomUUID()
+        val requestId = UUID.randomUUID()
+
+        allocationJobTracking.registerSubmission(jobId, requestId)
+        Assertions.assertEquals(
+            AllocationJobTrackingState.PUBLISHING,
+            allocationJobTracking.findById(jobId).orElseThrow().status
+        )
+        allocationJobTracking.markEnqueued(jobId)
+        Assertions.assertEquals(
+            AllocationJobTrackingState.ENQUEUED,
+            allocationJobTracking.findById(jobId).orElseThrow().status
+        )
+        allocationJobTracking.markProcessing(jobId)
+        allocationJobTracking.markSucceeded(jobId)
+
+        Assertions.assertEquals(
+            AllocationJobTrackingState.SUCCEEDED,
+            allocationJobTracking.findById(jobId).orElseThrow().status
+        )
+
+        val unknownJobId = UUID.randomUUID()
+        allocationJobTracking.registerSubmission(unknownJobId, requestId)
+        allocationJobTracking.markSubmissionUnknown(unknownJobId)
+        Assertions.assertEquals(
+            AllocationJobTrackingState.SUBMISSION_UNKNOWN,
+            allocationJobTracking.findById(unknownJobId).orElseThrow().status
+        )
+
+        val failedJobId = UUID.randomUUID()
+        allocationJobTracking.registerSubmission(failedJobId, requestId)
+        allocationJobTracking.markEnqueued(failedJobId)
+        allocationJobTracking.markFailed(failedJobId)
+        Assertions.assertEquals(
+            AllocationJobTrackingState.FAILED,
+            allocationJobTracking.findById(failedJobId).orElseThrow().status
+        )
+    }
+
+    @Test
     fun `saturated admission rejects before persisted run document or reservation writes`() {
         val properties = AllocationAdmissionProperties(true, 1, 1, 1, 1, 1, 1, 4096)
         val registry = io.micrometer.core.instrument.simple.SimpleMeterRegistry()
         val admission = AllocationAdmission(properties, registry)
         val limits = AllocationRequestLimits(properties, objectMapper, registry)
-        val guarded = AllocationProcessor(allocationService, stockProjectionProcessor, backorderAllocationService,
+        val guarded = AllocationProcessor(allocationService, stockProjectionProcessor, allocationBackorderService,
             admission, limits)
         val request = reservationRequest("ADMISSION-REFUSED", 1)
         admission.execute(request.runType) {
@@ -844,17 +901,17 @@ class AllocationIntegrationTest {
         )
 
         val hash = requestHash(request)
-        val pendingRun = allocationRunService.beginOrResume(request, hash)
+        val pendingRun = allocationRunLifecycleService.beginOrResume(request, hash)
         documentService.initialize(pendingRun.id, request)
         val inventorySkuOrders = request.allocationLines().filter { it.sku == "MAKI-ZALM" }
-        val firstSkuResult = allocationSkuWorker.allocateNewDemand(
+        val firstSkuResult = skuAllocationProcessor.process(
             runId = pendingRun.id,
             requestHash = hash,
             sku = "MAKI-ZALM",
             asOfDate = today,
             orders = inventorySkuOrders
         )
-        val retriedSkuResult = allocationSkuWorker.allocateNewDemand(
+        val retriedSkuResult = skuAllocationProcessor.process(
             runId = pendingRun.id,
             requestHash = hash,
             sku = "MAKI-ZALM",
@@ -1019,7 +1076,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(fulfillmentRun.runId, fulfillmentRetry.runId)
         Assertions.assertEquals(AllocationRunType.BACKORDER_FULFILLMENT, fulfillmentRun.runType)
         Assertions.assertEquals(1, fulfillmentRun.openBackorderCount)
-        Assertions.assertEquals(2, allocationRunService.getRun(initialRun.runId).openBackorderCount)
+        Assertions.assertEquals(2, allocationRunLifecycleService.getRun(initialRun.runId).openBackorderCount)
         Assertions.assertEquals("ORDER-FIFO-1", fulfillmentRun.allocations[0].orderId)
         Assertions.assertEquals(AllocationStatus.FULFILLED, fulfillmentRun.allocations[0].status)
         Assertions.assertEquals("ORDER-FIFO-2", fulfillmentRun.allocations[1].orderId)
@@ -1029,7 +1086,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(1, fulfillmentRun.openBackorderCount)
 
         val report = reportGenerator.process(
-            allocationRunService.getRun(initialRun.runId),
+            allocationRunLifecycleService.getRun(initialRun.runId),
             temporaryDirectory.resolve("allocation.xlsx")
         )
         Assertions.assertTrue(Files.exists(report))
@@ -1660,9 +1717,9 @@ class AllocationIntegrationTest {
             )
         )
         val hash = requestHash(request)
-        val run = allocationRunService.beginOrResume(request, hash)
+        val run = allocationRunLifecycleService.beginOrResume(request, hash)
         documentService.initialize(run.id, request)
-        allocationSkuWorker.allocateNewDemand(
+        skuAllocationProcessor.process(
             run.id, hash, "MAKI-ZALM", today, request.allocationLines().take(1)
         )
         val deadline = requireNotNull(claimRepository.findById("PARTIAL-FIRST").orElseThrow().reservationExpiresAt)
@@ -1939,8 +1996,8 @@ class AllocationIntegrationTest {
             demandOrders = listOf(singleLineOrder("INDEPENDENT-B", "Independent", "MAKI-TONIJN", 2, 1, today, today)),
             inboundShipments = listOf(singleLineShipment("INDEPENDENT-SHIP-B", "MAKI-TONIJN", 5, today))
         )
-        val firstRun = allocationRunService.beginOrResume(first, requestHash(first))
-        val secondRun = allocationRunService.beginOrResume(second, requestHash(second))
+        val firstRun = allocationRunLifecycleService.beginOrResume(first, requestHash(first))
+        val secondRun = allocationRunLifecycleService.beginOrResume(second, requestHash(second))
         val executor = Executors.newSingleThreadExecutor()
         try {
             TransactionTemplate(transactionManager).executeWithoutResult {
@@ -2007,8 +2064,8 @@ class AllocationIntegrationTest {
                 )
             }
         )
-        val firstRun = allocationRunService.beginOrResume(first, requestHash(first))
-        val secondRun = allocationRunService.beginOrResume(second, requestHash(second))
+        val firstRun = allocationRunLifecycleService.beginOrResume(first, requestHash(first))
+        val secondRun = allocationRunLifecycleService.beginOrResume(second, requestHash(second))
         val backend = ArrayBlockingQueue<Int>(1)
         val executor = Executors.newSingleThreadExecutor()
         lateinit var attempt: Future<IllegalArgumentException>
@@ -2054,19 +2111,19 @@ class AllocationIntegrationTest {
             UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND, inboundShipments = listOf(shipment)
         ))
         val request = reservationRequest("AMENDMENT-ORDER", 50)
-        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        val run = allocationRunLifecycleService.beginOrResume(request, requestHash(request))
         documentService.initialize(run.id, request)
         val amendment = AllocationRequest(
             UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
             inboundShipments = listOf(shipment.copy(lines = shipment.lines.map { it.copy(expectedQuantity = 20) }))
         )
-        val amendmentRun = allocationRunService.beginOrResume(amendment, requestHash(amendment))
+        val amendmentRun = allocationRunLifecycleService.beginOrResume(amendment, requestHash(amendment))
         val backend = ArrayBlockingQueue<Int>(1)
         val executor = Executors.newSingleThreadExecutor()
         lateinit var attempt: Future<IllegalArgumentException>
         try {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                allocationSkuWorker.allocateNewDemand(
+                skuAllocationProcessor.process(
                     run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines()
                 )
                 val holder = currentBackendPid()
@@ -2100,7 +2157,7 @@ class AllocationIntegrationTest {
         val request = reservationRequest("RETRY-LOCK-ORDER", 2).copy(
             inboundShipments = listOf(singleLineShipment("RETRY-LOCK-SHIP", "MAKI-ZALM", 5, today))
         )
-        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        val run = allocationRunLifecycleService.beginOrResume(request, requestHash(request))
         documentService.initialize(run.id, request)
         val deadline = claimRepository.findById("RETRY-LOCK-ORDER").orElseThrow().reservationExpiresAt
         val backend = ArrayBlockingQueue<Int>(1)
@@ -2122,7 +2179,7 @@ class AllocationIntegrationTest {
                     }
                 }
                 awaitBlockedBy(holder, requireNotNull(backend.poll(10, TimeUnit.SECONDS)))
-                allocationSkuWorker.allocateNewDemand(
+                skuAllocationProcessor.process(
                     run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines()
                 )
             }
@@ -2149,7 +2206,7 @@ class AllocationIntegrationTest {
                 }))
             )
         }
-        val runs = requests.map { allocationRunService.beginOrResume(it, requestHash(it)) }
+        val runs = requests.map { allocationRunLifecycleService.beginOrResume(it, requestHash(it)) }
         val executor = Executors.newFixedThreadPool(2)
         val attempts = mutableListOf<Future<*>>()
         try {
@@ -2186,7 +2243,7 @@ class AllocationIntegrationTest {
             InboundShipmentLine("INITIALIZED-SUPPLY", "MAKI-ZALM", 5, today)
         ))
         val request = reservationRequest("INITIALIZED-ORDER", 2).copy(inboundShipments = listOf(shipment))
-        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        val run = allocationRunLifecycleService.beginOrResume(request, requestHash(request))
         documentService.initialize(run.id, request)
         val deadline = claimRepository.findById("INITIALIZED-ORDER").orElseThrow().reservationExpiresAt
         allocationService.allocation(AllocationRequest(
@@ -2231,14 +2288,14 @@ class AllocationIntegrationTest {
             StockEntity(sku = "MAKI-TONIJN", lotId = "SCOPED-T", receivedDate = today, quantityOnHand = 7)
         ))
         val request = reservationRequest("SCOPED-ORDER", 3)
-        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        val run = allocationRunLifecycleService.beginOrResume(request, requestHash(request))
         documentService.initialize(run.id, request)
         val executor = Executors.newFixedThreadPool(2)
         val backend = ArrayBlockingQueue<Int>(1)
         lateinit var waiting: Future<*>
         try {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                allocationSkuWorker.allocateNewDemand(run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines())
+                skuAllocationProcessor.process(run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines())
                 val holder = currentBackendPid()
                 waiting = executor.submit {
                     TransactionTemplate(transactionManager).executeWithoutResult {
@@ -2268,13 +2325,13 @@ class AllocationIntegrationTest {
             StockEntity(sku = "MAKI-TONIJN", lotId = "LEDGER-T", receivedDate = today, quantityOnHand = 7)
         ))
         val request = reservationRequest("LEDGER-OVERLAP", 3)
-        val run = allocationRunService.beginOrResume(request, requestHash(request))
+        val run = allocationRunLifecycleService.beginOrResume(request, requestHash(request))
         documentService.initialize(run.id, request)
         val executor = Executors.newSingleThreadExecutor()
         lateinit var ledger: Future<*>
         try {
             TransactionTemplate(transactionManager).executeWithoutResult {
-                allocationSkuWorker.allocateNewDemand(run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines())
+                skuAllocationProcessor.process(run.id, requestHash(request), "MAKI-ZALM", today, request.allocationLines())
                 ledger = executor.submit { stockLedgerProcessor.processToday() }
                 Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted {
                     Assertions.assertEquals(1, ledgerRunRepository.getProgress()?.completedSkus)

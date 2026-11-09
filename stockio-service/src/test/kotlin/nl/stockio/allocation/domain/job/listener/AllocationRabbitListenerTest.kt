@@ -6,7 +6,8 @@ import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import nl.stockio.allocation.domain.processor.AllocationProjectionException
-import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationLockContentionException
 import com.rabbitmq.client.Channel
 import org.jobrunr.jobs.Job
 import org.jobrunr.jobs.lambdas.JobLambda
@@ -117,6 +118,23 @@ class AllocationRabbitListenerTest {
         val storage = Mockito.mock(StorageProvider::class.java)
         val backoff = Mockito.mock(AllocationRabbitCapacityBackoff::class.java)
         Mockito.doThrow(AllocationCapacityExceededException()).doReturn(null)
+            .`when`(executor).executeSync(request.requestId, request)
+
+        AllocationRabbitListener(scheduler, executor, storage, backoff).receive(request, channel())
+
+        Mockito.verify(executor, Mockito.times(2)).executeSync(request.requestId, request)
+        Mockito.verify(backoff).pause()
+        Mockito.verifyNoInteractions(scheduler, storage)
+    }
+
+    @Test
+    fun `lock contention rejection backs off with the original message and never creates fallback jobs`() {
+        val request = AllocationRequest(UUID.randomUUID(), LocalDate.now(), AllocationRunType.NEW_DEMAND)
+        val executor = Mockito.mock(AllocationJobExecutor::class.java)
+        val scheduler = Mockito.mock(JobScheduler::class.java)
+        val storage = Mockito.mock(StorageProvider::class.java)
+        val backoff = Mockito.mock(AllocationRabbitCapacityBackoff::class.java)
+        Mockito.doThrow(AllocationLockContentionException()).doReturn(null)
             .`when`(executor).executeSync(request.requestId, request)
 
         AllocationRabbitListener(scheduler, executor, storage, backoff).receive(request, channel())

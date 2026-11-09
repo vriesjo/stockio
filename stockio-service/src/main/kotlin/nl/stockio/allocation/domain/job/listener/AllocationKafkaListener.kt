@@ -22,12 +22,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
-import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationLockContentionException
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
 import org.jobrunr.scheduling.JobScheduler
 import org.jobrunr.storage.JobNotFoundException
 import org.jobrunr.storage.StorageProvider
+import org.springframework.kafka.support.KafkaHeaders
+import org.springframework.messaging.handler.annotation.Header
 import org.springframework.kafka.annotation.KafkaListener
 import org.springframework.stereotype.Component
 import io.micrometer.core.instrument.MeterRegistry
@@ -49,7 +52,10 @@ class AllocationKafkaListener(
         autoStartup = "\${stockio.allocation.kafka.enabled:false}",
         containerFactory = "allocationKafkaListenerContainerFactory"
     )
-    fun receive(payload: String?) {
+    fun receive(
+        payload: String?,
+        @Header(KafkaHeaders.RECEIVED_KEY, required = false) key: String? = null
+    ) {
         if (payload == null) {
             throw IllegalArgumentException("Kafka allocation record has no value.")
         }
@@ -62,8 +68,15 @@ class AllocationKafkaListener(
         if (request == null) {
             throw IllegalArgumentException("Kafka allocation record must contain an AllocationRequest.")
         }
+        val jobId = key?.let {
+            try {
+                java.util.UUID.fromString(it)
+            } catch (exception: IllegalArgumentException) {
+                throw IllegalArgumentException("Kafka allocation record key must be a UUID.", exception)
+            }
+        } ?: request.requestId
         try {
-            workQueue.submit(request).get()
+            workQueue.submit(request, jobId).get()
         } catch (exception: InterruptedException) {
             Thread.currentThread().interrupt()
             throw exception
@@ -83,6 +96,7 @@ class AllocationKafkaWorkQueue(
 ) {
     private data class Work(
         val request: AllocationRequest,
+        val jobId: java.util.UUID,
         val completion: CompletableFuture<Void>
     )
 
@@ -105,7 +119,10 @@ class AllocationKafkaWorkQueue(
         }
     }
 
-    fun submit(request: AllocationRequest): CompletableFuture<Void> {
+    fun submit(
+        request: AllocationRequest,
+        jobId: java.util.UUID = request.requestId
+    ): CompletableFuture<Void> {
         // Create a CompletableFuture to track the completion of the work.
         /// The inFlight counter is incremented to track the number of concurrent requests being processed.
         val completion = CompletableFuture<Void>()
@@ -120,7 +137,7 @@ class AllocationKafkaWorkQueue(
         // If the channel is full, this will suspend until space is available.
         val enqueue = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
-                channel.send(Work(request, completion))
+                channel.send(Work(request, jobId, completion))
             } catch (exception: CancellationException) {
                 completion.completeExceptionally(exception)
             } catch (exception: Exception) {
@@ -136,7 +153,7 @@ class AllocationKafkaWorkQueue(
     private suspend fun process(work: Work) {
         val startedAt = System.nanoTime()
         try {
-            executeWithFailurePolicy(work.request)
+            executeWithFailurePolicy(work.jobId, work.request)
             work.completion.complete(null)
             record("completed")
         } catch (exception: CancellationException) {
@@ -154,8 +171,7 @@ class AllocationKafkaWorkQueue(
     // Executes the allocation request with a failure policy that handles capacity exceeded exceptions and other errors.
     // If the allocation capacity is exceeded, it will pause for a backoff period before retrying.
     // If other exceptions occur, it will enqueue a JobRunr fallback for asynchronous processing.
-    private suspend fun executeWithFailurePolicy(request: AllocationRequest) {
-        val jobId = request.requestId
+    private suspend fun executeWithFailurePolicy(jobId: java.util.UUID, request: AllocationRequest) {
         while (true) {
             try {
                 allocationJobExecutor.executeSync(jobId, request)
@@ -163,6 +179,10 @@ class AllocationKafkaWorkQueue(
                 return
             } catch (_: AllocationCapacityExceededException) {
                 record("capacity_deferred")
+                if (!accepting.get()) throw CancellationException("Kafka allocation worker is stopping.")
+                delay(nextCapacityBackoffMillis())
+            } catch (_: AllocationLockContentionException) {
+                record("lock_contention_deferred")
                 if (!accepting.get()) throw CancellationException("Kafka allocation worker is stopping.")
                 delay(nextCapacityBackoffMillis())
             } catch (exception: AllocationRequestTooLargeException) {

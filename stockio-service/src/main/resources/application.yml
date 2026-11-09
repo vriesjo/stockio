@@ -119,6 +119,10 @@ stockio:
       max-inbound-lines: ${ALLOCATION_ADMISSION_MAX_INBOUND_LINES:0}
       max-distinct-skus: ${ALLOCATION_ADMISSION_MAX_DISTINCT_SKUS:0}
       max-request-bytes: ${ALLOCATION_ADMISSION_MAX_REQUEST_BYTES:0}
+    lock-contention:
+      enabled: ${ALLOCATION_LOCK_CONTENTION_ENABLED:false}
+      lock-timeout: ${ALLOCATION_LOCK_TIMEOUT:2s}
+      statement-timeout: ${ALLOCATION_STATEMENT_TIMEOUT:20s}
     rabbitmq:
       exchange: ${ALLOCATION_RABBITMQ_EXCHANGE:stockio.allocation.exchange}
       routing-key: ${ALLOCATION_RABBITMQ_ROUTING_KEY:allocation.request}
@@ -151,3 +155,15 @@ logging:
   structured:
     format:
       console: logstash
+
+springdoc:
+  swagger-ui:
+    path: /openapi.html
+    disable-swagger-default-url: true
+    urls:
+      - name: Allocation API
+        url: /openapi/allocation-controller.yaml
+      - name: Product Allocation API
+        url: /openapi/product-allocation-controller.yaml
+      - name: Reservation API
+        url: /openapi/reservation-controller.yaml

@@ -14,17 +14,24 @@ import nl.stockio.api.dto.AllocationRecord
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
-import nl.stockio.allocation.domain.worker.AllocationSkuWorker
+import nl.stockio.allocation.domain.processor.SkuAllocationProcessor
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
+/**
+ * Service responsible for handling allocation requests.
+ *
+ * This service manages the allocation of new demand and backorder fulfillment based on the provided
+ * [AllocationRequest]. It validates the request, checks for existing completed runs, and coordinates
+ * the allocation process across multiple SKUs using coroutines for concurrent processing.
+ */
 @Service
 class AllocationService(
     private val allocationRequestValidator: AllocationRequestValidator,
-    private val allocationRunService: AllocationRunService,
-    private val allocationSkuWorker: AllocationSkuWorker,
+    private val allocationRunLifecycleService: AllocationRunLifecycleService,
+    private val skuAllocationProcessor: SkuAllocationProcessor,
     private val allocationDocumentService: AllocationDocumentService,
-    private val backorderAllocationService: BackorderAllocationService,
+    private val allocationBackorderService: AllocationBackorderService,
     @Value("\${stockio.allocation.max-concurrent-skus:4}")
     maxConcurrentSkus: Int
 ) {
@@ -36,6 +43,15 @@ class AllocationService(
     @OptIn(ExperimentalCoroutinesApi::class)
     private val allocationDispatcher = Dispatchers.IO.limitedParallelism(maxConcurrentSkus)
 
+    /**
+     * Allocates new demand based on the provided [AllocationRequest].
+     *
+     * This function validates the request, checks for existing completed runs, and coordinates
+     * the allocation process across multiple SKUs using coroutines for concurrent processing.
+     *
+     * @param request The allocation request containing new demand information.
+     * @return The result of the allocation run.
+     */
     fun allocation(request: AllocationRequest): AllocationRunResult {
         require(request.runType == AllocationRunType.NEW_DEMAND) {
             "Run type must be NEW_DEMAND for allocation."
@@ -44,7 +60,7 @@ class AllocationService(
         allocationRequestValidator.validate(request)
 
         val requestHash = requestHash(request)
-        val run = allocationRunService.beginOrResume(request, requestHash)
+        val run = allocationRunLifecycleService.beginOrResume(request, requestHash)
         if (run.completed) {
             return requireNotNull(existingCompletedRun(request, AllocationRunType.NEW_DEMAND))
         }
@@ -54,7 +70,7 @@ class AllocationService(
         val shipmentsBySku = request.inboundShipments.flatMap { it.lines }.groupBy { it.sku }
         val skus = (ordersBySku.keys + shipmentsBySku.keys).distinct().sorted()
         val allocationsBySku = runSkuWorkers(skus) { sku ->
-            allocationSkuWorker.allocateNewDemand(
+            skuAllocationProcessor.process(
                 runId = run.id,
                 requestHash = requestHash,
                 sku = sku,
@@ -63,7 +79,7 @@ class AllocationService(
             )
         }
         val allocations = orderByRequest(allocationsBySku.flatten(), request)
-        return allocationRunService.completeRun(run.id, skus.toSet(), allocations)
+        return allocationRunLifecycleService.completeRun(run.id, skus.toSet(), allocations)
     }
 
     fun allocateOpenBackorders(request: AllocationRequest): AllocationRunResult {
@@ -71,7 +87,7 @@ class AllocationService(
             "Run type must be BACKORDER_FULFILLMENT for backorder allocation."
         }
         allocationRequestValidator.validate(request)
-        return backorderAllocationService.allocate(
+        return allocationBackorderService.allocate(
             BackorderAllocationRequest(
                 requestId = request.requestId,
                 asOfDate = request.asOfDate,
@@ -86,7 +102,7 @@ class AllocationService(
         runType: AllocationRunType
     ): AllocationRunResult? {
         val expectedHash = requestHash(request)
-        return allocationRunService.getRun(request) { previousRun, newRequest ->
+        return allocationRunLifecycleService.getRun(request) { previousRun, newRequest ->
             require(previousRun.contractVersion == 2) {
                 "Legacy requests cannot be replayed through the multiline contract; read the saved run by ID."
             }

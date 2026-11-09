@@ -6,8 +6,10 @@ import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.service.AllocationService
-import nl.stockio.allocation.domain.service.BackorderAllocationService
-import nl.stockio.allocation.domain.service.AllocationAdmission
+import nl.stockio.allocation.domain.service.AllocationBackorderService
+import nl.stockio.allocation.domain.performance.AllocationAdmission
+import nl.stockio.allocation.domain.performance.AllocationLockContentionDetector
+import nl.stockio.allocation.domain.performance.AllocationLockContentionException
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import org.springframework.stereotype.Service
@@ -21,19 +23,26 @@ import org.springframework.stereotype.Service
 class AllocationProcessor(
     private val allocationService: AllocationService,
     private val projectionProcessor: StockProjectionProcessor,
-    private val backorderAllocationService: BackorderAllocationService,
+    private val allocationBackorderService: AllocationBackorderService,
     private val admission: AllocationAdmission,
     private val limits: AllocationRequestLimits
 ) {
     fun process(command: BackorderAllocationRequest): AllocationRunResult {
         limits.validate(command)
-        return admission.execute(AllocationRunType.BACKORDER_FULFILLMENT) {
-            val run = admission.phase("allocation") { backorderAllocationService.allocate(command) }
-            project(run) {
-                projectionProcessor.process(command.asOfDate, run.allocations.map { it.sku } +
-                    command.skuScope.orEmpty() + command.inboundShipments.flatMap { it.lines }.map { it.sku })
+        try {
+            return admission.execute(AllocationRunType.BACKORDER_FULFILLMENT) {
+                val run = admission.phase("allocation") { allocationBackorderService.allocate(command) }
+                project(run) {
+                    projectionProcessor.process(command.asOfDate, run.allocations.map { it.sku } +
+                        command.skuScope.orEmpty() + command.inboundShipments.flatMap { it.lines }.map { it.sku })
+                }
+                run
             }
-            run
+        } catch (exception: Exception) {
+            if (AllocationLockContentionDetector.isRetryableLockContention(exception)) {
+                throw AllocationLockContentionException(cause = exception)
+            }
+            throw exception
         }
     }
 
@@ -41,19 +50,26 @@ class AllocationProcessor(
 
     fun <T> process(request: AllocationRequest, complete: (AllocationRunResult) -> T): T {
         limits.validate(request)
-        return admission.execute(request.runType) {
-            val run = admission.phase("allocation") {
-                when (request.runType) {
-                    AllocationRunType.NEW_DEMAND -> allocationService.allocation(request)
-                    AllocationRunType.BACKORDER_FULFILLMENT -> allocationService.allocateOpenBackorders(request)
+        try {
+            return admission.execute(request.runType) {
+                val run = admission.phase("allocation") {
+                    when (request.runType) {
+                        AllocationRunType.NEW_DEMAND -> allocationService.allocation(request)
+                        AllocationRunType.BACKORDER_FULFILLMENT -> allocationService.allocateOpenBackorders(request)
+                    }
                 }
+                project(run) {
+                    projectionProcessor.process(request.asOfDate, run.allocations.map { it.sku } +
+                        request.demandOrders.flatMap { it.lines }.map { it.sku } +
+                        request.inboundShipments.flatMap { it.lines }.map { it.sku })
+                }
+                admission.phase("completion") { complete(run) }
             }
-            project(run) {
-                projectionProcessor.process(request.asOfDate, run.allocations.map { it.sku } +
-                    request.demandOrders.flatMap { it.lines }.map { it.sku } +
-                    request.inboundShipments.flatMap { it.lines }.map { it.sku })
+        } catch (exception: Exception) {
+            if (AllocationLockContentionDetector.isRetryableLockContention(exception)) {
+                throw AllocationLockContentionException(cause = exception)
             }
-            admission.phase("completion") { complete(run) }
+            throw exception
         }
     }
 

@@ -81,7 +81,7 @@ Source references:
 - [AllocationController](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/api/AllocationController.kt)
 - [AllocationService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationService.kt)
 - [AllocationDocumentService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/AllocationDocumentService.kt)
-- [AllocationSkuWorker](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/worker/AllocationSkuWorker.kt)
+- [AllocationSkuWorker](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/tools/AllocationSkuWorker.kt)
 - [AllocationProcessor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/processor/AllocationProcessor.kt)
 - [BackorderAllocationService](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/service/BackorderAllocationService.kt)
 - [AllocationJobExecutor](../stockio-service/src/main/kotlin/nl/stockio/allocation/domain/job/AllocationJobExecutor.kt)

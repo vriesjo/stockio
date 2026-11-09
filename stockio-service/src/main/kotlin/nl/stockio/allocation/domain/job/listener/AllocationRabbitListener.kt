@@ -5,8 +5,9 @@ import com.rabbitmq.client.Channel
 import io.github.oshai.kotlinlogging.KotlinLogging
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
-import nl.stockio.allocation.domain.service.AllocationAdmissionProperties
-import nl.stockio.allocation.domain.service.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.performance.AllocationLockContentionException
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
 import org.jobrunr.scheduling.JobScheduler
@@ -56,6 +57,8 @@ private val logger = KotlinLogging.logger {}
                 return
             } catch (_: AllocationCapacityExceededException) {
                 capacityBackoff.pause()
+            } catch (_: AllocationLockContentionException) {
+                capacityBackoff.pause()
             }
         }
     }
@@ -66,6 +69,8 @@ private val logger = KotlinLogging.logger {}
             allocationJobExecutor.executeSync(jobId, request)
             logger.info { "Processed allocation request '${request.requestId}' synchronously." }
         } catch (exception: AllocationCapacityExceededException) {
+            throw exception
+        } catch (exception: AllocationLockContentionException) {
             throw exception
         } catch (exception: AllocationRequestTooLargeException) {
             throw AmqpRejectAndDontRequeueException("Allocation request exceeds the byte limit.", exception)

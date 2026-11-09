@@ -255,6 +255,7 @@ project(":stockio-service") {
         implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core'
         implementation 'org.springframework.boot:spring-boot-starter-actuator'
         implementation 'org.springframework.boot:spring-boot-starter-web'
+        implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.13'
         implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
         implementation 'org.springframework.boot:spring-boot-starter-amqp'
         implementation 'org.springframework.kafka:spring-kafka'
@@ -303,6 +304,12 @@ project(":stockio-test-harness") {
         test {
             kotlin.setSrcDirs(['publisher/src/test/kotlin'])
         }
+        performance {
+            kotlin.setSrcDirs(['performance/src/main/kotlin'])
+            resources.setSrcDirs(['performance/src/main/resources'])
+            compileClasspath += sourceSets.main.output
+            runtimeClasspath += output + compileClasspath
+        }
     }
 
     dependencies {
@@ -318,5 +325,28 @@ project(":stockio-test-harness") {
         testImplementation 'org.testcontainers:junit-jupiter'
         testImplementation 'org.testcontainers:postgresql'
         testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+        performanceImplementation project(":stockio-api")
+        performanceImplementation 'io.gatling:gatling-core-java:3.13.5'
+        performanceImplementation 'io.gatling:gatling-http-java:3.13.5'
+        performanceImplementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
+        performanceImplementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
+        performanceRuntimeOnly 'io.gatling:gatling-app:3.13.5'
+        performanceRuntimeOnly 'io.gatling.highcharts:gatling-charts-highcharts:3.13.5'
+    }
+
+    tasks.register('performanceRun', JavaExec) {
+        group = 'verification'
+        description = 'Run the allocation job performance simulation with Gatling.'
+        dependsOn('performanceClasses')
+        classpath = sourceSets.performance.runtimeClasspath
+        mainClass = 'io.gatling.app.Gatling'
+        jvmArgs '--add-opens=java.base/java.lang=ALL-UNNAMED'
+        systemProperties.putAll(
+            System.getProperties().findAll { key, _ -> key.toString().startsWith('stockio.perf.') }
+        )
+        args '-s', 'nl.stockio.harness.performance.AllocationJobSimulation',
+            '-rf', "${layout.buildDirectory.get().asFile}/reports/gatling",
+            '-rd', "allocation-job-performance"
     }
 }

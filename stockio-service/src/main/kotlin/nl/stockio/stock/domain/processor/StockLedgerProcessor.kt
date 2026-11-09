@@ -15,6 +15,14 @@ import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Propagation
 import org.springframework.transaction.annotation.Transactional
 
+/**
+ * Coordinates resumable synchronization of today's stock snapshot into live stock.
+ *
+ * The processor runs outside an existing transaction. It acquires a durable ledger
+ * run, delegates each SKU to its own transactional worker, retries SKU work after
+ * whole-order expiry cleanup when required, and marks the run complete only after
+ * every SKU succeeds. A failure is recorded on the run and propagated to the caller.
+ */
 @Service
 class StockLedgerProcessor(
     private val runRepository: StockLedgerRunRepository,
@@ -23,6 +31,17 @@ class StockLedgerProcessor(
     private val followups: StockReceiptFollowupDispatcher,
     private val clock: Clock
 ) {
+    /**
+     * Synchronizes today's stock snapshot to live stock.
+     *
+     * A non-null [request] snapshot date must match the injected business clock's
+     * current date. SKU work is processed sequentially by the coordinator, while
+     * each worker transaction and its checkpoint allow the ledger run to resume
+     * safely after failure. Receipt follow-ups are dispatched after the run completes.
+     *
+     * @throws IllegalArgumentException if the request date is not today or the run
+     * crosses the business-date boundary.
+     */
     @Transactional(propagation = Propagation.NEVER)
     fun process(request: ProcessDailyStockRequest): StockSyncResult {
         val today = LocalDate.now(clock)
@@ -61,6 +80,11 @@ class StockLedgerProcessor(
         }
     }
 
+    /**
+     * Synchronizes the current business day's stock snapshot using the default request.
+     *
+     * @return the completed synchronization result.
+     */
     @Transactional(propagation = Propagation.NEVER)
     fun processToday(): StockSyncResult = process(ProcessDailyStockRequest())
 
