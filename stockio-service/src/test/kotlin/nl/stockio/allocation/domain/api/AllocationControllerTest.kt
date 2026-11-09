@@ -226,6 +226,6 @@ class AllocationControllerTest {
                 .content(objectMapper.writeValueAsString(request))
         )
             .andExpect(status().isConflict)
-            .andExpect(jsonPath("$.code").value("FAST_PATH_SYNC_DISABLED"))
+            .andExpect(jsonPath("$.code").value("REDIS_SYNC_DISABLED"))
     }
 }
