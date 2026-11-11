@@ -7,13 +7,22 @@ import nl.stockio.allocation.domain.job.listener.AllocationRabbitConfiguration
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
-import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertThrows
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.springframework.amqp.core.Message
 import org.springframework.amqp.core.MessageProperties
 import org.springframework.amqp.support.converter.MessageConversionException
-import org.springframework.mock.web.MockHttpServletRequest
-import org.springframework.mock.web.MockHttpServletResponse
+import org.springframework.core.io.buffer.DataBufferUtils
+import org.springframework.core.io.buffer.DefaultDataBufferFactory
+import org.springframework.http.HttpHeaders
+import org.springframework.http.HttpStatus
+import org.springframework.mock.http.server.reactive.MockServerHttpRequest
+import org.springframework.mock.web.server.MockServerWebExchange
+import reactor.core.publisher.Flux
+import reactor.core.publisher.Mono
 
 class AllocationRequestBodyFilterTest {
     private val properties = AllocationAdmissionProperties(true, 1, 1, 1, 1, 1, 1, 8)
@@ -21,40 +30,53 @@ class AllocationRequestBodyFilterTest {
     private val registry = SimpleMeterRegistry()
     private val limits = AllocationRequestLimits(properties, mapper, registry)
     private val filter = AllocationRequestBodyFilter(properties, limits, mapper)
+    private val buffers = DefaultDataBufferFactory()
 
     @Test
     fun `unknown content length is bounded before parsing while exact byte boundary is replayed`() {
         for (size in listOf(8, 9)) {
-            val request = object : MockHttpServletRequest("POST", "/api/allocation/jobs") {
-                override fun getContentLengthLong(): Long = -1
-            }
-            request.setContent(ByteArray(size) { 'x'.code.toByte() })
-            val response = MockHttpServletResponse()
+            val exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/allocation/jobs")
+                    .body(Flux.just(buffers.wrap(ByteArray(size) { 'x'.code.toByte() })))
+            )
             var invoked = false
-            filter.doFilter(request, response) { bounded, _ ->
+            filter.filter(exchange) { bounded ->
                 invoked = true
-                assertEquals(8, bounded.contentLength)
-                assertEquals(8, bounded.inputStream.readAllBytes().size)
-            }
+                assertEquals(8, bounded.request.headers.contentLength)
+                DataBufferUtils.join(bounded.request.body)
+                    .doOnNext { buffer ->
+                        assertEquals(8, buffer.readableByteCount())
+                        DataBufferUtils.release(buffer)
+                    }
+                    .then()
+            }.block()
             assertEquals(size == 8, invoked)
-            assertEquals(if (size == 8) 200 else 413, response.status)
-            if (size == 9) assertTrue(response.contentAsString.contains("ALLOCATION_REQUEST_TOO_LARGE"))
+            assertEquals(
+                if (size == 8) null else HttpStatus.PAYLOAD_TOO_LARGE,
+                exchange.response.statusCode
+            )
+            if (size == 9) {
+                assertTrue(exchange.response.bodyAsString.block()!!.contains("ALLOCATION_REQUEST_TOO_LARGE"))
+            }
         }
     }
 
     @Test
     fun `large declared bodies reject before reading and status reads are unaffected`() {
-        val request = object : MockHttpServletRequest("POST", "/api/products/allocate") {
-            override fun getContentLengthLong(): Long = 9
-            override fun getInputStream(): jakarta.servlet.ServletInputStream = error("Must not read oversized body")
-        }
-        val response = MockHttpServletResponse()
-        filter.doFilter(request, response) { _, _ -> fail("Must not invoke controller") }
-        assertEquals(413, response.status)
+        val exchange = MockServerWebExchange.from(
+            MockServerHttpRequest.post("/api/products/allocate")
+                .header(HttpHeaders.CONTENT_LENGTH, "9")
+                .body(Flux.defer { Mono.error(IllegalStateException("Must not read oversized body")) })
+        )
+        filter.filter(exchange) { _ -> error("Must not invoke controller") }.block()
+        assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, exchange.response.statusCode)
+
+        val status = MockServerWebExchange.from(MockServerHttpRequest.get("/api/allocation/jobs/id").build())
         var invoked = false
-        filter.doFilter(MockHttpServletRequest("GET", "/api/allocation/jobs/id"), MockHttpServletResponse()) { _, _ ->
+        filter.filter(status) { _ ->
             invoked = true
-        }
+            Mono.empty()
+        }.block()
         assertTrue(invoked)
     }
 

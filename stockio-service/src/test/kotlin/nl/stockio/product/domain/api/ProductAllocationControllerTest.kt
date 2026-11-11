@@ -17,11 +17,7 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import org.springframework.http.MediaType
-import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
-import org.springframework.test.web.servlet.setup.MockMvcBuilders
+import org.springframework.test.web.reactive.server.WebTestClient
 
 class ProductAllocationControllerTest {
 
@@ -34,23 +30,22 @@ class ProductAllocationControllerTest {
         )
         val service = mock(ProductAllocationService::class.java)
         `when`(service.allocate(request)).thenReturn(expectedResponse)
-        val mockMvc: MockMvc = MockMvcBuilders
-            .standaloneSetup(ProductAllocationController(service))
-            .build()
+        val client = WebTestClient.bindToController(ProductAllocationController(service)).build()
         val objectMapper = jacksonObjectMapper().registerModule(JavaTimeModule())
 
-        val result = mockMvc.perform(
-            post("/api/products/allocate")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request))
-        )
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.status").value("NO_PRODUCT_MATCH"))
-            .andReturn()
+        val result = client.post()
+            .uri("/api/products/allocate")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(objectMapper.writeValueAsString(request))
+            .exchange()
+            .expectStatus().isOk
+            .expectBody()
+            .jsonPath("$.status").isEqualTo("NO_PRODUCT_MATCH")
+            .returnResult()
 
         assertEquals(
             expectedResponse,
-            objectMapper.readValue(result.response.contentAsString, ProductAllocationResponse::class.java)
+            objectMapper.readValue(result.responseBody, ProductAllocationResponse::class.java)
         )
         verify(service).allocate(request)
     }
@@ -60,18 +55,17 @@ class ProductAllocationControllerTest {
         val request = request()
         val service = mock(ProductAllocationService::class.java)
         `when`(service.allocate(request)).thenThrow(IllegalArgumentException("Invalid request"))
-        val mockMvc: MockMvc = MockMvcBuilders
-            .standaloneSetup(ProductAllocationController(service))
-            .build()
+        val client = WebTestClient.bindToController(ProductAllocationController(service)).build()
         val objectMapper = jacksonObjectMapper().registerModule(JavaTimeModule())
 
-        mockMvc.perform(
-            post("/api/products/allocate")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request))
-        )
-            .andExpect(status().isBadRequest)
-            .andExpect(jsonPath("$.error").value("Invalid request"))
+        client.post()
+            .uri("/api/products/allocate")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(objectMapper.writeValueAsString(request))
+            .exchange()
+            .expectStatus().isBadRequest
+            .expectBody()
+            .jsonPath("$.error").isEqualTo("Invalid request")
     }
 
     private fun request() = ProductAllocationRequest(
@@ -94,12 +88,15 @@ class ProductAllocationControllerTest {
         )) {
             val service = mock(ProductAllocationService::class.java)
             `when`(service.allocate(request())).thenThrow(exception)
-            val mvc = MockMvcBuilders.standaloneSetup(ProductAllocationController(service))
-                .setControllerAdvice(CustomerExceptionHandler()).build()
-            mvc.perform(post("/api/products/allocate").contentType(MediaType.APPLICATION_JSON)
-                .content(jacksonObjectMapper().findAndRegisterModules().writeValueAsString(request())))
-                .andExpect(status().`is`(expected))
-                .andExpect(jsonPath("$.code").value(code))
+            val client = WebTestClient.bindToController(ProductAllocationController(service))
+                .controllerAdvice(CustomerExceptionHandler()).build()
+            client.post().uri("/api/products/allocate")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(jacksonObjectMapper().findAndRegisterModules().writeValueAsString(request()))
+                .exchange()
+                .expectStatus().isEqualTo(expected)
+                .expectBody()
+                .jsonPath("$.code").isEqualTo(code)
         }
     }
 }

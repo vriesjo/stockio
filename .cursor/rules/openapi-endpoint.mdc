@@ -16,12 +16,11 @@ Do not put `@RequestMapping` on the controller. The OpenAPI generator owns the r
    - allocation: `./gradlew :stockio-api:openApiGenerateAllocation`
    - reservation: `./gradlew :stockio-api:openApiGenerateReservation`
    - product allocation: `./gradlew :stockio-api:openApiGenerateProductAllocation`
-3. Override the generated method. `operationId` is the Kotlin method name. The controller already implements the interface (`AllocationApi`, `ReservationApi`, or `ProductAllocationApi`) and keeps `@RestController`.
+3. Override the generated method. `operationId` is the Kotlin method name. The controller already implements the interface (`AllocationApi`, `ReservationApi`, or `ProductAllocationApi`) and keeps `@RestController`. `reactive: true` makes the override a `suspend` function. Run blocking work through `BlockingHttp.await` so it stays off the Netty event loop.
 
 ```kotlin
-override fun getAllocationOrderReservationByKey(key: String): ResponseEntity<RedisKeyResponse> {
-    return ResponseEntity.ok(redisKeyResponse)
-}
+override suspend fun getAllocationOrderReservationByKey(key: String): ResponseEntity<RedisKeyResponse> =
+    blockingHttp.await { ResponseEntity.ok(redisKeyResponse) }
 ```
 
 `:stockio-service:compileKotlin` regenerates all three interfaces. After a spec change, run the matching generate task before editing the controller so the override matches the new signature.

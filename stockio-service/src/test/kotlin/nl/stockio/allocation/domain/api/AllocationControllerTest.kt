@@ -26,14 +26,9 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
+import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
-import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.header
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
-import org.springframework.test.web.servlet.setup.MockMvcBuilders
+import org.springframework.test.web.reactive.server.WebTestClient
 
 class AllocationControllerTest {
 
@@ -55,20 +50,21 @@ class AllocationControllerTest {
         )
         val executor = mock(AllocationJobExecutor::class.java)
         `when`(executor.executeAsync(request)).thenReturn(accepted)
-        val mockMvc = createMockMvc(
+        val client = createClient(
             executor = executor,
             jobRunrService = mock(AllocationJobRunrService::class.java),
             stockLedgerService = mock(StockLedgerService::class.java)
         )
 
-        mockMvc.perform(
-            post("/api/allocation/jobs")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request))
-        )
-            .andExpect(status().isAccepted)
-            .andExpect(header().string("Location", "/api/allocation/jobs/${accepted.jobId}"))
-            .andExpect(jsonPath("$.jobId").value(accepted.jobId.toString()))
+        client.post()
+            .uri("/api/allocation/jobs")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(objectMapper.writeValueAsString(request))
+            .exchange()
+            .expectStatus().isAccepted
+            .expectHeader().valueEquals(HttpHeaders.LOCATION, "/api/allocation/jobs/${accepted.jobId}")
+            .expectBody()
+            .jsonPath("$.jobId").isEqualTo(accepted.jobId.toString())
 
         verify(executor).executeAsync(request)
     }
@@ -93,30 +89,34 @@ class AllocationControllerTest {
         val stockLedgerService = mock(StockLedgerService::class.java)
         `when`(stockLedgerService.getStatusLastSyncRun()).thenReturn(stockStatus)
 
-        val mockMvc = createMockMvc(
+        val client = createClient(
             executor = mock(AllocationJobExecutor::class.java),
             jobRunrService = jobRunrService,
             stockLedgerService = stockLedgerService
         )
 
-        mockMvc.perform(get("/api/allocation/jobs/$jobId"))
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.status").value("SCHEDULED"))
-        mockMvc.perform(get("/api/allocation/stock-ledger/status"))
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.skuCount").value(3))
+        client.get().uri("/api/allocation/jobs/$jobId")
+            .exchange()
+            .expectStatus().isOk
+            .expectBody()
+            .jsonPath("$.status").isEqualTo("SCHEDULED")
+        client.get().uri("/api/allocation/stock-ledger/status")
+            .exchange()
+            .expectStatus().isOk
+            .expectBody()
+            .jsonPath("$.skuCount").isEqualTo(3)
 
         verify(jobRunrService).getStatusById(jobId)
         verify(stockLedgerService).getStatusLastSyncRun()
     }
 
-    private fun createMockMvc(
+    private fun createClient(
         executor: AllocationJobExecutor,
         jobRunrService: AllocationJobRunrService,
         stockLedgerService: StockLedgerService,
         provisional: AllocationGateway = DisabledAllocationRedisGateway()
-    ): MockMvc =
-        MockMvcBuilders.standaloneSetup(
+    ): WebTestClient =
+        WebTestClient.bindToController(
             AllocationController(
                 allocationJobExecutor = executor,
                 allocationJobRunrService = jobRunrService,
@@ -124,20 +124,23 @@ class AllocationControllerTest {
                 clock = clock,
                 allocationRedisGateway = provisional
             )
-        ).setControllerAdvice(CustomerExceptionHandler()).build()
+        ).controllerAdvice(CustomerExceptionHandler()).build()
 
     @Test
     fun `inline capacity rejection returns 503 rather than acceptance or async fallback`() {
         val request = AllocationRequest(UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND)
         val executor = io.mockk.mockk<AllocationJobExecutor>()
         io.mockk.every { executor.executeSync(any(), request) } throws AllocationCapacityExceededException()
-        val mvc = createMockMvc(executor, mock(AllocationJobRunrService::class.java),
+        val client = createClient(executor, mock(AllocationJobRunrService::class.java),
             mock(StockLedgerService::class.java))
-        mvc.perform(post("/api/allocation/jobs?async=false").contentType(MediaType.APPLICATION_JSON)
-            .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isServiceUnavailable)
-            .andExpect(jsonPath("$.code").value("ALLOCATION_CAPACITY_EXHAUSTED"))
-            .andExpect(header().doesNotExist("Location"))
+        client.post().uri("/api/allocation/jobs?async=false")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(objectMapper.writeValueAsString(request))
+            .exchange()
+            .expectStatus().isEqualTo(503)
+            .expectHeader().doesNotExist(HttpHeaders.LOCATION)
+            .expectBody()
+            .jsonPath("$.code").isEqualTo("ALLOCATION_CAPACITY_EXHAUSTED")
         io.mockk.verify(exactly = 0) { executor.executeAsync(any()) }
     }
 
@@ -146,13 +149,16 @@ class AllocationControllerTest {
         val request = AllocationRequest(UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND)
         val executor = io.mockk.mockk<AllocationJobExecutor>()
         io.mockk.every { executor.executeSync(any(), request) } throws AllocationLockContentionException()
-        val mvc = createMockMvc(executor, mock(AllocationJobRunrService::class.java),
+        val client = createClient(executor, mock(AllocationJobRunrService::class.java),
             mock(StockLedgerService::class.java))
-        mvc.perform(post("/api/allocation/jobs?async=false").contentType(MediaType.APPLICATION_JSON)
-            .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isServiceUnavailable)
-            .andExpect(jsonPath("$.code").value("ALLOCATION_LOCK_CONTENTION"))
-            .andExpect(header().doesNotExist("Location"))
+        client.post().uri("/api/allocation/jobs?async=false")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(objectMapper.writeValueAsString(request))
+            .exchange()
+            .expectStatus().isEqualTo(503)
+            .expectHeader().doesNotExist(HttpHeaders.LOCATION)
+            .expectBody()
+            .jsonPath("$.code").isEqualTo("ALLOCATION_LOCK_CONTENTION")
         io.mockk.verify(exactly = 0) { executor.executeAsync(any()) }
     }
 
@@ -186,18 +192,19 @@ class AllocationControllerTest {
         }
         val executor = io.mockk.mockk<AllocationJobExecutor>()
         io.mockk.every { executor.executeAsync(request) } returns accepted
-        val mvc = createMockMvc(
+        val client = createClient(
             executor,
             mock(AllocationJobRunrService::class.java),
             mock(StockLedgerService::class.java),
             gateway
         )
 
-        mvc.perform(
-            post("/api/allocation/jobs")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request))
-        ).andExpect(status().isAccepted)
+        client.post()
+            .uri("/api/allocation/jobs")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(objectMapper.writeValueAsString(request))
+            .exchange()
+            .expectStatus().isAccepted
 
         org.junit.jupiter.api.Assertions.assertTrue(gateway.acceptedRequest)
         io.mockk.verify(exactly = 1) { executor.executeAsync(request) }
@@ -214,18 +221,19 @@ class AllocationControllerTest {
             override fun settle(request: AllocationRequest) = Unit
             override fun getByKey(key: String) = null
         }
-        val mvc = createMockMvc(
+        val client = createClient(
             io.mockk.mockk<AllocationJobExecutor>(relaxed = true),
             mock(AllocationJobRunrService::class.java),
             mock(StockLedgerService::class.java),
             gateway
         )
-        mvc.perform(
-            post("/api/allocation/jobs?async=false")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request))
-        )
-            .andExpect(status().isConflict)
-            .andExpect(jsonPath("$.code").value("REDIS_SYNC_DISABLED"))
+        client.post()
+            .uri("/api/allocation/jobs?async=false")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(objectMapper.writeValueAsString(request))
+            .exchange()
+            .expectStatus().isEqualTo(409)
+            .expectBody()
+            .jsonPath("$.code").isEqualTo("REDIS_SYNC_DISABLED")
     }
 }

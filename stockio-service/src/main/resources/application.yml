@@ -4,7 +4,7 @@ spring:
   application:
     name: stockio-service
   main:
-    web-application-type: servlet
+    web-application-type: reactive
     banner-mode: off
   ai:
     mcp:
