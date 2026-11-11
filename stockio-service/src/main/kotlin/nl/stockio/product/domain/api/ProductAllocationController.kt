@@ -2,6 +2,7 @@ package nl.stockio.product.domain.api
 
 import nl.stockio.api.dto.ProductAllocationRequest
 import nl.stockio.api.dto.ProductAllocationResponse
+import nl.stockio.config.BlockingHttp
 import nl.stockio.product.domain.api.generated.ProductAllocationApi
 import nl.stockio.product.domain.service.ProductAllocationService
 import org.springframework.http.HttpStatus
@@ -12,14 +13,16 @@ import org.springframework.web.bind.annotation.RestController
 
 @RestController
 class ProductAllocationController(
-    private val productAllocationService: ProductAllocationService
+    private val productAllocationService: ProductAllocationService,
+    private val blockingHttp: BlockingHttp = BlockingHttp.immediate()
 ) : ProductAllocationApi {
 
     @Suppress("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
-    override fun allocate(
+    override suspend fun allocate(
         request: ProductAllocationRequest
-    ): ResponseEntity<ProductAllocationResponse> =
+    ): ResponseEntity<ProductAllocationResponse> = blockingHttp.await {
         ResponseEntity.ok(productAllocationService.allocate(request))
+    }
 
     @ExceptionHandler(IllegalArgumentException::class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)

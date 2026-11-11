@@ -64,7 +64,7 @@ flowchart LR
     API -->|"Write .xlsx"| Reports["Report directory"]
 ```
 
-The service runs as a servlet application and exposes MCP tools through Spring AI. The HTTP server binds to `127.0.0.1:9090` by default. No application-level authentication is configured; protect the API and Actuator endpoints if `SERVER_ADDRESS` is changed to expose them beyond the local host.
+The service runs as a WebFlux application on Netty and exposes MCP tools through Spring AI. Domain I/O stays blocking and runs on a dedicated scheduler so it stays off the Netty event loop. The HTTP server binds to `127.0.0.1:9090` by default. No application-level authentication is configured; protect the API and Actuator endpoints if `SERVER_ADDRESS` is changed to expose them beyond the local host.
 
 ### Frontend HTTP integration
 

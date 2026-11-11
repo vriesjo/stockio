@@ -14,6 +14,7 @@ import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import nl.stockio.allocation.domain.port.AllocationGateway
 import nl.stockio.api.dto.AllocationJobAccepted
 import nl.stockio.api.dto.AllocationJobStatus
+import nl.stockio.config.BlockingHttp
 import nl.stockio.stock.domain.service.StockLedgerSyncStatus
 import nl.stockio.stock.domain.service.StockLedgerService
 import org.springframework.http.ResponseEntity
@@ -27,13 +28,15 @@ class AllocationController(
     private val allocationJobRunrService: AllocationJobRunrService,
     private val ledgerSyncStatusService: StockLedgerService,
     private val clock: Clock,
-    private val allocationRedisGateway: AllocationGateway = DisabledAllocationRedisGateway()
+    private val allocationRedisGateway: AllocationGateway = DisabledAllocationRedisGateway(),
+    private val blockingHttp: BlockingHttp = BlockingHttp.immediate()
 ) : AllocationApi {
 
-    override fun submitAllocationJob(
+    @Suppress("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
+    override suspend fun submitAllocationJob(
         request: AllocationRequest,
         async: Boolean
-    ): ResponseEntity<AllocationJobAccepted> {
+    ): ResponseEntity<AllocationJobAccepted> = blockingHttp.await {
         require(request.asOfDate == LocalDate.now(clock)) {
             "Allocation requests on this endpoint require asOfDate to be today."
         }
@@ -47,33 +50,34 @@ class AllocationController(
                 allocationRedisGateway.rollback(request)
                 throw exception
             }
-            return ResponseEntity.accepted()
+            ResponseEntity.accepted()
                 .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))
                 .body(accepted)
-        }
-        if (async) {
+        } else if (async) {
             val accepted = allocationJobExecutor.executeAsync(request)
-            return ResponseEntity.accepted()
+            ResponseEntity.accepted()
                 .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))
                 .body(accepted)
         } else {
             val syncResult = allocationJobExecutor.executeSync(UUID.randomUUID(), request)
             val accepted = AllocationJobAccepted(syncResult.allocationRun.runId, request.requestId)
-            return ResponseEntity.accepted()
+            ResponseEntity.accepted()
                 .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))
                 .body(accepted)
         }
     }
 
-    override fun getAllocationJobStatus(jobId: UUID): ResponseEntity<AllocationJobStatus> {
-        logger.info { "Fetching allocation job status for jobId=$jobId" }
-        return ResponseEntity.ok()
-            .body(allocationJobRunrService.getStatusById(jobId))
-    }
+    override suspend fun getAllocationJobStatus(jobId: UUID): ResponseEntity<AllocationJobStatus> =
+        blockingHttp.await {
+            logger.info { "Fetching allocation job status for jobId=$jobId" }
+            ResponseEntity.ok()
+                .body(allocationJobRunrService.getStatusById(jobId))
+        }
 
-    override fun getAllocationStockLedgerStatus(): ResponseEntity<StockLedgerSyncStatus> {
-        logger.info { "Fetching stock ledger sync status, last sync run" }
-        return ResponseEntity.ok()
-            .body(ledgerSyncStatusService.getStatusLastSyncRun())
-    }
+    override suspend fun getAllocationStockLedgerStatus(): ResponseEntity<StockLedgerSyncStatus> =
+        blockingHttp.await {
+            logger.info { "Fetching stock ledger sync status, last sync run" }
+            ResponseEntity.ok()
+                .body(ledgerSyncStatusService.getStatusLastSyncRun())
+        }
 }

@@ -2,6 +2,7 @@ package nl.stockio.product.domain.service
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.databind.ObjectMapper
 import java.time.Duration
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.boot.context.properties.ConfigurationProperties
@@ -10,6 +11,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.http.MediaType
 import org.springframework.http.client.SimpleClientHttpRequestFactory
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter
 import org.springframework.stereotype.Component
 import org.springframework.web.client.RestClient
 import org.springframework.web.client.RestClientException
@@ -55,22 +57,27 @@ class ProductResolutionClientConfiguration {
     @Bean
     @Qualifier("tavilyRestClient")
     fun tavilyRestClient(
-        builder: RestClient.Builder,
+        objectMapper: ObjectMapper,
         properties: ProductResolutionProperties
-    ): RestClient = builder.clone()
-        .baseUrl(properties.tavilyBaseUrl)
-        .requestFactory(requestFactory(properties.requestTimeout))
-        .build()
+    ): RestClient = blockingClient(objectMapper, properties.tavilyBaseUrl, properties.requestTimeout)
 
     @Bean
     @Qualifier("ollamaRestClient")
     fun ollamaRestClient(
-        builder: RestClient.Builder,
+        objectMapper: ObjectMapper,
         properties: ProductResolutionProperties
-    ): RestClient = builder.clone()
-        .baseUrl(properties.ollamaBaseUrl)
-        .requestFactory(requestFactory(properties.requestTimeout))
-        .build()
+    ): RestClient = blockingClient(objectMapper, properties.ollamaBaseUrl, properties.requestTimeout)
+
+    // Boot does not auto-configure RestClient.Builder on a reactive web application.
+    private fun blockingClient(objectMapper: ObjectMapper, baseUrl: String, timeout: Duration): RestClient =
+        RestClient.builder()
+            .baseUrl(baseUrl)
+            .messageConverters { converters ->
+                converters.removeIf { it is MappingJackson2HttpMessageConverter }
+                converters.add(0, MappingJackson2HttpMessageConverter(objectMapper))
+            }
+            .requestFactory(requestFactory(timeout))
+            .build()
 
     private fun requestFactory(timeout: Duration) = SimpleClientHttpRequestFactory().apply {
         setConnectTimeout(timeout)

@@ -1,6 +1,6 @@
-# Backpressure and admission control
+# Cross-cutting Backpressure and admission control
 
-This is how allocation load is limited today. Two guards can reject or defer work before it sits on a database lock, and both are off unless configured. The limits that always run are the per-SKU database locks, the in-process SKU dispatcher, and the Kafka consumer's worker channel.
+This is how allocation load is limited today. Two guards can reject or defer work before it sits on a database lock, and both are off unless configured. The limits that always run are the per-SKU database locks, the in-process SKU dispatcher, and the Kafka consumer's worker channel. [Blocking HTTP](#blocking-http) moves blocking calls off the Netty event loop. It does not reject or defer them.
 
 A shared database-work budget, a caller rate limit, and a cap on the durable backlog are not built. They are listed under [Not implemented](#not-implemented).
 
@@ -94,6 +94,25 @@ Stop writers, migrate, deploy, and restart them together, including the Kafka co
 Current routes are `POST /api/allocation/jobs` and `GET /api/allocation/jobs/{jobId}`. Reservation reads are `GET /api/reservations/orders/{orderId}/status` and `GET /api/reservations/orders/{key}/redis`, both on `ReservationController`. Ledger status is `/api/stock/ledger/status`. The old `allocate-project-and-sync`, `allocation-jobs`, and `/api/logistics/...` paths are not aliases.
 
 Completion JSON is `jobId` plus `allocationRun`. It has no top-level `version` or `stockSync`. Stored `contractVersion` is separate: V15 keeps legacy run hashes as version 1, and new runs use version 2. Legacy rows stay readable. Old request bodies are not accepted or resumed.
+
+## Blocking HTTP
+
+The service is WebFlux on Netty. JDBC, the Redis sync client, Kafka publish, JobRunr, CSV and Excel, and the Tavily and Ollama `RestClient`s still block until they return. `BlockingHttp` (`nl.stockio.config.BlockingHttp`) runs that work on one Reactor scheduler named `blocking-http`, so a blocked call does not occupy an event-loop thread.
+
+The scheduler is `Schedulers.newBoundedElastic`. Its thread cap is `availableProcessors * 10`, and at least 16. The queue cap is `Schedulers.DEFAULT_BOUNDED_ELASTIC_QUEUESIZE`, 100_000 unless `reactor.schedulers.defaultBoundedElasticQueueSize` overrides it. Past that cap, Reactor rejects the submission. That rejection is a scheduler error. It is not `503` `ALLOCATION_CAPACITY_EXHAUSTED`, and it does not take or release the admission semaphore.
+
+The pool is larger than Hikari's default of 10 because a synchronous allocation holds one of these workers inside `runBlocking` for the whole request. The SKU workers themselves run on `Dispatchers.IO.limitedParallelism` and take the database connections. The parked HTTP worker is waiting, not querying. Hikari, and admission when it is enabled, remain the throughput limit. The `blocking-http` threads are not.
+
+Two methods share the scheduler:
+
+- `call` returns a `Mono` and runs the action when WebFlux subscribes. `StockController` and `AllocationAdminController` use it.
+- `await` is the suspend form and moves the coroutine onto the same scheduler. `AllocationController`, `ReservationController`, and `ProductAllocationController` use it.
+
+Those three generated controllers default the parameter to `BlockingHttp.immediate()`, which runs on the calling thread. Spring injects the pooled bean when it creates them. A unit test that constructs the controller itself keeps the immediate scheduler. `StockController` and `AllocationAdminController` require the bean.
+
+Kafka and RabbitMQ listeners do not use this scheduler. They run on their consumer threads. MCP tool methods are not wrapped by `BlockingHttp`. A product-allocation call still occupies one `blocking-http` worker for the whole `await`, including the blocking Tavily or Ollama `RestClient` round trip inside it.
+
+The scheduler bean uses `destroyMethod = "dispose"`, so shutdown disposes the pool with the application context.
 
 ## Not implemented
 

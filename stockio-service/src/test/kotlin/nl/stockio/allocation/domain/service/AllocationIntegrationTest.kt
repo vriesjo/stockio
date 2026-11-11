@@ -81,7 +81,7 @@ import org.jobrunr.jobs.states.StateName
 import org.jobrunr.scheduling.JobScheduler
 import org.jobrunr.storage.StorageProvider
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
+import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.dao.InvalidDataAccessApiUsageException
 import org.springframework.dao.DataIntegrityViolationException
@@ -94,9 +94,7 @@ import org.springframework.test.annotation.DirtiesContext
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.springframework.test.context.bean.override.mockito.MockitoBean
-import org.springframework.test.web.servlet.MockMvc
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers
+import org.springframework.test.web.reactive.server.WebTestClient
 import org.springframework.transaction.IllegalTransactionStateException
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
@@ -116,7 +114,7 @@ import org.testcontainers.junit.jupiter.Testcontainers
         "stockio.allocation.reservation.expiry-batch-size=2"
     ]
 )
-@AutoConfigureMockMvc
+@AutoConfigureWebTestClient
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class AllocationIntegrationTest {
 
@@ -235,7 +233,7 @@ class AllocationIntegrationTest {
     private lateinit var allocationExcelService: AllocationExcelService
 
     @Autowired
-    private lateinit var mockMvc: MockMvc
+    private lateinit var webTestClient: WebTestClient
 
     @TempDir
     lateinit var temporaryDirectory: Path
@@ -461,43 +459,40 @@ class AllocationIntegrationTest {
             )
         )
 
-        val acceptedResponse = mockMvc.perform(
-            MockMvcRequestBuilders.post("/api/allocation/jobs")
-                .param("async", "false")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    """
+        val acceptedResponse = webTestClient.post()
+            .uri { builder -> builder.path("/api/allocation/jobs").queryParam("async", "false").build() }
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(
+                """
+                    {
+                      "requestId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                      "asOfDate": "$today",
+                      "runType": "NEW_DEMAND",
+                      "demandOrders": [
                         {
-                          "requestId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                          "asOfDate": "$today",
-                          "runType": "NEW_DEMAND",
-                          "demandOrders": [
-                            {
-                              "orderId": "API-ORDER",
-                              "customer": "API Customer",
-                              "priority": 1,
-                              "placedDate": "$today",
-                              "lines": [{
-                                "orderLineId": "API-LINE",
-                                "sku": "MAKI-ZALM",
-                                "requestedQuantity": 2,
-                                "requiredDeliveryDate": "$today"
-                              }]
-                            }
-                          ]
+                          "orderId": "API-ORDER",
+                          "customer": "API Customer",
+                          "priority": 1,
+                          "placedDate": "$today",
+                          "lines": [{
+                            "orderLineId": "API-LINE",
+                            "sku": "MAKI-ZALM",
+                            "requestedQuantity": 2,
+                            "requiredDeliveryDate": "$today"
+                          }]
                         }
-                    """.trimIndent()
-                )
-        )
-            .andExpect(MockMvcResultMatchers.status().isAccepted)
-            .andReturn()
-        val jobId = objectMapper.readValue(
-            acceptedResponse.response.contentAsString,
-            AllocationJobAccepted::class.java
-        ).jobId
+                      ]
+                    }
+                """.trimIndent()
+            )
+            .exchange()
+            .expectStatus().isAccepted
+            .expectBody(AllocationJobAccepted::class.java)
+            .returnResult()
+        val jobId = acceptedResponse.responseBody!!.jobId
         Assertions.assertEquals(
             "/api/allocation/jobs/$jobId",
-            acceptedResponse.response.getHeader("Location")
+            acceptedResponse.responseHeaders.location?.toString()
         )
 
         val completion = jobResultRepository.findAll().single()
@@ -511,45 +506,48 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(2, updatedStock.quantityReserved)
         Assertions.assertNull(stockLedgerSyncStatusRepository.getSyncStatus().lastSuccessAt)
         Assertions.assertEquals(2, snapshotRepository.findLotsByDate(today).single().quantityReserved)
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/reservations/orders/API-ORDER/status"))
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(MockMvcResultMatchers.jsonPath("$.status").value("PENDING_CONFIRMATION"))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.cleanupPending").value(false))
+        webTestClient.get().uri("/api/reservations/orders/API-ORDER/status")
+            .exchange()
+            .expectStatus().isOk
+            .expectBody()
+            .jsonPath("$.status").isEqualTo("PENDING_CONFIRMATION")
+            .jsonPath("$.cleanupPending").isEqualTo(false)
     }
 
     @Test
     fun `REST endpoint rejects non-today allocation before creating a run`() {
         val today = LocalDate.now()
 
-        mockMvc.perform(
-            MockMvcRequestBuilders.post("/api/allocation/jobs")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(
-                    """
+        webTestClient.post()
+            .uri("/api/allocation/jobs")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(
+                """
+                    {
+                      "requestId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                      "asOfDate": "${today.plusDays(1)}",
+                      "runType": "NEW_DEMAND",
+                      "demandOrders": [
                         {
-                          "requestId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                          "asOfDate": "${today.plusDays(1)}",
-                          "runType": "NEW_DEMAND",
-                          "demandOrders": [
-                            {
-                              "orderId": "FUTURE-API-ORDER",
-                              "customer": "API Customer",
-                              "priority": 1,
-                              "placedDate": "$today",
-                              "lines": [{
-                                "orderLineId": "FUTURE-API-LINE",
-                                "sku": "MAKI-ZALM",
-                                "requestedQuantity": 1,
-                                "requiredDeliveryDate": "${today.plusDays(1)}"
-                              }]
-                            }
-                          ]
+                          "orderId": "FUTURE-API-ORDER",
+                          "customer": "API Customer",
+                          "priority": 1,
+                          "placedDate": "$today",
+                          "lines": [{
+                            "orderLineId": "FUTURE-API-LINE",
+                            "sku": "MAKI-ZALM",
+                            "requestedQuantity": 1,
+                            "requiredDeliveryDate": "${today.plusDays(1)}"
+                          }]
                         }
-                    """.trimIndent()
-                )
-        )
-            .andExpect(MockMvcResultMatchers.status().isBadRequest)
-            .andExpect(MockMvcResultMatchers.jsonPath("$.error").value("Allocation requests on this endpoint require asOfDate to be today."))
+                      ]
+                    }
+                """.trimIndent()
+            )
+            .exchange()
+            .expectStatus().isBadRequest
+            .expectBody()
+            .jsonPath("$.error").isEqualTo("Allocation requests on this endpoint require asOfDate to be today.")
 
         Assertions.assertEquals(0, runRepository.count())
     }
@@ -574,11 +572,13 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(5, stockRepository.findAll().single().quantityOnHand)
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(1, stockReservationRepository.count())
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/stock/ledger/status"))
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(MockMvcResultMatchers.jsonPath("$.snapshotDate").value(today.toString()))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.lastSuccessAt").exists())
-            .andExpect(MockMvcResultMatchers.jsonPath("$.lotSnapshotCount").value(1))
+        webTestClient.get().uri("/api/stock/ledger/status")
+            .exchange()
+            .expectStatus().isOk
+            .expectBody()
+            .jsonPath("$.snapshotDate").isEqualTo(today.toString())
+            .jsonPath("$.lastSuccessAt").exists()
+            .jsonPath("$.lotSnapshotCount").isEqualTo(1)
     }
 
     @Test
@@ -1478,10 +1478,12 @@ class AllocationIntegrationTest {
         setNow(deadline.minusMillis(1))
         Assertions.assertEquals(0, expiryService.expireBatch())
         setNow(deadline)
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/reservations/orders/EXPIRE-MIXED/status"))
-            .andExpect(MockMvcResultMatchers.status().isOk)
-            .andExpect(MockMvcResultMatchers.jsonPath("$.status").value("EXPIRED"))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.cleanupPending").value(true))
+        webTestClient.get().uri("/api/reservations/orders/EXPIRE-MIXED/status")
+            .exchange()
+            .expectStatus().isOk
+            .expectBody()
+            .jsonPath("$.status").isEqualTo("EXPIRED")
+            .jsonPath("$.cleanupPending").isEqualTo(true)
 
         Assertions.assertEquals(1, expiryService.expireBatch())
         Assertions.assertEquals(0, expiryService.expireBatch())
@@ -1500,11 +1502,14 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(deadline,
             claimRepository.findById("EXPIRE-MIXED").orElseThrow().reservationExpiresAt)
         Assertions.assertEquals(2, stockRepository.findAll().single().quantityReserved)
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/reservations/orders/EXPIRE-MIXED/status"))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.cleanupPending").value(false))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.expiredAt").value(deadline.toString()))
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/reservations/orders/UNKNOWN/status"))
-            .andExpect(MockMvcResultMatchers.status().isNotFound)
+        webTestClient.get().uri("/api/reservations/orders/EXPIRE-MIXED/status")
+            .exchange()
+            .expectBody()
+            .jsonPath("$.cleanupPending").isEqualTo(false)
+            .jsonPath("$.expiredAt").isEqualTo(deadline.toString())
+        webTestClient.get().uri("/api/reservations/orders/UNKNOWN/status")
+            .exchange()
+            .expectStatus().isNotFound
     }
 
     @Test
@@ -1840,9 +1845,11 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(2, run.allocations.last().backorderedQuantity)
         Assertions.assertEquals(2, stockReservationRepository.count())
         Assertions.assertEquals(3, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM inbound_reservation", Int::class.java))
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/reservations/orders/MULTI-ORDER/status"))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.lines.length()").value(4))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.lines[1].orderLineId").value("MULTI-Z2"))
+        webTestClient.get().uri("/api/reservations/orders/MULTI-ORDER/status")
+            .exchange()
+            .expectBody()
+            .jsonPath("$.lines.length()").isEqualTo(4)
+            .jsonPath("$.lines[1].orderLineId").isEqualTo("MULTI-Z2")
         stockLedgerProcessor.process(ProcessDailyStockRequest(today))
         stockLedgerProcessor.process(ProcessDailyStockRequest(today))
         Assertions.assertEquals(5, stockReservationRepository.count())
@@ -2377,9 +2384,11 @@ class AllocationIntegrationTest {
         Assertions.assertTrue(inboundSupplyRepository.findById("PARTIAL-T").orElseThrow().received)
         Assertions.assertFalse(inboundSupplyRepository.findById("PARTIAL-Z").orElseThrow().received)
         Assertions.assertEquals(1, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM stock_receipt_followup", Int::class.java))
-        mockMvc.perform(MockMvcRequestBuilders.get("/api/stock/ledger/status"))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.progress.status").value("PARTIAL"))
-            .andExpect(MockMvcResultMatchers.jsonPath("$.progress.completedSkus").value(1))
+        webTestClient.get().uri("/api/stock/ledger/status")
+            .exchange()
+            .expectBody()
+            .jsonPath("$.progress.status").isEqualTo("PARTIAL")
+            .jsonPath("$.progress.completedSkus").isEqualTo(1)
 
         stockRepository.deleteAll(stockRepository.findAllBySku("MAKI-ZALM"))
         if (afterMidnight) setNow(Instant.parse("2026-10-21T00:01:00Z"))

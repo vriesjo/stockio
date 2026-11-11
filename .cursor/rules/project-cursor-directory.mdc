@@ -1,0 +1,15 @@
+---
+description: Keep Cursor project files in this repo's .cursor directory
+alwaysApply: true
+---
+
+# Project Cursor directory
+
+For this repository, the Cursor project directory is `.cursor` at the repo root (`/Users/vriesjo/Development/Home/stockio/.cursor`).
+
+- Write plans to `.cursor/plans/`.
+- Write rules to `.cursor/rules/`.
+- Write skills to `.cursor/skills/`.
+- Write commands, agents, and hooks under `.cursor/commands/`, `.cursor/agents/`, and `.cursor/hooks/`.
+
+Do not leave repo plans only in `~/.cursor/plans`. If Plan Mode creates a file there, copy it into `.cursor/plans/` in the same turn.

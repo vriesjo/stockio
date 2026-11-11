@@ -14,10 +14,7 @@ import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
-import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
-import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
-import org.springframework.test.web.servlet.setup.MockMvcBuilders
+import org.springframework.test.web.reactive.server.WebTestClient
 
 class ReservationControllerTest {
 
@@ -43,15 +40,18 @@ class ReservationControllerTest {
         )
         `when`(service.getOrderReservationStatus("ORDER-1")).thenReturn(reservation)
         `when`(service.getOrderReservationStatus("MISSING")).thenReturn(null)
-        val mockMvc = MockMvcBuilders.standaloneSetup(ReservationController(service)).build()
+        val client = WebTestClient.bindToController(ReservationController(service)).build()
 
-        mockMvc.perform(get("/api/reservations/orders/ORDER-1/status"))
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.status").value("PENDING_CONFIRMATION"))
-            .andExpect(jsonPath("$.lines[0].sku").value("SKU-1"))
-            .andExpect(jsonPath("$.cleanupPending").value(false))
-        mockMvc.perform(get("/api/reservations/orders/MISSING/status"))
-            .andExpect(status().isNotFound)
+        client.get().uri("/api/reservations/orders/ORDER-1/status")
+            .exchange()
+            .expectStatus().isOk
+            .expectBody()
+            .jsonPath("$.status").isEqualTo("PENDING_CONFIRMATION")
+            .jsonPath("$.lines[0].sku").isEqualTo("SKU-1")
+            .jsonPath("$.cleanupPending").isEqualTo(false)
+        client.get().uri("/api/reservations/orders/MISSING/status")
+            .exchange()
+            .expectStatus().isNotFound
 
         verify(service).getOrderReservationStatus("ORDER-1")
         verify(service).getOrderReservationStatus("MISSING")
@@ -67,14 +67,17 @@ class ReservationControllerTest {
             override fun getByKey(key: String) =
                 RedisKeyResponse(key, value = "5").takeIf { key == "stock:sku:SKU-1:MAIN" }
         }
-        val mockMvc = MockMvcBuilders.standaloneSetup(
+        val client = WebTestClient.bindToController(
             ReservationController(mock(OrderReservationService::class.java), gateway)
-        ).setControllerAdvice(CustomerExceptionHandler()).build()
+        ).controllerAdvice(CustomerExceptionHandler()).build()
 
-        mockMvc.perform(get("/api/reservations/orders/stock:sku:SKU-1:MAIN/redis"))
-            .andExpect(status().isOk)
-            .andExpect(jsonPath("$.value").value("5"))
-        mockMvc.perform(get("/api/reservations/orders/other/redis"))
-            .andExpect(status().isBadRequest)
+        client.get().uri("/api/reservations/orders/stock:sku:SKU-1:MAIN/redis")
+            .exchange()
+            .expectStatus().isOk
+            .expectBody()
+            .jsonPath("$.value").isEqualTo("5")
+        client.get().uri("/api/reservations/orders/other/redis")
+            .exchange()
+            .expectStatus().isBadRequest
     }
 }
