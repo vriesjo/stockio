@@ -18,6 +18,7 @@ import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import org.springframework.http.MediaType
 import org.springframework.test.web.reactive.server.WebTestClient
+import reactor.core.publisher.Mono
 
 class ProductAllocationControllerTest {
 
@@ -29,7 +30,7 @@ class ProductAllocationControllerTest {
             message = "No catalog product matched."
         )
         val service = mock(ProductAllocationService::class.java)
-        `when`(service.allocate(request)).thenReturn(expectedResponse)
+        `when`(service.allocate(request)).thenReturn(Mono.just(expectedResponse))
         val client = WebTestClient.bindToController(ProductAllocationController(service)).build()
         val objectMapper = jacksonObjectMapper().registerModule(JavaTimeModule())
 

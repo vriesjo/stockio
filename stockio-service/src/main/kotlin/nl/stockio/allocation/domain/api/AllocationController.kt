@@ -1,6 +1,7 @@
 package nl.stockio.allocation.domain.api
 
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.reactor.awaitSingle
 import java.net.URI
 import java.time.Clock
 import java.time.LocalDate
@@ -36,11 +37,25 @@ class AllocationController(
     override suspend fun submitAllocationJob(
         request: AllocationRequest,
         async: Boolean
-    ): ResponseEntity<AllocationJobAccepted> = blockingHttp.await {
+    ): ResponseEntity<AllocationJobAccepted> {
         require(request.asOfDate == LocalDate.now(clock)) {
             "Allocation requests on this endpoint require asOfDate to be today."
         }
         logger.info { "Received allocation request ${request.requestId} (async=$async)" }
+        if (allocationRedisGateway.enabled || async) {
+            return blockingHttp.await { submitWithoutInlineAllocation(request, async) }
+        }
+        val syncResult = allocationJobExecutor.execute(UUID.randomUUID(), request).awaitSingle()
+        val accepted = AllocationJobAccepted(syncResult.allocationRun.runId, request.requestId)
+        return ResponseEntity.accepted()
+            .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))
+            .body(accepted)
+    }
+
+    private fun submitWithoutInlineAllocation(
+        request: AllocationRequest,
+        async: Boolean
+    ): ResponseEntity<AllocationJobAccepted> {
         if (allocationRedisGateway.enabled) {
             if (!async) throw AllocationRedisSyncDisabledException()
             allocationRedisGateway.accept(request)
@@ -50,21 +65,14 @@ class AllocationController(
                 allocationRedisGateway.rollback(request)
                 throw exception
             }
-            ResponseEntity.accepted()
-                .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))
-                .body(accepted)
-        } else if (async) {
-            val accepted = allocationJobExecutor.executeAsync(request)
-            ResponseEntity.accepted()
-                .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))
-                .body(accepted)
-        } else {
-            val syncResult = allocationJobExecutor.executeSync(UUID.randomUUID(), request)
-            val accepted = AllocationJobAccepted(syncResult.allocationRun.runId, request.requestId)
-            ResponseEntity.accepted()
+            return ResponseEntity.accepted()
                 .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))
                 .body(accepted)
         }
+        val accepted = allocationJobExecutor.executeAsync(request)
+        return ResponseEntity.accepted()
+            .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))
+            .body(accepted)
     }
 
     override suspend fun getAllocationJobStatus(jobId: UUID): ResponseEntity<AllocationJobStatus> =

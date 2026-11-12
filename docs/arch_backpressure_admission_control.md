@@ -32,9 +32,9 @@ Lock order:
 
 Document lock rows are inserted with `ON CONFLICT DO NOTHING` and then locked. Namespaces keep order, order-line, shipment, and shipment-line ids distinct.
 
-`AllocationService` runs SKU workers on `Dispatchers.IO.limitedParallelism`, default 4 (`ALLOCATION_MAX_CONCURRENT_SKUS`). That cap is per process and shared by new-demand requests in that process. It is not a queue, and it is not shared with the backorder service, other instances, registration, or projection. Projection of the SKUs touched by a request runs after those allocation transactions commit, and it does not use the four-worker dispatcher.
+`AllocationService` and `AllocationBackorderService` run SKU work with `Flux.flatMap`, default 4 (`ALLOCATION_MAX_CONCURRENT_SKUS`). Each SKU is one R2DBC transaction. The cap is per request and is not shared with the other service, other instances, registration, or projection. Projection of the SKUs touched by a request runs after those allocation transactions commit.
 
-Hikari defaults to 10 connections and a 30 second acquisition timeout. A transaction that already holds a connection can wait on a SKU lock for as long as PostgreSQL allows, unless lock-contention control is enabled. Pool exhaustion is often that lock wait, not a pool that is simply too small. `max-concurrent-skus` does not cap registration, projection, ledger, expiry, status reads, or JobRunr.
+The R2DBC pool defaults to 10 connections and a 30 second acquire timeout. Hikari remains at 10 connections for JDBC: registration, projection, ledger, expiry, status reads, and JobRunr. A transaction that already holds a connection can wait on a SKU lock for as long as PostgreSQL allows, unless lock-contention control is enabled. Pool exhaustion is often that lock wait, not a pool that is simply too small. `max-concurrent-skus` does not cap those JDBC callers. The two pools do not share a transaction.
 
 ### Opt-in admission
 
@@ -101,16 +101,16 @@ The service is WebFlux on Netty. JDBC, the Redis sync client, Kafka publish, Job
 
 The scheduler is `Schedulers.newBoundedElastic`. Its thread cap is `availableProcessors * 10`, and at least 16. The queue cap is `Schedulers.DEFAULT_BOUNDED_ELASTIC_QUEUESIZE`, 100_000 unless `reactor.schedulers.defaultBoundedElasticQueueSize` overrides it. Past that cap, Reactor rejects the submission. That rejection is a scheduler error. It is not `503` `ALLOCATION_CAPACITY_EXHAUSTED`, and it does not take or release the admission semaphore.
 
-The pool is larger than Hikari's default of 10 because a synchronous allocation holds one of these workers inside `runBlocking` for the whole request. The SKU workers themselves run on `Dispatchers.IO.limitedParallelism` and take the database connections. The parked HTTP worker is waiting, not querying. Hikari, and admission when it is enabled, remain the throughput limit. The `blocking-http` threads are not.
+The pool is larger than Hikari's default of 10 because status reads, Redis, and Kafka publish acknowledgement still block a worker until they return. Inline allocation does not. Its SKU transactions use the R2DBC pool, bounded by `R2DBC_POOL_MAX_SIZE` and `ALLOCATION_MAX_CONCURRENT_SKUS`. Hikari remains for JDBC. Admission, when enabled, remains the request limit. The `blocking-http` threads are not.
 
 Two methods share the scheduler:
 
 - `call` returns a `Mono` and runs the action when WebFlux subscribes. `StockController` and `AllocationAdminController` use it.
-- `await` is the suspend form and moves the coroutine onto the same scheduler. `AllocationController`, `ReservationController`, and `ProductAllocationController` use it.
+- `await` is the suspend form and moves the coroutine onto the same scheduler. `AllocationController` uses it for asynchronous submission, the Redis fast path, and status reads. `ReservationController` uses it. Inline allocation awaits the R2DBC publisher and does not occupy this scheduler.
 
-Those three generated controllers default the parameter to `BlockingHttp.immediate()`, which runs on the calling thread. Spring injects the pooled bean when it creates them. A unit test that constructs the controller itself keeps the immediate scheduler. `StockController` and `AllocationAdminController` require the bean.
+`AllocationController` and `ReservationController` default the parameter to `BlockingHttp.immediate()`, which runs on the calling thread. Spring injects the pooled bean when it creates them. A unit test that constructs the controller itself keeps the immediate scheduler. `StockController` and `AllocationAdminController` require the bean. `ProductAllocationController` does not use this scheduler.
 
-Kafka and RabbitMQ listeners do not use this scheduler. They run on their consumer threads. MCP tool methods are not wrapped by `BlockingHttp`. A product-allocation call still occupies one `blocking-http` worker for the whole `await`, including the blocking Tavily or Ollama `RestClient` round trip inside it.
+Kafka and RabbitMQ listeners do not use this scheduler. They run on their consumer threads and block once in `executeSync` until the allocation publisher finishes. MCP tool methods are not wrapped by `BlockingHttp`; they use that same single block. Product allocation runs catalog lookup and the Tavily or Ollama `RestClient` on Reactor's bounded elastic scheduler, then awaits the allocation publisher without holding a `blocking-http` worker.
 
 The scheduler bean uses `destroyMethod = "dispose"`, so shutdown disposes the pool with the application context.
 

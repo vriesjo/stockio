@@ -2,6 +2,7 @@ package nl.stockio.allocation.domain.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
+import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.ExecutionException
 import nl.stockio.api.dto.AllocationRequest
@@ -20,6 +21,8 @@ import org.jobrunr.jobs.annotations.Job
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.stereotype.Service
+import reactor.core.publisher.Mono
+import reactor.core.scheduler.Schedulers
 
 private val logger = KotlinLogging.logger {}
 
@@ -87,32 +90,41 @@ class AllocationJobExecutor(
      * @param request allocation request to be processed.
      * @return the allocation completion result, either retrieved from storage or newly computed.
      */
+    /**
+     * Reactive execution used by inline HTTP. Cache lookup, Redis, and completion stay on the bounded elastic
+     * scheduler. The allocation publisher itself does not hold that thread.
+     */
+    fun execute(jobId: UUID, request: AllocationRequest): Mono<AllocationCompletionResult> =
+        Mono.fromCallable {
+            jobTracking.markProcessing(jobId)
+            Optional.ofNullable(jobResultRepository.findById(jobId).orElse(null)?.let { cached ->
+                jobTracking.markSucceeded(jobId)
+                objectMapper.readValue(cached.resultJson, AllocationCompletionResult::class.java)
+            })
+        }.subscribeOn(Schedulers.boundedElastic()).flatMap { cached ->
+            if (cached.isPresent) Mono.just(cached.get())
+            else allocationProcessor.process(request) { allocationRun -> complete(jobId, allocationRun) }
+        }.flatMap { result ->
+            Mono.fromCallable {
+                allocationRedisGateway.settle(request)
+                result
+            }.subscribeOn(Schedulers.boundedElastic())
+        }.onErrorResume { exception ->
+            if (exception is AllocationCapacityExceededException || exception is AllocationLockContentionException) {
+                Mono.error(exception)
+            } else {
+                Mono.fromCallable { allocationRedisGateway.rollback(request) }
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .then(Mono.error(exception))
+            }
+        }
+
+    /**
+     * One blocking wait for Kafka, RabbitMQ, and JobRunr. Those callers already run off the Netty event loop.
+     */
     @Job(name = "Execute Allocation Request", retries = 3, jobFilters = [AllocationCapacityRetryFilter::class])
-    fun executeSync(jobId: UUID, request: AllocationRequest): AllocationCompletionResult {
-        val result = try {
-            runSync(jobId, request)
-        } catch (exception: AllocationCapacityExceededException) {
-            throw exception
-        } catch (exception: AllocationLockContentionException) {
-            throw exception
-        } catch (exception: Exception) {
-            allocationRedisGateway.rollback(request)
-            throw exception
-        }
-
-        // If the allocation was successful, we can settle the request in Redis to release any locks or reservations.
-        allocationRedisGateway.settle(request)
-        return result
-    }
-
-    private fun runSync(jobId: UUID, request: AllocationRequest): AllocationCompletionResult {
-        jobTracking.markProcessing(jobId)
-        jobResultRepository.findById(jobId).orElse(null)?.let {
-            jobTracking.markSucceeded(jobId)
-            return objectMapper.readValue(it.resultJson, AllocationCompletionResult::class.java)
-        }
-        return allocationProcessor.process(request) { allocationRun -> complete(jobId, allocationRun) }
-    }
+    fun executeSync(jobId: UUID, request: AllocationRequest): AllocationCompletionResult =
+        execute(jobId, request).block()!!
 
     fun complete(
         jobId: UUID,

@@ -19,6 +19,7 @@ import nl.stockio.allocation.infra.AllocationRunEntity
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.api.dto.AllocationRunType
 import org.junit.jupiter.api.Test
+import reactor.core.publisher.Mono
 
 class AllocationBackorderServiceTest {
     private val lifecycle = mockk<AllocationRunLifecycleService>()
@@ -47,7 +48,7 @@ class AllocationBackorderServiceTest {
         val completed = result()
         every { lifecycle.getRun(any(), any()) } returns completed
 
-        service.allocate(command()) shouldBe completed
+        service.allocate(command()).block() shouldBe completed
 
         verify(exactly = 0) { lifecycle.beginOrResume(any(), any()) }
         verify { processor wasNot Called }
@@ -68,10 +69,10 @@ class AllocationBackorderServiceTest {
         every { lifecycle.beginOrResume(any(), any()) } returns run
         every { documents.initialize(run.id, any()) } just Runs
         every { lifecycle.getOperationSkus(run.id) } returns listOf("C", "B")
-        every { processor.allocateBackorders(run.id, any(), any(), today) } returns emptyList()
+        every { processor.allocateBackorders(run.id, any(), any(), today) } returns Mono.just(emptyList())
         every { lifecycle.completeRun(run.id, setOf("A", "B", "C"), emptyList()) } returns completed
 
-        service.allocate(command(skuScope = setOf("B", "A"))) shouldBe completed
+        service.allocate(command(skuScope = setOf("B", "A"))).block() shouldBe completed
 
         verify { processor.allocateBackorders(run.id, any(), "A", today) }
         verify { processor.allocateBackorders(run.id, any(), "B", today) }

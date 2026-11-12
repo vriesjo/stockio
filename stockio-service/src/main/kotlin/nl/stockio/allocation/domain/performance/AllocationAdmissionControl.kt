@@ -5,11 +5,13 @@ import io.micrometer.core.instrument.Timer
 import io.micrometer.core.instrument.Gauge
 import java.util.concurrent.Semaphore
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import nl.stockio.api.dto.AllocationRunType
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Configuration
 import org.springframework.stereotype.Service
+import reactor.core.publisher.Mono
 
 @ConfigurationProperties("stockio.allocation.admission")
 data class AllocationAdmissionProperties(
@@ -88,5 +90,50 @@ class AllocationAdmission(
             sample.stop(registry.timer("stockio.allocation.phase.duration",
                 "phase", phase, "outcome", outcome))
         }
+    }
+
+    /**
+     * Holds one admission permit from subscription until the publisher terminates, including cancellation.
+     * The permit covers allocation, projection, and completion when those stages are inside [work].
+     */
+    fun <T> executeMono(runType: AllocationRunType, work: () -> Mono<T>): Mono<T> =
+        Mono.defer {
+            if (properties.enabled && !permits.tryAcquire()) {
+                registry.counter("stockio.allocation.admission.attempts",
+                    "run.type", runType.name, "outcome", "saturated").increment()
+                return@defer Mono.error(AllocationCapacityExceededException())
+            }
+            active.incrementAndGet()
+            val sample = Timer.start(registry)
+            val outcome = AtomicReference("failure")
+            registry.counter("stockio.allocation.admission.attempts",
+                "run.type", runType.name, "outcome", "admitted").increment()
+            val workMono = try {
+                work()
+            } catch (exception: Exception) {
+                Mono.error(exception)
+            }
+            workMono
+                .doOnSuccess { outcome.set("success") }
+                .doFinally {
+                    try {
+                        sample.stop(registry.timer("stockio.allocation.execution.duration",
+                            "run.type", runType.name, "outcome", outcome.get()))
+                    } finally {
+                        active.decrementAndGet()
+                        if (properties.enabled) permits.release()
+                    }
+                }
+        }
+
+    fun <T> phaseMono(phase: String, work: Mono<T>): Mono<T> {
+        val sample = Timer.start(registry)
+        val outcome = AtomicReference("failure")
+        return work
+            .doOnSuccess { outcome.set("success") }
+            .doFinally {
+                sample.stop(registry.timer("stockio.allocation.phase.duration",
+                    "phase", phase, "outcome", outcome.get()))
+            }
     }
 }

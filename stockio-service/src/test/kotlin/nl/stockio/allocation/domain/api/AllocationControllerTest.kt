@@ -29,6 +29,7 @@ import org.mockito.Mockito.`when`
 import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
 import org.springframework.test.web.reactive.server.WebTestClient
+import reactor.core.publisher.Mono
 
 class AllocationControllerTest {
 
@@ -130,7 +131,7 @@ class AllocationControllerTest {
     fun `inline capacity rejection returns 503 rather than acceptance or async fallback`() {
         val request = AllocationRequest(UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND)
         val executor = io.mockk.mockk<AllocationJobExecutor>()
-        io.mockk.every { executor.executeSync(any(), request) } throws AllocationCapacityExceededException()
+        io.mockk.every { executor.execute(any(), request) } returns Mono.error(AllocationCapacityExceededException())
         val client = createClient(executor, mock(AllocationJobRunrService::class.java),
             mock(StockLedgerService::class.java))
         client.post().uri("/api/allocation/jobs?async=false")
@@ -148,7 +149,7 @@ class AllocationControllerTest {
     fun `inline lock contention rejection returns 503 rather than acceptance or async fallback`() {
         val request = AllocationRequest(UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND)
         val executor = io.mockk.mockk<AllocationJobExecutor>()
-        io.mockk.every { executor.executeSync(any(), request) } throws AllocationLockContentionException()
+        io.mockk.every { executor.execute(any(), request) } returns Mono.error(AllocationLockContentionException())
         val client = createClient(executor, mock(AllocationJobRunrService::class.java),
             mock(StockLedgerService::class.java))
         client.post().uri("/api/allocation/jobs?async=false")
@@ -208,6 +209,7 @@ class AllocationControllerTest {
 
         org.junit.jupiter.api.Assertions.assertTrue(gateway.acceptedRequest)
         io.mockk.verify(exactly = 1) { executor.executeAsync(request) }
+        io.mockk.verify(exactly = 0) { executor.execute(any(), any()) }
         io.mockk.verify(exactly = 0) { executor.executeSync(any(), any()) }
     }
 

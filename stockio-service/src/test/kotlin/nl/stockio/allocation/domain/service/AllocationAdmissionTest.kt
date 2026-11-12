@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.dao.CannotAcquireLockException
+import reactor.core.publisher.Mono
 
 class AllocationAdmissionTest {
     private val request = AllocationRequest(UUID.randomUUID(), LocalDate.now(), AllocationRunType.NEW_DEMAND)
@@ -58,7 +59,7 @@ class AllocationAdmissionTest {
                 AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry))
             val run = AllocationRunResult(UUID.randomUUID(), request.requestId, request.runType,
                 request.asOfDate, Instant.now(), 0, emptyList())
-            every { service.allocation(request) } returns run
+            every { service.allocation(request) } returns Mono.just(run)
             val entered = CountDownLatch(1)
             val release = CountDownLatch(1)
             fun block() {
@@ -74,19 +75,19 @@ class AllocationAdmissionTest {
                     processor.process(request) {
                         if (blockedPhase == "completion") block()
                         it
-                    }
+                    }.block()
                 }
                 assertTrue(entered.await(5, TimeUnit.SECONDS))
                 val command = BackorderAllocationRequest(UUID.randomUUID(), request.asOfDate,
                     BackorderAllocationTrigger.STOCK_LEDGER_RECEIPT, setOf("SKU"))
-                assertThrows(AllocationCapacityExceededException::class.java) { processor.process(command) }
+                assertThrows(AllocationCapacityExceededException::class.java) { processor.process(command).block() }
                 verify(exactly = 1) { service.allocation(any()) }
                 verify(exactly = 0) { backorders.allocate(any()) }
                 assertEquals(1.0, registry.get("stockio.allocation.admission.active").gauge().value())
                 release.countDown()
                 assertEquals(run, work.get(5, TimeUnit.SECONDS))
                 assertEquals(0.0, registry.get("stockio.allocation.admission.active").gauge().value())
-                assertEquals(run, processor.process(request))
+                assertEquals(run, processor.process(request).block())
                 assertEquals(1.0, registry.get("stockio.allocation.admission.attempts")
                     .tag("outcome", "saturated").counter().count())
             } finally {

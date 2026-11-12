@@ -19,6 +19,6 @@ class BackorderAllocationJob(
     @Job(name = "Fulfill open backorders after inbound receipt", retries = 3,
         jobFilters = [AllocationCapacityRetryFilter::class])
     fun execute(command: BackorderAllocationRequest) {
-        processingService.process(command)
+        processingService.processSync(command)
     }
 }

@@ -525,7 +525,7 @@ Planned feature: [Shared database-work budget](../.github/memory/issues/feature-
 - The asynchronous REST publisher sends the raw `AllocationRequest` JSON accepted by external producers, using its generated execution `jobId` as the Kafka key
 - A bounded Kotlin `Channel<AllocationRequest>` and fixed worker set provide a local burst buffer; they do not replace the existing `AllocationAdmission` semaphore or represent durable acceptance
 - `AllocationAdmission` uses non-waiting `Semaphore.tryAcquire()` and throws `AllocationCapacityExceededException` when saturated; Kafka retains that record and retries with bounded-delay backoff rather than dropping it or hot-looping
-- `executeSync` and Spring/JPA work are synchronous; allocation already uses Kotlin coroutines internally for per-SKU workers, so Kafka workers must be separately bounded and must not multiply that concurrency without measurement
+- `executeSync` blocks once around the allocation publisher. SKU work inside that publisher uses R2DBC and does not take a thread per SKU. Kafka workers stay bounded so they do not multiply that concurrency
 - The synchronous Kafka listener waits for its bounded-channel worker before returning; this avoids async-listener reordering of later records in a partition
 - Configure one record per poll and listener concurrency no greater than the topic partition count; offsets advance only after synchronous listener success
 - Mirror RabbitMQ's capacity backoff, invalid/oversized-message dead-lettering, and durable JobRunr fallback for other failures

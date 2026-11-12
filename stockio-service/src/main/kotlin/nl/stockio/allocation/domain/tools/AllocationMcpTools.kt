@@ -41,7 +41,7 @@ class AllocationMcpTools(
     fun allocateAndStockProject(request: AllocationRequest) {
         requestLimits.validate(request)
         require(request.runType == AllocationRunType.NEW_DEMAND) { "Run type must be NEW_DEMAND for allocation." }
-        processingService.process(request)
+        processingService.processSync(request)
     }
 
     @Tool(
@@ -56,7 +56,7 @@ class AllocationMcpTools(
         require(request.runType == AllocationRunType.BACKORDER_FULFILLMENT) {
             "Run type must be BACKORDER_FULFILLMENT for backorder allocation."
         }
-        return processingService.process(
+        return processingService.processSync(
             BackorderAllocationRequest(
                 requestId = request.requestId,
                 asOfDate = request.asOfDate,

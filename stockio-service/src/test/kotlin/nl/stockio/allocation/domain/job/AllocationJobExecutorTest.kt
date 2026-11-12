@@ -23,6 +23,7 @@ import nl.stockio.stock.infra.AllocationJobResultEntity
 import org.springframework.kafka.core.KafkaTemplate
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
+import reactor.core.publisher.Mono
 
 class AllocationJobExecutorTest {
     private val properties = AllocationAdmissionProperties(true, 1, 1, 1, 1, 1, 1, 4096)
@@ -46,7 +47,7 @@ class AllocationJobExecutorTest {
     @Test
     fun `completion persistence remains inside the permit and failed persistence releases it`() {
         every { repository.findById(any()) } returns Optional.empty()
-        every { service.allocation(request) } returns run
+        every { service.allocation(request) } returns Mono.just(run)
         every { repository.save(any()) } answers {
             assertEquals(1.0, registry.get("stockio.allocation.admission.active").gauge().value())
             error("completion storage unavailable")

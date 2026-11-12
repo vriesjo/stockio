@@ -40,6 +40,7 @@ import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
+import reactor.core.publisher.Mono
 
 class ProductAllocationServiceTest {
 
@@ -57,7 +58,7 @@ class ProductAllocationServiceTest {
             allocationService = allocationService
         )
 
-        val response = sut.allocate(request(productQuery = "cucumber sushi roll"))
+        val response = sut.allocate(request(productQuery = "cucumber sushi roll")).block()!!
 
         assertEquals(ProductAllocationStatus.TAVILY_LOOKUP_FAILED, response.status)
         assertNull(response.allocationRun)
@@ -77,7 +78,7 @@ class ProductAllocationServiceTest {
             allocationService = allocationService
         )
 
-        val response = sut.allocate(request(productQuery = "cucumber sushi roll"))
+        val response = sut.allocate(request(productQuery = "cucumber sushi roll")).block()!!
 
         assertEquals(ProductAllocationStatus.NO_PRODUCT_MATCH, response.status)
         assertNull(response.allocationRun)
@@ -102,7 +103,7 @@ class ProductAllocationServiceTest {
             allocations = emptyList()
         )
         val expectedRequest = allocationRequest(requested, "MAKI-KOMKOMMER")
-        `when`(allocationService.allocation(expectedRequest)).thenReturn(expectedRun)
+        `when`(allocationService.allocation(expectedRequest)).thenReturn(Mono.just(expectedRun))
         val sut = service(
             productRepository = productRepository(listOf(product)),
             productVectorRepository = vectorRepository,
@@ -111,8 +112,8 @@ class ProductAllocationServiceTest {
             embeddingClient = embeddingClient
         )
 
-        val response = sut.allocate(requested)
-        val replay = sut.allocate(requested)
+        val response = sut.allocate(requested).block()!!
+        val replay = sut.allocate(requested).block()!!
 
         assertEquals(ProductAllocationStatus.ALLOCATION_PROCESSED, response.status)
         assertEquals("MAKI-KOMKOMMER", response.selectedProduct?.sku)
@@ -140,7 +141,7 @@ class ProductAllocationServiceTest {
         )
         val allocationService = mock(AllocationService::class.java)
         `when`(allocationService.allocation(allocationRequest(requested, "MAKI-KOMKOMMER"))).thenReturn(
-            AllocationRunResult(
+            Mono.just(AllocationRunResult(
                 runId = UUID.randomUUID(),
                 requestId = requested.requestId,
                 runType = AllocationRunType.NEW_DEMAND,
@@ -148,7 +149,7 @@ class ProductAllocationServiceTest {
                 createdAt = Instant.now(),
                 openBackorderCount = 0,
                 allocations = emptyList()
-            )
+            ))
         )
         val tavilySearchClient = mock(TavilySearchClient::class.java)
         `when`(tavilySearchClient.search("cucumber sushi roll product or nearest equivalent")).thenReturn(
@@ -161,7 +162,7 @@ class ProductAllocationServiceTest {
             allocationService = allocationService
         )
 
-        val response = sut.allocate(requested)
+        val response = sut.allocate(requested).block()!!
 
         assertEquals(ProductAllocationStatus.ALLOCATION_PROCESSED, response.status)
         assertEquals("MAKI-KOMKOMMER", response.selectedProduct?.sku)
@@ -192,7 +193,7 @@ class ProductAllocationServiceTest {
             allocationService = allocationService
         )
 
-        val response = sut.allocate(request(productQuery = "sushi"))
+        val response = sut.allocate(request(productQuery = "sushi")).block()!!
 
         assertEquals(ProductAllocationStatus.AMBIGUOUS_PRODUCT_MATCH, response.status)
         assertEquals(2, response.candidates.size)
@@ -219,7 +220,7 @@ class ProductAllocationServiceTest {
             allocationService = allocationService
         )
 
-        val response = sut.allocate(requested)
+        val response = sut.allocate(requested).block()!!
 
         assertEquals(ProductAllocationStatus.ALLOCATION_PROCESSED, response.status)
         assertEquals(product.sku, response.selectedProduct?.sku)
@@ -244,7 +245,7 @@ class ProductAllocationServiceTest {
             productVectorRepository = vectors
         )
 
-        val response = sut.allocate(request(productQuery = "cucumber sushi roll"))
+        val response = sut.allocate(request(productQuery = "cucumber sushi roll")).block()!!
 
         assertEquals(ProductAllocationStatus.ALLOCATION_PROCESSED, response.status)
         assertEquals(product.sku, response.selectedProduct?.sku)
@@ -275,7 +276,7 @@ class ProductAllocationServiceTest {
             allocationService = allocationService
         )
 
-        val response = sut.allocate(request(productQuery = "sushi"))
+        val response = sut.allocate(request(productQuery = "sushi")).block()!!
 
         assertEquals(ProductAllocationStatus.AMBIGUOUS_PRODUCT_MATCH, response.status)
         verify(tavilySearchClient).search("sushi product or nearest equivalent")
@@ -304,7 +305,7 @@ class ProductAllocationServiceTest {
             )
         )
 
-        val response = sut.allocate(request(productQuery = "sushi"))
+        val response = sut.allocate(request(productQuery = "sushi")).block()!!
 
         assertEquals(ProductAllocationStatus.ALLOCATION_PROCESSED, response.status)
         verify(tavilySearchClient).search("sushi product or nearest equivalent")
@@ -321,7 +322,7 @@ class ProductAllocationServiceTest {
             allocationService = allocationService
         )
 
-        val response = sut.allocate(request(productQuery = "cucumber sushi roll").copy(allowEquivalent = false))
+        val response = sut.allocate(request(productQuery = "cucumber sushi roll").copy(allowEquivalent = false)).block()!!
 
         assertEquals(ProductAllocationStatus.NO_PRODUCT_MATCH, response.status)
         verifyNoInteractions(tavilySearchClient, embeddingClient, allocationService)
@@ -339,7 +340,7 @@ class ProductAllocationServiceTest {
             allocationService = allocationService
         )
 
-        val response = sut.allocate(request())
+        val response = sut.allocate(request()).block()!!
 
         assertEquals(ProductAllocationStatus.NO_PRODUCT_MATCH, response.status)
         verifyNoInteractions(tavilySearchClient, embeddingClient, allocationService)
@@ -355,7 +356,7 @@ class ProductAllocationServiceTest {
             allocationService = allocationService
         )
 
-        val response = sut.allocate(request(productQuery = "cucumber sushi roll"))
+        val response = sut.allocate(request(productQuery = "cucumber sushi roll")).block()!!
 
         assertEquals(ProductAllocationStatus.EMBEDDING_FAILED, response.status)
         verifyNoInteractions(tavilySearchClient, allocationService)
@@ -375,7 +376,7 @@ class ProductAllocationServiceTest {
         )
         `when`(vectors.findProductEmbeddingHashes("nomic-embed-text")).thenReturn(emptyMap())
 
-        val response = sut.allocate(request(productQuery = "cucumber sushi roll"))
+        val response = sut.allocate(request(productQuery = "cucumber sushi roll")).block()!!
 
         assertEquals(ProductAllocationStatus.ALLOCATION_PROCESSED, response.status)
         val inOrder = org.mockito.Mockito.inOrder(vectors)
@@ -431,10 +432,10 @@ class ProductAllocationServiceTest {
         mock(AllocationService::class.java) { invocation ->
             if (invocation.method.name == "allocation") {
                 val request = invocation.getArgument<AllocationRequest>(0)
-                AllocationRunResult(
+                Mono.just(AllocationRunResult(
                     UUID.randomUUID(), request.requestId, request.runType, request.asOfDate,
                     Instant.now(), 0, emptyList()
-                )
+                ))
             } else {
                 org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation)
             }

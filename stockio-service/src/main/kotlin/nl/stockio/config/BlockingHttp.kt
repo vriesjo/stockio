@@ -12,9 +12,9 @@ import reactor.core.scheduler.Schedulers
 /**
  * Runs blocking HTTP work off the Netty event loop.
  *
- * The pool is larger than Hikari's default of 10 because a request holds its worker inside
- * `runBlocking` while SKU work on `Dispatchers.IO` still needs database connections.
- * Hikari and admission control remain the throughput limit.
+ * The pool is larger than Hikari's default of 10 because status, Redis, and Kafka
+ * acknowledgement still block a worker until they return. Inline allocation does not:
+ * its SKU work uses the R2DBC pool. Hikari and admission control remain the throughput limit.
  */
 class BlockingHttp(private val scheduler: Scheduler) {
     private val dispatcher: CoroutineDispatcher = scheduler.asCoroutineDispatcher()

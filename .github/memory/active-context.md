@@ -1,5 +1,16 @@
 # Active Context
 
+## Current change: PostgreSQL R2DBC for SKU allocation
+
+- SKU allocation transactions use a second PostgreSQL pool (`spring.r2dbc`, `R2DBC_POOL_*`). Flyway, Hikari, and the JPA repositories stay.
+- `SkuAllocationProcessor` runs inside `TransactionalOperator`. Lock-contention `SET LOCAL` uses that connection before the SKU lock.
+- New demand and backorder fulfillment fan out with `Flux.flatMap` at `ALLOCATION_MAX_CONCURRENT_SKUS`. HTTP awaits that publisher. Kafka, RabbitMQ, JobRunr, and MCP block once in `executeSync` or `processSync`.
+- JDBC and R2DBC are not enlisted in the same business transaction.
+- Spring Boot skips JDBC `DataSource` auto-configuration when an R2DBC `ConnectionFactory` exists, so `JdbcDataSourceConfiguration` builds the Hikari pool from `spring.datasource`. The JPA transaction manager is marked primary so `@Transactional` does not see two `TransactionManager` beans. Spring Data R2DBC repositories stay off.
+- `AllocationIntegrationTest` passes, including independent JDBC and R2DBC commit and rollback.
+- Spring Boot skips JDBC `DataSource` auto-configuration when an R2DBC `ConnectionFactory` exists, so `JdbcDataSourceConfiguration` builds the Hikari pool from `spring.datasource`. The JPA transaction manager is marked primary so `@Transactional` does not see two `TransactionManager` beans. Spring Data R2DBC repositories stay off.
+- `AllocationIntegrationTest` passes, including independent JDBC and R2DBC commit and rollback.
+
 ## Feature: Redis Fast Path provisional allocation accept
 
 - **Specification:** [Feature specification](../../docs/specifications.md#feature-redis-fast-path-provisional-allocation-accept)

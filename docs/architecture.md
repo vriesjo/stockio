@@ -3,7 +3,7 @@
 ## Stack
 - **Backend:** Spring Boot (Kotlin)
 - **Frontend:** React, NextJs
-- **Database:** PostgreSQL (Spring Data JPA, Flyway, pgvector)
+- **Database:** PostgreSQL (Spring Data JPA, R2DBC for SKU allocation, Flyway, pgvector)
 - **Testing:** JUnit Jupiter, Testcontainers, Mockk, Kotest, Playwright
 - **Build:** Gradle
 
@@ -16,8 +16,7 @@ The same core services are exposed through Spring AI MCP tools and a local HTTP 
 
 - PostgreSQL is the system of record.
 - Flyway manages the schema;
-- JPA repositories handle operational data and SKU locks, while `StockSnapshotRepository` uses `JdbcTemplate`
-to read and replace snapshots in the same transaction. Snapshots are not JPA-managed entities, so repeated rebuilds do not require clearing the persistence context.
+- JPA and JDBC repositories handle registration, projection, reservations outside a SKU allocation, and snapshots. A SKU allocation transaction uses its own R2DBC pool and does not enlist those JDBC connections. Spring Boot does not auto-configure a JDBC `DataSource` once an R2DBC `ConnectionFactory` exists, so the service declares the Hikari pool from `spring.datasource` itself. Flyway, JPA, and JobRunr use that pool. The JPA transaction manager stays primary for `@Transactional`. SKU allocation uses the reactive transaction manager through its own `TransactionalOperator`. `StockSnapshotRepository` uses `JdbcTemplate` to read and replace snapshots in the JDBC transaction. Snapshots are not JPA-managed entities, so repeated rebuilds do not require clearing the persistence context.
 - Daily snapshots are derived projections from live stock and persisted reservations, not an independent source of inventory truth.
 
 ### Design Patterns
@@ -26,7 +25,7 @@ to read and replace snapshots in the same transaction. Snapshots are not JPA-man
 - **Dependency Injection:** Spring's @Service, @Repository, and constructor injection for loose coupling and testability.
 - **DTOs (Data Transfer Objects):** Used for request and response payloads to decouple API and domain models.
 - **Singleton:** Spring beans are singletons by default, ensuring one instance per application context.
-- **Ports and adapters:** Allocation, reservation cleanup, and stock processors depend on repository ports implemented by Spring Data JPA and JDBC adapters. The separation is partial: some services still inject concrete infrastructure classes, JobRunr APIs, and HTTP clients directly.
+- **Ports and adapters:** Allocation, reservation cleanup, and stock processors depend on repository ports implemented by Spring Data JPA, JDBC, and the R2DBC SKU allocation adapter. The separation is partial: some services still inject concrete infrastructure classes, JobRunr APIs, and HTTP clients directly.
 - **Configuration/Properties:** Externalized configuration using YAML and @ConfigurationProperties for environment flexibility.
 
 ## Modules and technology
@@ -39,7 +38,7 @@ The Gradle build includes three modules:
 | `:stockio-api` (`stockio-api/`) | Shared Kotlin DTO library and OpenAPI specifications/generation tasks consumed by the service; also contains the independently run Next.js UI. It has no Spring application entry point. |
 | `:stockio-test-harness` (`stockio-test-harness/`) | Test-only tooling: mock-backed Playwright tests in `e2e/`, a Gatling runner in `performance/`, and an independently run JDBC/RabbitMQ sample publisher with tests in `publisher/`. Depends on API DTOs, not the service. |
 
-The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses Spring MVC, Spring Data JPA, PostgreSQL with pgvector, Flyway, RabbitMQ, Kafka publishing for asynchronous allocation submissions, Spring Kafka allocation consumption enabled by default, opt-in Redis provisional holds, JobRunr for consumer recovery and other scheduled work, Apache POI, HikariCP, and Spring Boot Actuator. Natural-language product allocation also uses the Tavily search API and Ollama embeddings. Allocation work is parallelized across SKUs with Kotlin coroutines. Opt-in Debezium Connect tails `public.stock` into Kafka for the Redis repair consumer.
+The build uses Java 21, Kotlin 2.2.20, Spring Boot 3.5.10, and Spring AI 1.1.2. The service uses WebFlux on Netty, Spring Data JPA, a PostgreSQL R2DBC pool for SKU allocation, PostgreSQL with pgvector, Flyway, RabbitMQ, Kafka publishing for asynchronous allocation submissions, Spring Kafka allocation consumption enabled by default, opt-in Redis provisional holds, JobRunr for consumer recovery and other scheduled work, Apache POI, HikariCP, and Spring Boot Actuator. Natural-language product allocation also uses the Tavily search API and Ollama embeddings. SKU allocation runs as a bounded reactive fan-out on the R2DBC pool. Kafka, RabbitMQ, JobRunr, and MCP still block once around that publisher. Opt-in Debezium Connect tails `public.stock` into Kafka for the Redis repair consumer.
 
 ## System context
 
@@ -48,7 +47,7 @@ flowchart LR
     Operator["Operator / REST client"] -->|"HTTP / JSON"| API["Stockio service"]
     Browser["Browser"] -->|"Same-origin POST /api/allocate"| UI["Next.js UI"]
     UI -->|"Server-side Axios POST /api/products/allocate"| API
-    Agent["MCP client"] -->|"MCP tools"| API
+    Agent["MCP client"] -->|"Streamable HTTP /mcp"| API
     API -->|"Application data and JobRunr storage"| DB[("PostgreSQL + pgvector")]
     API -->|"Product lookup"| Tavily["Tavily Search API"]
     API -->|"Embeddings"| Ollama["Ollama"]
@@ -64,7 +63,7 @@ flowchart LR
     API -->|"Write .xlsx"| Reports["Report directory"]
 ```
 
-The service runs as a WebFlux application on Netty and exposes MCP tools through Spring AI. Domain I/O stays blocking and runs on a dedicated scheduler so it stays off the Netty event loop. The HTTP server binds to `127.0.0.1:9090` by default. No application-level authentication is configured; protect the API and Actuator endpoints if `SERVER_ADDRESS` is changed to expose them beyond the local host.
+The service runs as a WebFlux application on Netty and exposes MCP tools through Spring AI's streamable HTTP transport at `/mcp`. Domain I/O stays blocking and runs on a dedicated scheduler so it stays off the Netty event loop. The HTTP server binds to `127.0.0.1:9090` by default. No application-level authentication is configured; protect the API and Actuator endpoints if `SERVER_ADDRESS` is changed to expose them beyond the local host.
 
 ### Frontend HTTP integration
 
@@ -192,6 +191,8 @@ Allocation, product, reservation, and stock run in the one Spring Boot applicati
 ## Interfaces
 
 ### MCP tools
+
+MCP clients connect with the streamable HTTP transport at `http://127.0.0.1:9090/mcp`. The server type is synchronous. Tool methods stay the blocking domain services.
 
 | Tool | Input | Behavior |
 | --- | --- | --- |
@@ -344,12 +345,18 @@ Flyway V1–V20 owns the schema. Hibernate validates it and does not create or a
 | `DB_POOL_CONNECTION_TIMEOUT_MS` | `30000` | Time to wait for a pool connection. |
 | `DB_POOL_IDLE_TIMEOUT_MS` | `600000` | Maximum idle connection time. |
 | `DB_POOL_MAX_LIFETIME_MS` | `1800000` | Maximum connection lifetime. |
+| `R2DBC_URL` | `r2dbc:postgresql://localhost:5437/logistics` | PostgreSQL R2DBC URL for SKU allocation. It uses the same database as `DB_URL`. |
+| `R2DBC_POOL_MAX_SIZE` | `10` | Maximum R2DBC pool size. This pool is separate from Hikari. |
+| `R2DBC_POOL_INITIAL_SIZE` | `2` | Initial R2DBC pool size. |
+| `R2DBC_POOL_MAX_ACQUIRE_TIME` | `30s` | Time to wait for an R2DBC connection. |
+| `R2DBC_POOL_MAX_IDLE_TIME` | `10m` | Maximum idle time for an R2DBC connection. |
+| `R2DBC_POOL_MAX_LIFE_TIME` | `30m` | Maximum lifetime of an R2DBC connection. |
 | `ALLOCATION_LEDGER_SYNC_ENABLED` | `true` | Register independent ledger synchronization; false deletes its recurring definition. |
 | `ALLOCATION_LEDGER_SYNC_CRON` | `0 0,12 * * *` | Five-field cron for physical ledger processing. |
 | `ALLOCATION_LEDGER_SYNC_ZONE` | `UTC` | Scheduler zone and shared business-clock zone. |
 | `ALLOCATION_LEDGER_SYNC_FRESHNESS_TOLERANCE` | `1h` | Grace after the next expected sync before ledger health becomes stale. |
 | `SERVER_ADDRESS` / `SERVER_PORT` | `127.0.0.1` / `9090` | HTTP bind address and port. |
-| `ALLOCATION_MAX_CONCURRENT_SKUS` | `4` | Maximum concurrent SKU workers. |
+| `ALLOCATION_MAX_CONCURRENT_SKUS` | `4` | Maximum SKU allocation transactions in flight for one request. |
 | `ALLOCATION_RESERVATION_TTL` | `30m` | Temporary order-header hold duration, including SKU-processing time. |
 | `ALLOCATION_RESERVATION_EXPIRY_INTERVAL` | `1m` | Recurring expiry sweep interval, independent of ledger sync. |
 | `ALLOCATION_RESERVATION_EXPIRY_BATCH_SIZE` | `100` | Maximum overdue order headers cleaned up per expiry batch. |
