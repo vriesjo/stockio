@@ -91,11 +91,12 @@ behavior.
 
 Route default asynchronous REST allocation submissions through the configured
 Kafka topic. The Kafka consumer is enabled by default and coexists with the
-RabbitMQ consumer. Publish the raw `AllocationRequest` JSON with a unique
-execution `jobId` as its Kafka key so the REST acceptance and status-polling
-contract remain intact. The consumer uses that key as its execution ID, with
-`requestId` fallback for compatible external producers. Preserve bounded
-admission and explicit offset/recovery semantics. Set
+RabbitMQ consumer. Publish the `AllocationRequest` with Confluent JSON Schema
+framing and a unique execution `jobId` as its Kafka key so the REST acceptance
+and status-polling contract remain intact. The consumer uses that key as its
+execution ID, with `requestId` fallback for compatible external producers.
+Plain JSON fails deserialization and is dead-lettered without a retry. Preserve
+bounded admission and explicit offset/recovery semantics. Set
 `ALLOCATION_KAFKA_ENABLED=false` to stop the listener without removing
 RabbitMQ. This is a stock allocation workflow, not payment processing.
 
@@ -110,7 +111,7 @@ RabbitMQ. This is a stock allocation workflow, not payment processing.
 | FR-05 | Bounded consumption | Use a bounded local Kotlin channel and fixed worker concurrency to smooth short bursts; keep the existing `AllocationAdmission` semaphore authoritative, preserve records on channel or semaphore saturation, and do not launch unbounded per-record coroutines or buffers. |
 | FR-06 | RabbitMQ coexistence | Keep the RabbitMQ listener and its contract operational; document behavior when both brokers deliver the same logical request. |
 | FR-07 | Operational visibility | Log and measure bounded-cardinality consumption outcomes, retries, capacity deferrals, and processing duration without using request or SKU identifiers as metric labels. |
-| FR-08 | Asynchronous REST publisher | Serialize the unchanged `AllocationRequest` and publish to the configured Kafka topic using a unique execution job ID as the record key; return acceptance only after the broker acknowledges the publish. |
+| FR-08 | Asynchronous REST publisher | Publish the `AllocationRequest` to the configured Kafka topic using Confluent JSON Schema and a unique execution job ID as the record key; return acceptance only after the broker acknowledges the publish. |
 | FR-09 | Durable Kafka job status | Persist submission, enqueue, processing, and terminal states so accepted Kafka jobs can be polled by their returned execution ID without requiring a JobRunr record. |
 
 ### Non-Functional Requirements (NFR)
@@ -121,12 +122,12 @@ RabbitMQ. This is a stock allocation workflow, not payment processing.
 | NFR-02 | Bounded resource use | Bound the local channel and active workers; preserve the existing allocation admission and stock-coordination guarantees, and never treat in-memory channel enqueueing as durable acceptance. |
 | NFR-03 | Default consumer | The Kafka listener starts unless `ALLOCATION_KAFKA_ENABLED` is false. RabbitMQ consumption remains available beside it. |
 | NFR-04 | Honest performance claims | Do not claim non-blocking processing, throughput improvement, or latency bounds without representative measurements. |
-| NFR-05 | Compatible message contract | Keep the Kafka value as raw `AllocationRequest` JSON and preserve request-ID fallback for producers that do not send an execution key. |
+| NFR-05 | Compatible message contract | The Kafka value is an `AllocationRequest` validated by the registered JSON Schema. Plain JSON is not a valid allocation record. Producers that omit an execution key still fall back to `requestId`. |
 | NFR-06 | Honest status and delivery outcomes | Preserve the REST status-polling contract and represent ambiguous broker acknowledgements explicitly rather than claiming the message was accepted or rejected without evidence. |
 
 ### Plan
 
-1. Add opt-in Spring Kafka dependencies, typed service configuration, source and DLT topic declarations, and a raw-string consumer compatible with the existing `AllocationRequest` JSON contract.
+1. Add Spring Kafka dependencies, typed service configuration, source and DLT topic declarations, and a JSON Schema consumer for `AllocationRequest`.
 2. Implement the asynchronous REST publisher with broker-acknowledged sends and execution IDs in Kafka record keys; preserve the existing REST acceptance/status contract.
 3. Persist Kafka submission and execution status, including ambiguous publishing outcomes, and resolve status from JobRunr or Kafka tracking without misreporting completion.
 4. Implement synchronous listener completion backed by a bounded Kotlin channel and fixed workers; preserve per-partition order and commit offsets only after execution or durable JobRunr handoff.

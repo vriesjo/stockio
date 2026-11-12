@@ -42,6 +42,7 @@ stockio:
         interval: ${ALLOCATION_RABBITMQ_PUBLISHER_INTERVAL:1000}
     kafka:
       topic: ${ALLOCATION_KAFKA_TOPIC:stockio.allocation.requests}
+      schema-registry-url: ${SCHEMA_REGISTRY_URL:http://localhost:8081}
       publisher:
         enabled: ${ALLOCATION_KAFKA_PUBLISHER_ENABLED:false}
         interval: ${ALLOCATION_KAFKA_PUBLISHER_INTERVAL:1000}

@@ -15,6 +15,7 @@ ext {
 allprojects {
     repositories {
         mavenCentral()
+        maven { url 'https://packages.confluent.io/maven/' }
     }
 }
 
@@ -263,6 +264,7 @@ project(":stockio-service") {
         implementation 'org.postgresql:r2dbc-postgresql'
         implementation 'org.springframework.boot:spring-boot-starter-amqp'
         implementation 'org.springframework.kafka:spring-kafka'
+        implementation 'io.confluent:kafka-json-schema-serializer:7.4.0'
         implementation 'org.springframework.boot:spring-boot-starter-data-redis'
         implementation 'org.springframework.boot:spring-boot-starter-validation'
         implementation 'org.jobrunr:jobrunr-spring-boot-3-starter:9.0.1'
@@ -272,7 +274,9 @@ project(":stockio-service") {
         implementation 'org.apache.poi:poi-ooxml:5.4.1'
 
         runtimeOnly 'org.postgresql:postgresql'
-        testImplementation 'org.springframework.boot:spring-boot-starter-test'
+        testImplementation('org.springframework.boot:spring-boot-starter-test') {
+            exclude group: 'com.vaadin.external.google', module: 'android-json'
+        }
         testImplementation 'org.springframework.kafka:spring-kafka-test'
         testImplementation 'io.kotest:kotest-assertions-core:5.9.1'
         testImplementation 'io.mockk:mockk:1.14.6'
@@ -321,6 +325,7 @@ project(":stockio-test-harness") {
         implementation project(":stockio-api")
         implementation 'org.springframework.boot:spring-boot-starter-amqp'
         implementation 'org.springframework.kafka:spring-kafka'
+        implementation 'io.confluent:kafka-json-schema-serializer:7.4.0'
         implementation 'org.springframework.boot:spring-boot-starter-jdbc'
         implementation 'org.springframework.boot:spring-boot-starter-json'
         implementation 'io.github.oshai:kotlin-logging-jvm:8.0.4'

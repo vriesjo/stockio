@@ -291,7 +291,7 @@ sequenceDiagram
         REST->>Redis: All-or-nothing provisional hold
     end
     REST->>Job: executeAsync(request)
-    Job->>Kafka: Publish raw AllocationRequest (key = jobId)
+    Job->>Kafka: Publish schema-framed AllocationRequest (key = jobId)
     Kafka-->>Job: Broker acknowledgement
     Job-->>REST: AllocationJobAccepted(jobId, requestId)
     REST-->>Client: 202 Accepted, job ID and Location

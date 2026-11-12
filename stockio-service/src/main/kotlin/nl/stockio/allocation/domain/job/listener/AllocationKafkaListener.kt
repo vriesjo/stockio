@@ -1,82 +1,67 @@
 package nl.stockio.allocation.domain.job.listener
 
-import com.fasterxml.jackson.core.JsonProcessingException
-import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
-import java.nio.charset.StandardCharsets
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.ThreadLocalRandom
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
+import io.micrometer.core.instrument.MeterRegistry
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import nl.stockio.allocation.domain.job.AllocationJobTrackingService
 import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
 import nl.stockio.allocation.domain.performance.AllocationLockContentionException
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
+import nl.stockio.api.dto.AllocationRequest
+import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.jobrunr.scheduling.JobScheduler
 import org.jobrunr.storage.JobNotFoundException
 import org.jobrunr.storage.StorageProvider
-import org.springframework.kafka.support.KafkaHeaders
-import org.springframework.messaging.handler.annotation.Header
 import org.springframework.kafka.annotation.KafkaListener
 import org.springframework.stereotype.Component
-import io.micrometer.core.instrument.MeterRegistry
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ThreadLocalRandom
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 private val logger = KotlinLogging.logger {}
 
 @Component
 class AllocationKafkaListener(
-    private val objectMapper: ObjectMapper,
     private val limits: AllocationRequestLimits,
     private val workQueue: AllocationKafkaWorkQueue,
-    private val jobTracking: AllocationJobTrackingService
+    private val jobTracking: AllocationJobTrackingService,
 ) {
-
     @KafkaListener(
         id = "stockioAllocationKafkaListener",
         topics = ["\${stockio.allocation.kafka.topic:stockio.allocation.requests}"],
         groupId = "\${stockio.allocation.kafka.group-id:stockio-allocation}",
         concurrency = "\${stockio.allocation.kafka.listener-concurrency:2}",
         autoStartup = "\${stockio.allocation.kafka.enabled:true}",
-        containerFactory = "allocationKafkaListenerContainerFactory"
+        containerFactory = "allocationKafkaListenerContainerFactory",
     )
-    fun receive(
-        payload: String?,
-        @Header(KafkaHeaders.RECEIVED_KEY, required = false) key: String? = null
-    ) {
-        if (payload == null) {
-            throw IllegalArgumentException("Kafka allocation record has no value.")
-        }
-        limits.checkBytes(payload.toByteArray(StandardCharsets.UTF_8).size.toLong())
-        val request = try {
-            objectMapper.readValue(payload, AllocationRequest::class.java)
-        } catch (exception: JsonProcessingException) {
-            throw IllegalArgumentException("Kafka allocation record is not a valid AllocationRequest.", exception)
-        }
-        if (request == null) {
-            throw IllegalArgumentException("Kafka allocation record must contain an AllocationRequest.")
-        }
-        val jobId = key?.let {
-            try {
-                java.util.UUID.fromString(it)
-            } catch (exception: IllegalArgumentException) {
-                throw IllegalArgumentException("Kafka allocation record key must be a UUID.", exception)
-            }
-        } ?: request.requestId
+    fun receive(record: ConsumerRecord<String, AllocationRequest?>) {
+        val request =
+            record.value()
+                ?: throw IllegalArgumentException("Kafka allocation record has no value.")
+        val framedBytes = record.serializedValueSize()
+        if (framedBytes >= 0) limits.checkBytes(framedBytes.toLong())
+        val jobId =
+            record.key()?.let {
+                try {
+                    java.util.UUID.fromString(it)
+                } catch (exception: IllegalArgumentException) {
+                    throw IllegalArgumentException("Kafka allocation record key must be a UUID.", exception)
+                }
+            } ?: request.requestId
         jobTracking.beginProcessing(jobId, request.requestId)
         try {
             workQueue.submit(request, jobId).get()
@@ -95,12 +80,12 @@ class AllocationKafkaWorkQueue(
     private val allocationJobExecutor: AllocationJobExecutor,
     private val jobScheduler: JobScheduler,
     private val storageProvider: StorageProvider,
-    private val registry: MeterRegistry
+    private val registry: MeterRegistry,
 ) {
     private data class Work(
         val request: AllocationRequest,
         val jobId: java.util.UUID,
-        val completion: CompletableFuture<Void>
+        val completion: CompletableFuture<Void>,
     )
 
     // Bounded channel to limit the number of in-flight allocation requests being processed concurrently.
@@ -127,7 +112,7 @@ class AllocationKafkaWorkQueue(
 
     fun submit(
         request: AllocationRequest,
-        jobId: java.util.UUID = request.requestId
+        jobId: java.util.UUID = request.requestId,
     ): CompletableFuture<Void> {
         // Create a CompletableFuture to track the completion of the work.
         // The inFlight counter is incremented to track the number of concurrent requests being processed.
@@ -141,15 +126,16 @@ class AllocationKafkaWorkQueue(
         }
         // Launch a coroutine immediately to send the work to the channel.
         // If the channel is full, this will suspend until space is available.
-        val enqueue = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            try {
-                channel.send(Work(request, jobId, completion))
-            } catch (exception: CancellationException) {
-                completion.completeExceptionally(exception)
-            } catch (exception: Exception) {
-                completion.completeExceptionally(exception)
+        val enqueue =
+            scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    channel.send(Work(request, jobId, completion))
+                } catch (exception: CancellationException) {
+                    completion.completeExceptionally(exception)
+                } catch (exception: Exception) {
+                    completion.completeExceptionally(exception)
+                }
             }
-        }
         if (enqueue.isCancelled) {
             completion.completeExceptionally(IllegalStateException("Kafka allocation workers are stopping."))
         }
@@ -169,7 +155,8 @@ class AllocationKafkaWorkQueue(
             work.completion.completeExceptionally(exception)
             record("failed")
         } finally {
-            registry.timer("stockio.allocation.kafka.processing.duration")
+            registry
+                .timer("stockio.allocation.kafka.processing.duration")
                 .record(System.nanoTime() - startedAt, TimeUnit.NANOSECONDS)
         }
     }
@@ -177,7 +164,10 @@ class AllocationKafkaWorkQueue(
     // Executes the allocation request with a failure policy that handles capacity exceeded exceptions and other errors.
     // If the allocation capacity is exceeded, it will pause for a backoff period before retrying.
     // If other exceptions occur, it will enqueue a JobRunr fallback for asynchronous processing.
-    private suspend fun executeWithFailurePolicy(jobId: java.util.UUID, request: AllocationRequest) {
+    private suspend fun executeWithFailurePolicy(
+        jobId: java.util.UUID,
+        request: AllocationRequest,
+    ) {
         while (true) {
             try {
                 allocationJobExecutor.executeSync(jobId, request)
@@ -216,16 +206,21 @@ class AllocationKafkaWorkQueue(
         }
     }
 
-    private fun enqueueJobRunrFallback(jobId: java.util.UUID, request: AllocationRequest, exception: Exception) {
+    private fun enqueueJobRunrFallback(
+        jobId: java.util.UUID,
+        request: AllocationRequest,
+        exception: Exception,
+    ) {
         logger.error(exception) {
             "Synchronous Kafka processing of allocation request '${request.requestId}' failed; " +
                 "enqueueing JobRunr fallback."
         }
-        val existingJob = try {
-            storageProvider.getJobById(jobId)
-        } catch (_: JobNotFoundException) {
-            null
-        }
+        val existingJob =
+            try {
+                storageProvider.getJobById(jobId)
+            } catch (_: JobNotFoundException) {
+                null
+            }
         if (existingJob != null) {
             logger.info { "JobRunr job '$jobId' already exists; skipping enqueue." }
             return
@@ -236,9 +231,9 @@ class AllocationKafkaWorkQueue(
         }
     }
 
-        // Calculates the next backoff duration in milliseconds for handling allocation capacity exceeded exceptions.
-        // The backoff duration is randomly selected between the configured minimum and maximum values
-        // to avoid the thundering herd problem when multiple requests are retried simultaneously.
+    // Calculates the next backoff duration in milliseconds for handling allocation capacity exceeded exceptions.
+    // The backoff duration is randomly selected between the configured minimum and maximum values
+    // to avoid the thundering herd problem when multiple requests are retried simultaneously.
     private fun nextCapacityBackoffMillis(): Long {
         val minimum = properties.capacityBackoffMin.toMillis()
         val maximum = properties.capacityBackoffMax.toMillis()

@@ -43,7 +43,7 @@ class AllocationJobExecutor(
     private val jobResultRepository: AllocationJobResultRepository,
     private val objectMapper: ObjectMapper,
     private val limits: AllocationRequestLimits,
-    private val kafkaTemplate: KafkaTemplate<String, String>,
+    private val kafkaTemplate: KafkaTemplate<String, AllocationRequest>,
     private val jobTracking: AllocationJobTrackingService,
     @param:Value("\${stockio.allocation.kafka.topic:stockio.allocation.requests}") private val topic: String,
     private val allocationRedisGateway: AllocationGateway = DisabledAllocationRedisGateway()
@@ -65,12 +65,11 @@ class AllocationJobExecutor(
     fun executeAsync(request: AllocationRequest): AllocationJobAccepted {
         limits.validate(request)
         val jobId = UUID.randomUUID()
-        val payload = objectMapper.writeValueAsString(request)
         logger.info {
             "Publishing allocation job $jobId for request ${request.requestId} to Kafka topic '$topic'."
         }
         try {
-            kafkaTemplate.send(topic, jobId.toString(), payload).get()
+            kafkaTemplate.send(topic, jobId.toString(), request).get()
         } catch (exception: InterruptedException) {
             Thread.currentThread().interrupt()
             throw exception

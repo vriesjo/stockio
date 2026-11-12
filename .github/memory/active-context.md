@@ -1,5 +1,12 @@
 # Active Context
 
+## Current change: JSON Schema for allocation Kafka records
+
+- Allocation records on `stockio.allocation.requests` use Confluent JSON Schema. The value is an `AllocationRequest` with a schema id. Plain JSON fails deserialization and is dead-lettered without a retry. The key stays a UUID string.
+- Startup registers the Draft-07 schema with `FULL` compatibility on the request and dead-letter subjects when the allocation listener is enabled. `auto.register.schemas` stays false.
+- CDC on `stockio.cdc.public.stock`, RabbitMQ, and the REST body stay plain JSON.
+- `SCHEMA_REGISTRY_URL` defaults to `http://localhost:8081`.
+
 ## Current change: PostgreSQL R2DBC for SKU allocation
 
 - `AllocationJobExecutor.execute`, `AllocationProcessor.process`, `AllocationService.allocation`, `AllocationService.allocateOpenBackorders`, and `AllocationBackorderService.allocate` are `suspend` functions. Prepare, projection, and completion hop to Reactor's bounded elastic dispatcher. SKU work stays a bounded `Flux` and is awaited with `awaitSingle`. `executeSync` and `processSync` are `runBlocking` for Kafka, RabbitMQ, JobRunr, and MCP. The R2DBC port still returns `Mono`.
