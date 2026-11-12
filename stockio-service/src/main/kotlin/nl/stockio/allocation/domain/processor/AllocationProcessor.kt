@@ -1,6 +1,9 @@
 package nl.stockio.allocation.domain.processor
 
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import nl.stockio.util.blockingElastic
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationLockContentionDetector
@@ -13,8 +16,6 @@ import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import org.springframework.stereotype.Service
-import reactor.core.publisher.Mono
-import reactor.core.scheduler.Schedulers
 
 /**
  * Refreshes forecasts after the allocation workers commit, without synchronizing physical stock.
@@ -31,70 +32,76 @@ class AllocationProcessor(
     private val admission: AllocationAdmission,
     private val limits: AllocationRequestLimits
 ) {
-    fun process(command: BackorderAllocationRequest): Mono<AllocationRunResult> =
-        Mono.fromCallable { limits.validate(command) }.then(
-            execute(AllocationRunType.BACKORDER_FULFILLMENT) {
-                admission.phaseMono("allocation", allocationBackorderService.allocate(command)).flatMap { run ->
-                    project(run) {
-                        projectionProcessor.process(
-                            command.asOfDate,
-                            run.allocations.map { it.sku } + command.skuScope.orEmpty() +
-                                command.inboundShipments.flatMap { it.lines }.map { it.sku }
-                        )
-                    }.thenReturn(run)
-                }
+    suspend fun process(command: BackorderAllocationRequest): AllocationRunResult {
+        limits.validate(command)
+        return execute(AllocationRunType.BACKORDER_FULFILLMENT) {
+            val run = admission.phase("allocation") { allocationBackorderService.allocate(command) }
+            project(run) {
+                projectionProcessor.process(
+                    command.asOfDate,
+                    run.allocations.map { it.sku } + command.skuScope.orEmpty() +
+                        command.inboundShipments.flatMap { it.lines }.map { it.sku }
+                )
             }
-        )
+            run
+        }
+    }
 
-    fun process(request: AllocationRequest): Mono<AllocationRunResult> = process(request) { it }
+    suspend fun process(request: AllocationRequest): AllocationRunResult = process(request) { it }
 
-    fun <T> process(request: AllocationRequest, complete: (AllocationRunResult) -> T): Mono<T> =
-        Mono.fromCallable { limits.validate(request) }.then(
-            execute(request.runType) {
-                val allocation = when (request.runType) {
+    suspend fun <T> process(request: AllocationRequest, complete: (AllocationRunResult) -> T): T {
+        limits.validate(request)
+        return execute(request.runType) {
+            val run = admission.phase("allocation") {
+                when (request.runType) {
                     AllocationRunType.NEW_DEMAND -> allocationService.allocation(request)
                     AllocationRunType.BACKORDER_FULFILLMENT -> allocationService.allocateOpenBackorders(request)
                 }
-                admission.phaseMono("allocation", allocation).flatMap { run ->
-                    project(run) {
-                        projectionProcessor.process(
-                            request.asOfDate,
-                            run.allocations.map { it.sku } +
-                                request.demandOrders.flatMap { it.lines }.map { it.sku } +
-                                request.inboundShipments.flatMap { it.lines }.map { it.sku }
-                        )
-                    }.then(
-                        admission.phaseMono(
-                            "completion",
-                            Mono.fromCallable { complete(run) }.subscribeOn(Schedulers.boundedElastic())
-                        )
-                    )
-                }
             }
-        )
+            project(run) {
+                projectionProcessor.process(
+                    request.asOfDate,
+                    run.allocations.map { it.sku } +
+                        request.demandOrders.flatMap { it.lines }.map { it.sku } +
+                        request.inboundShipments.flatMap { it.lines }.map { it.sku }
+                )
+            }
+            admission.phase("completion") {
+                withContext(blockingElastic) { complete(run) }
+            }
+        }
+    }
 
-    fun processSync(command: BackorderAllocationRequest): AllocationRunResult = process(command).block()!!
+    fun processSync(command: BackorderAllocationRequest): AllocationRunResult =
+        runBlocking { process(command) }
 
-    fun processSync(request: AllocationRequest): AllocationRunResult = process(request).block()!!
+    fun processSync(request: AllocationRequest): AllocationRunResult =
+        runBlocking { process(request) }
 
     fun <T> processSync(request: AllocationRequest, complete: (AllocationRunResult) -> T): T =
-        process(request, complete).block()!!
+        runBlocking { process(request, complete) }
 
-    private fun <T> execute(runType: AllocationRunType, work: () -> Mono<T>): Mono<T> =
-        admission.executeMono(runType, work).onErrorMap(
-            { error ->
-                error !is AllocationLockContentionException &&
-                    AllocationLockContentionDetector.isRetryableLockContention(error)
-            },
-            { error -> AllocationLockContentionException(cause = error) }
-        )
+    private suspend fun <T> execute(runType: AllocationRunType, work: suspend () -> T): T =
+        try {
+            admission.hold(runType, work)
+        } catch (error: Exception) {
+            if (error !is AllocationLockContentionException &&
+                AllocationLockContentionDetector.isRetryableLockContention(error)
+            ) {
+                throw AllocationLockContentionException(cause = error)
+            }
+            throw error
+        }
 
-    private fun project(run: AllocationRunResult, work: () -> Unit): Mono<Void> =
-        admission.phaseMono(
-            "projection",
-            Mono.fromCallable(work).subscribeOn(Schedulers.boundedElastic())
-        ).onErrorMap(IllegalArgumentException::class.java) { AllocationProjectionException(run.runId, it) }
-            .then()
+    private suspend fun project(run: AllocationRunResult, work: () -> Unit) {
+        try {
+            admission.phase("projection") {
+                withContext(blockingElastic) { work() }
+            }
+        } catch (exception: IllegalArgumentException) {
+            throw AllocationProjectionException(run.runId, exception)
+        }
+    }
 }
 
 /** Prevents a post-allocation projection invariant failure from being classified as invalid input by RabbitMQ. */

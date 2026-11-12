@@ -1,6 +1,9 @@
 package nl.stockio.allocation.domain.service
 
+import kotlinx.coroutines.reactor.awaitSingle
+import kotlinx.coroutines.withContext
 import nl.stockio.allocation.domain.api.validator.AllocationRequestValidator
+import nl.stockio.util.blockingElastic
 import nl.stockio.allocation.domain.model.AllocationOrder
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
@@ -14,8 +17,6 @@ import nl.stockio.util.requestHash
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import reactor.core.publisher.Flux
-import reactor.core.publisher.Mono
-import reactor.core.scheduler.Schedulers
 
 /**
  * Allocates new demand and delegates open-backorder runs.
@@ -38,42 +39,36 @@ class AllocationService(
         require(maxConcurrentSkus > 0) { "The maximum concurrent SKU allocation count must be positive." }
     }
 
-    fun allocation(request: AllocationRequest): Mono<AllocationRunResult> {
+    suspend fun allocation(request: AllocationRequest): AllocationRunResult {
         require(request.runType == AllocationRunType.NEW_DEMAND) {
             "Run type must be NEW_DEMAND for allocation."
         }
-        return prepare(request).flatMap { prepared ->
-            val completed = prepared.result
-            if (completed != null) {
-                Mono.just(completed)
-            } else {
-                val run = requireNotNull(prepared.run)
-                Flux.fromIterable(prepared.skus)
-                    .flatMap({ sku ->
-                        skuAllocationProcessor.process(
-                            runId = run.id,
-                            requestHash = prepared.requestHash,
-                            sku = sku,
-                            asOfDate = request.asOfDate,
-                            orders = prepared.ordersBySku[sku].orEmpty()
-                        )
-                    }, maxConcurrentSkus)
-                    .collectList()
-                    .flatMap { allocationsBySku ->
-                        Mono.fromCallable {
-                            val allocations = orderByRequest(allocationsBySku.flatten(), request)
-                            allocationRunLifecycleService.completeRun(run.id, prepared.skus.toSet(), allocations)
-                        }.subscribeOn(Schedulers.boundedElastic())
-                    }
-            }
+        val prepared = prepare(request)
+        prepared.result?.let { return it }
+        val run = requireNotNull(prepared.run)
+        val allocationsBySku = Flux.fromIterable(prepared.skus)
+            .flatMap({ sku ->
+                skuAllocationProcessor.process(
+                    runId = run.id,
+                    requestHash = prepared.requestHash,
+                    sku = sku,
+                    asOfDate = request.asOfDate,
+                    orders = prepared.ordersBySku[sku].orEmpty()
+                )
+            }, maxConcurrentSkus)
+            .collectList()
+            .awaitSingle()
+        return withContext(blockingElastic) {
+            val allocations = orderByRequest(allocationsBySku.flatten(), request)
+            allocationRunLifecycleService.completeRun(run.id, prepared.skus.toSet(), allocations)
         }
     }
 
-    fun allocateOpenBackorders(request: AllocationRequest): Mono<AllocationRunResult> {
+    suspend fun allocateOpenBackorders(request: AllocationRequest): AllocationRunResult {
         require(request.runType == AllocationRunType.BACKORDER_FULFILLMENT) {
             "Run type must be BACKORDER_FULFILLMENT for backorder allocation."
         }
-        return Mono.fromCallable {
+        val command = withContext(blockingElastic) {
             allocationRequestValidator.validate(request)
             BackorderAllocationRequest(
                 requestId = request.requestId,
@@ -81,19 +76,20 @@ class AllocationService(
                 trigger = BackorderAllocationTrigger.MANUAL,
                 inboundShipments = request.inboundShipments
             )
-        }.subscribeOn(Schedulers.boundedElastic()).flatMap { allocationBackorderService.allocate(it) }
+        }
+        return allocationBackorderService.allocate(command)
     }
 
-    private fun prepare(request: AllocationRequest): Mono<PreparedAllocation> =
-        Mono.fromCallable {
+    private suspend fun prepare(request: AllocationRequest): PreparedAllocation =
+        withContext(blockingElastic) {
             existingCompletedRun(request, AllocationRunType.NEW_DEMAND)?.let {
-                return@fromCallable PreparedAllocation(result = it)
+                return@withContext PreparedAllocation(result = it)
             }
             allocationRequestValidator.validate(request)
             val requestHash = requestHash(request)
             val run = allocationRunLifecycleService.beginOrResume(request, requestHash)
             if (run.completed) {
-                return@fromCallable PreparedAllocation(
+                return@withContext PreparedAllocation(
                     result = requireNotNull(existingCompletedRun(request, AllocationRunType.NEW_DEMAND))
                 )
             }
@@ -102,7 +98,7 @@ class AllocationService(
             val shipmentsBySku = request.inboundShipments.flatMap { it.lines }.groupBy { it.sku }
             val skus = (ordersBySku.keys + shipmentsBySku.keys).distinct().sorted()
             PreparedAllocation(run = run, requestHash = requestHash, ordersBySku = ordersBySku, skus = skus)
-        }.subscribeOn(Schedulers.boundedElastic())
+        }
 
     private fun existingCompletedRun(
         request: AllocationRequest,

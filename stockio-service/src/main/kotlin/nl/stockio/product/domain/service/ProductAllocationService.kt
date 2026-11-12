@@ -18,10 +18,10 @@ import nl.stockio.api.dto.ResolvedProduct
 import nl.stockio.product.domain.port.ProductRepository
 import nl.stockio.product.infra.ProductEntity
 import nl.stockio.product.infra.ProductKnowledgeChunk
+import kotlinx.coroutines.withContext
+import nl.stockio.util.blockingElastic
 import nl.stockio.product.infra.ProductVectorJdbcTemplateRepository
 import org.springframework.stereotype.Service
-import reactor.core.publisher.Mono
-import reactor.core.scheduler.Schedulers
 
 /**
  * Service responsible for allocating products based on a product query.
@@ -45,19 +45,12 @@ class ProductAllocationService(
         val allocationRequest: AllocationRequest? = null
     )
 
-    fun allocate(request: ProductAllocationRequest): Mono<ProductAllocationResponse> =
-        Mono.fromCallable { resolve(request) }
-            .subscribeOn(Schedulers.boundedElastic())
-            .flatMap { prepared ->
-                val allocationRequest = prepared.allocationRequest
-                if (allocationRequest == null) {
-                    Mono.just(prepared.response)
-                } else {
-                    processingService.process(allocationRequest).map { run ->
-                        prepared.response.copy(allocationRun = run)
-                    }
-                }
-            }
+    suspend fun allocate(request: ProductAllocationRequest): ProductAllocationResponse {
+        val prepared = withContext(blockingElastic) { resolve(request) }
+        val allocationRequest = prepared.allocationRequest ?: return prepared.response
+        val run = processingService.process(allocationRequest)
+        return prepared.response.copy(allocationRun = run)
+    }
 
     private fun resolve(request: ProductAllocationRequest): PreparedProductAllocation {
         validate(request)

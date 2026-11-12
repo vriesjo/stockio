@@ -2,9 +2,11 @@ package nl.stockio.allocation.domain.service
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.verify
+import kotlinx.coroutines.runBlocking
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
@@ -26,7 +28,6 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.dao.CannotAcquireLockException
-import reactor.core.publisher.Mono
 
 class AllocationAdmissionTest {
     private val request = AllocationRequest(UUID.randomUUID(), LocalDate.now(), AllocationRunType.NEW_DEMAND)
@@ -59,7 +60,7 @@ class AllocationAdmissionTest {
                 AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry))
             val run = AllocationRunResult(UUID.randomUUID(), request.requestId, request.runType,
                 request.asOfDate, Instant.now(), 0, emptyList())
-            every { service.allocation(request) } returns Mono.just(run)
+            coEvery { service.allocation(request) } returns run
             val entered = CountDownLatch(1)
             val release = CountDownLatch(1)
             fun block() {
@@ -72,22 +73,26 @@ class AllocationAdmissionTest {
             val executor = Executors.newSingleThreadExecutor()
             try {
                 val work = executor.submit<AllocationRunResult> {
-                    processor.process(request) {
-                        if (blockedPhase == "completion") block()
-                        it
-                    }.block()
+                    runBlocking {
+                        processor.process(request) {
+                            if (blockedPhase == "completion") block()
+                            it
+                        }
+                    }
                 }
                 assertTrue(entered.await(5, TimeUnit.SECONDS))
                 val command = BackorderAllocationRequest(UUID.randomUUID(), request.asOfDate,
                     BackorderAllocationTrigger.STOCK_LEDGER_RECEIPT, setOf("SKU"))
-                assertThrows(AllocationCapacityExceededException::class.java) { processor.process(command).block() }
-                verify(exactly = 1) { service.allocation(any()) }
-                verify(exactly = 0) { backorders.allocate(any()) }
+                assertThrows(AllocationCapacityExceededException::class.java) {
+                    runBlocking { processor.process(command) }
+                }
+                coVerify(exactly = 1) { service.allocation(any()) }
+                coVerify(exactly = 0) { backorders.allocate(any()) }
                 assertEquals(1.0, registry.get("stockio.allocation.admission.active").gauge().value())
                 release.countDown()
                 assertEquals(run, work.get(5, TimeUnit.SECONDS))
                 assertEquals(0.0, registry.get("stockio.allocation.admission.active").gauge().value())
-                assertEquals(run, processor.process(request).block())
+                assertEquals(run, runBlocking { processor.process(request) })
                 assertEquals(1.0, registry.get("stockio.allocation.admission.attempts")
                     .tag("outcome", "saturated").counter().count())
             } finally {
@@ -140,10 +145,10 @@ class AllocationAdmissionTest {
                                 val projection = mockk<StockProjectionProcessor>()
                                 val processor = AllocationProcessor(service, projection, backorders, admission,
                                     AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry))
-                                every { service.allocation(request) } throws CannotAcquireLockException("lock wait timeout")
+                                coEvery { service.allocation(request) } throws CannotAcquireLockException("lock wait timeout")
 
                                 assertThrows(_root_ide_package_.nl.stockio.allocation.domain.performance.AllocationLockContentionException::class.java) {
-                                    processor.process(request)
+                                    runBlocking { processor.process(request) }
                                 }
                             }
                         }

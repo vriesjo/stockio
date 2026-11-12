@@ -1,6 +1,5 @@
 package nl.stockio.product.domain.api
 
-import kotlinx.coroutines.reactor.awaitSingle
 import nl.stockio.api.dto.ProductAllocationRequest
 import nl.stockio.api.dto.ProductAllocationResponse
 import nl.stockio.product.domain.api.generated.ProductAllocationApi
@@ -20,7 +19,7 @@ class ProductAllocationController(
     override suspend fun allocate(
         request: ProductAllocationRequest
     ): ResponseEntity<ProductAllocationResponse> =
-        ResponseEntity.ok(productAllocationService.allocate(request).awaitSingle())
+        ResponseEntity.ok(productAllocationService.allocate(request))
 
     @ExceptionHandler(IllegalArgumentException::class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)

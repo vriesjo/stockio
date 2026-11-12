@@ -1,7 +1,6 @@
 package nl.stockio.allocation.domain.api
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.reactor.awaitSingle
 import java.net.URI
 import java.time.Clock
 import java.time.LocalDate
@@ -45,7 +44,7 @@ class AllocationController(
         if (allocationRedisGateway.enabled || async) {
             return blockingHttp.await { submitWithoutInlineAllocation(request, async) }
         }
-        val syncResult = allocationJobExecutor.execute(UUID.randomUUID(), request).awaitSingle()
+        val syncResult = allocationJobExecutor.execute(UUID.randomUUID(), request)
         val accepted = AllocationJobAccepted(syncResult.allocationRun.runId, request.requestId)
         return ResponseEntity.accepted()
             .location(URI.create("/api/allocation/jobs/${accepted.jobId}"))

@@ -5,9 +5,11 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import io.mockk.Called
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.runBlocking
 import java.sql.SQLException
 import java.time.Instant
 import java.time.LocalDate
@@ -24,7 +26,6 @@ import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
 import org.junit.jupiter.api.Test
 import org.springframework.dao.CannotAcquireLockException
-import reactor.core.publisher.Mono
 
 class AllocationProcessorTest {
     private val registry = SimpleMeterRegistry()
@@ -46,9 +47,11 @@ class AllocationProcessorTest {
     @Test
     fun `wraps a retryable lock failure and does not project`() {
         val failure = CannotAcquireLockException("lock wait timeout")
-        every { allocation.allocation(request) } returns Mono.error(failure)
+        coEvery { allocation.allocation(request) } throws failure
 
-        val wrapped = shouldThrow<AllocationLockContentionException> { processor.process(request).block() }
+        val wrapped = shouldThrow<AllocationLockContentionException> {
+            runBlocking { processor.process(request) }
+        }
 
         wrapped.cause shouldBe failure
         verify { projection wasNot Called }
@@ -56,9 +59,11 @@ class AllocationProcessorTest {
 
     @Test
     fun `propagates a failure that is not lock contention`() {
-        every { allocation.allocation(request) } returns Mono.error(IllegalStateException("bad input"))
+        coEvery { allocation.allocation(request) } throws IllegalStateException("bad input")
 
-        shouldThrow<IllegalStateException> { processor.process(request).block() }.message shouldBe "bad input"
+        shouldThrow<IllegalStateException> {
+            runBlocking { processor.process(request) }
+        }.message shouldBe "bad input"
 
         verify { projection wasNot Called }
     }
@@ -66,10 +71,12 @@ class AllocationProcessorTest {
     @Test
     fun `turns a projection argument failure into a retryable projection exception`() {
         val failure = IllegalArgumentException("bad forecast")
-        every { allocation.allocation(request) } returns Mono.just(run)
+        coEvery { allocation.allocation(request) } returns run
         every { projection.process(today, any()) } throws failure
 
-        val wrapped = shouldThrow<AllocationProjectionException> { processor.process(request).block() }
+        val wrapped = shouldThrow<AllocationProjectionException> {
+            runBlocking { processor.process(request) }
+        }
 
         wrapped.message shouldBe "Allocation run '${run.runId}' completed, but projection refresh failed; retry processing."
         wrapped.cause shouldBe failure
@@ -78,9 +85,11 @@ class AllocationProcessorTest {
     @Test
     fun `wraps lock contention raised while projecting`() {
         val failure = SQLException("lock", "55P03")
-        every { allocation.allocation(request) } returns Mono.just(run)
+        coEvery { allocation.allocation(request) } returns run
         every { projection.process(today, any()) } throws failure
 
-        shouldThrow<AllocationLockContentionException> { processor.process(request).block() }.cause shouldBe failure
+        shouldThrow<AllocationLockContentionException> {
+            runBlocking { processor.process(request) }
+        }.cause shouldBe failure
     }
 }

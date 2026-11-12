@@ -12,6 +12,7 @@ import io.mockk.verify
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
 import nl.stockio.allocation.domain.api.validator.AllocationRequestValidator
 import nl.stockio.allocation.domain.processor.SkuAllocationProcessor
 import nl.stockio.allocation.infra.AllocationRunEntity
@@ -40,7 +41,7 @@ class AllocationServiceTest {
         val completed = result(request)
         every { lifecycle.getRun(request, any()) } returns completed
 
-        service.allocation(request).block() shouldBe completed
+        runBlocking { service.allocation(request) } shouldBe completed
 
         verify { validator wasNot Called }
         verify { documents wasNot Called }
@@ -59,7 +60,9 @@ class AllocationServiceTest {
             Mono.error(IllegalStateException("SKU failure"))
         every { processor.process(run.id, any(), "SKU-B", today, any()) } returns Mono.just(emptyList())
 
-        shouldThrow<IllegalStateException> { service.allocation(request).block() }.message shouldBe "SKU failure"
+        shouldThrow<IllegalStateException> {
+            runBlocking { service.allocation(request) }
+        }.message shouldBe "SKU failure"
 
         verify(exactly = 0) { lifecycle.completeRun(any(), any(), any()) }
     }
@@ -89,7 +92,7 @@ class AllocationServiceTest {
         every { processor.process(run.id, any(), "SKU", today, any()) } returns Mono.just(records)
         every { lifecycle.completeRun(run.id, setOf("SKU"), capture(saved)) } answers { result(request) }
 
-        service.allocation(request).block()
+        runBlocking { service.allocation(request) }
 
         saved.captured.map { it.orderLineId } shouldBe listOf("L-high", "L-late", "L-early", "L-newer")
     }

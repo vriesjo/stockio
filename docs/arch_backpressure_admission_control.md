@@ -106,7 +106,7 @@ The pool is larger than Hikari's default of 10 because status reads, Redis, and 
 Two methods share the scheduler:
 
 - `call` returns a `Mono` and runs the action when WebFlux subscribes. `StockController` and `AllocationAdminController` use it.
-- `await` is the suspend form and moves the coroutine onto the same scheduler. `AllocationController` uses it for asynchronous submission, the Redis fast path, and status reads. `ReservationController` uses it. Inline allocation awaits the R2DBC publisher and does not occupy this scheduler.
+- `await` is the suspend form and moves the coroutine onto the same scheduler. `AllocationController` uses it for asynchronous submission, the Redis fast path, and status reads. `ReservationController` uses it. Inline allocation calls suspending `AllocationJobExecutor.execute`. Prepare, projection, and completion in that call use Reactor's shared bounded elastic scheduler, not `blocking-http`. SKU work stays a `Flux` on the R2DBC pool and is awaited without holding either scheduler.
 
 `AllocationController` and `ReservationController` default the parameter to `BlockingHttp.immediate()`, which runs on the calling thread. Spring injects the pooled bean when it creates them. A unit test that constructs the controller itself keeps the immediate scheduler. `StockController` and `AllocationAdminController` require the bean. `ProductAllocationController` does not use this scheduler.
 

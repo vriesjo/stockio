@@ -1,5 +1,8 @@
 package nl.stockio.allocation.domain.service
 
+import kotlinx.coroutines.reactor.awaitSingle
+import kotlinx.coroutines.withContext
+import nl.stockio.util.blockingElastic
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
 import nl.stockio.allocation.domain.processor.SkuAllocationProcessor
@@ -12,8 +15,6 @@ import nl.stockio.util.requestHash
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import reactor.core.publisher.Flux
-import reactor.core.publisher.Mono
-import reactor.core.scheduler.Schedulers
 
 /**
  * Fulfills open backorders one SKU at a time on the R2DBC pool.
@@ -32,40 +33,34 @@ class AllocationBackorderService(
         require(maxConcurrentSkus > 0) { "The maximum concurrent SKU allocation count must be positive." }
     }
 
-    fun allocate(allocationRequest: BackorderAllocationRequest): Mono<AllocationRunResult> {
+    suspend fun allocate(allocationRequest: BackorderAllocationRequest): AllocationRunResult {
         require(allocationRequest.skuScope == null || allocationRequest.skuScope.all { it.isNotBlank() }) {
             "SKU scope must contain only non-blank SKUs."
         }
-        return prepare(allocationRequest).flatMap { prepared ->
-            val completed = prepared.result
-            if (completed != null) {
-                Mono.just(completed)
-            } else {
-                val run = requireNotNull(prepared.run)
-                Flux.fromIterable(prepared.skus)
-                    .flatMap({ sku ->
-                        skuAllocationProcessor.allocateBackorders(
-                            runId = run.id,
-                            requestHash = prepared.requestHash,
-                            sku = sku,
-                            asOfDate = allocationRequest.asOfDate
-                        )
-                    }, maxConcurrentSkus)
-                    .collectList()
-                    .flatMap { allocations ->
-                        Mono.fromCallable {
-                            val ordered = allocations.flatten().sortedWith(
-                                compareBy<AllocationRecord> { it.priority }.thenBy { it.placedDate }
-                            )
-                            allocationRunLifecycleService.completeRun(run.id, prepared.skus.toSet(), ordered)
-                        }.subscribeOn(Schedulers.boundedElastic())
-                    }
-            }
+        val prepared = prepare(allocationRequest)
+        prepared.result?.let { return it }
+        val run = requireNotNull(prepared.run)
+        val allocations = Flux.fromIterable(prepared.skus)
+            .flatMap({ sku ->
+                skuAllocationProcessor.allocateBackorders(
+                    runId = run.id,
+                    requestHash = prepared.requestHash,
+                    sku = sku,
+                    asOfDate = allocationRequest.asOfDate
+                )
+            }, maxConcurrentSkus)
+            .collectList()
+            .awaitSingle()
+        return withContext(blockingElastic) {
+            val ordered = allocations.flatten().sortedWith(
+                compareBy<AllocationRecord> { it.priority }.thenBy { it.placedDate }
+            )
+            allocationRunLifecycleService.completeRun(run.id, prepared.skus.toSet(), ordered)
         }
     }
 
-    private fun prepare(allocationRequest: BackorderAllocationRequest): Mono<PreparedBackorderAllocation> =
-        Mono.fromCallable {
+    private suspend fun prepare(allocationRequest: BackorderAllocationRequest): PreparedBackorderAllocation =
+        withContext(blockingElastic) {
             val request = AllocationRequest(
                 requestId = allocationRequest.requestId,
                 asOfDate = allocationRequest.asOfDate,
@@ -78,11 +73,11 @@ class AllocationBackorderService(
                     previousRun.runType == AllocationRunType.BACKORDER_FULFILLMENT &&
                     previousRun.requestHash == requestHash &&
                     previousRun.requestHash == requestHash(newRequest)
-            }?.let { return@fromCallable PreparedBackorderAllocation(result = it) }
+            }?.let { return@withContext PreparedBackorderAllocation(result = it) }
 
             val run = allocationRunLifecycleService.beginOrResume(request, requestHash)
             if (run.completed) {
-                return@fromCallable PreparedBackorderAllocation(result = allocationRunLifecycleService.getRun(run.id))
+                return@withContext PreparedBackorderAllocation(result = allocationRunLifecycleService.getRun(run.id))
             }
             allocationDocumentService.initialize(run.id, request)
             val operationSkus = allocationRunLifecycleService.getOperationSkus(run.id)
@@ -91,7 +86,7 @@ class AllocationBackorderService(
                 .distinct()
                 .sorted()
             PreparedBackorderAllocation(run = run, requestHash = requestHash, skus = skus)
-        }.subscribeOn(Schedulers.boundedElastic())
+        }
 
     private class PreparedBackorderAllocation(
         val result: AllocationRunResult? = null,

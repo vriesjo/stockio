@@ -1,5 +1,6 @@
 package nl.stockio.allocation.domain.service
 
+import kotlinx.coroutines.runBlocking
 import com.fasterxml.jackson.databind.ObjectMapper
 import jakarta.persistence.EntityManager
 import java.nio.file.Files
@@ -702,21 +703,21 @@ class AllocationIntegrationTest {
             admission, limits)
         val request = reservationRequest("ADMISSION-REFUSED", 1)
         admission.execute(request.runType) {
-            Assertions.assertThrows(AllocationCapacityExceededException::class.java) { guarded.process(request).block()!! }
+            Assertions.assertThrows(AllocationCapacityExceededException::class.java) { runBlocking { guarded.process(request) } }
             Assertions.assertEquals(0L, jdbcTemplate.queryForObject(
                 "SELECT count(*) FROM allocation_run WHERE request_id = ?", Long::class.java, request.requestId) ?: -1L)
             Assertions.assertFalse(claimRepository.existsById("ADMISSION-REFUSED"))
             Assertions.assertEquals(0L, stockReservationRepository.count())
             Assertions.assertEquals(0L, backorderRepository.count())
         }
-        guarded.process(request).block()!!
+        runBlocking { guarded.process(request) }
         Assertions.assertTrue(claimRepository.existsById("ADMISSION-REFUSED"))
     }
 
     @Test
     fun `cached allocation completion is read without rewriting the result or running ledger`() {
         val request = reservationRequest("CACHED-JOB-RESULT", 1)
-        val run = allocationService.allocation(request).block()!!
+        val run = runBlocking { allocationService.allocation(request) }
         val completion = AllocationCompletionResult(jobId = request.requestId, allocationRun = run)
         val resultJson = objectMapper.writeValueAsString(completion)
         jobResultRepository.save(AllocationJobResultEntity(jobId = request.requestId, resultJson = resultJson))
@@ -730,7 +731,7 @@ class AllocationIntegrationTest {
         Mockito.`when`(clock.zone).thenReturn(ZoneId.of("UTC"))
         val firstDate = LocalDate.of(2026, 10, 20)
         setNow(Instant.parse("2026-10-20T23:59:00Z"))
-        allocationService.allocation(
+        runBlocking { allocationService.allocation(
             AllocationRequest(
                 requestId = UUID.randomUUID(), asOfDate = firstDate, runType = AllocationRunType.NEW_DEMAND,
                 inboundShipments = listOf(
@@ -738,7 +739,7 @@ class AllocationIntegrationTest {
                     singleLineShipment("MIDNIGHT-SECOND", "MAKI-ZALM", 3, firstDate.plusDays(1))
                 )
             )
-        ).block()!!
+        ) }
         ledgerSyncJob.execute()
         Assertions.assertEquals(firstDate, stockLedgerSyncStatusRepository.getSyncStatus().snapshotDate)
         Assertions.assertEquals(2, stockRepository.findAll().sumOf { it.quantityOnHand })
@@ -777,13 +778,13 @@ class AllocationIntegrationTest {
     @Test
     fun `backorder orchestration refreshes holds without synchronizing stock`() {
         val today = LocalDate.now()
-        allocationService.allocation(reservationRequest("BACKORDER-PROJECTION", 5)).block()!!
+        runBlocking { allocationService.allocation(reservationRequest("BACKORDER-PROJECTION", 5)) }
         stockRepository.save(
             StockEntity(sku = "MAKI-ZALM", lotId = "BACKORDER-PROJECTION-LOT", receivedDate = today, quantityOnHand = 3)
         )
-        val run = processingService.process(AllocationRequest(
+        val run = runBlocking { processingService.process(AllocationRequest(
             requestId = UUID.randomUUID(), asOfDate = today, runType = AllocationRunType.BACKORDER_FULFILLMENT
-        )).block()!!
+        )) }
         Assertions.assertEquals(3, run.allocations.single().allocatedFromInventory)
         Assertions.assertEquals(3, snapshotRepository.findLotsByDate(today).single().quantityReserved)
         Assertions.assertEquals(3, stockRepository.findAll().single().quantityOnHand)
@@ -802,10 +803,10 @@ class AllocationIntegrationTest {
     @Test
     fun `overlapping scheduled and manual sync receive each shipment only once`() {
         val today = LocalDate.now()
-        allocationService.allocation(AllocationRequest(
+        runBlocking { allocationService.allocation(AllocationRequest(
             requestId = UUID.randomUUID(), asOfDate = today, runType = AllocationRunType.NEW_DEMAND,
             inboundShipments = listOf(singleLineShipment("CONCURRENT-SYNC", "MAKI-ZALM", 5, today))
-        )).block()!!
+        )) }
         val executor = Executors.newFixedThreadPool(2)
         try {
             val scheduled = executor.submit { ledgerSyncJob.execute() }
@@ -823,10 +824,10 @@ class AllocationIntegrationTest {
     @Test
     fun `rolled back ledger sync preserves previous snapshots receipt state and success timestamp`() {
         val today = LocalDate.now()
-        processingService.process(AllocationRequest(
+        runBlocking { processingService.process(AllocationRequest(
             requestId = UUID.randomUUID(), asOfDate = today, runType = AllocationRunType.NEW_DEMAND,
             inboundShipments = listOf(singleLineShipment("ROLLBACK-SYNC", "MAKI-ZALM", 5, today))
-        )).block()!!
+        )) }
         val snapshots = snapshotRepository.findDailyByDate(today)
         val owner = UUID.randomUUID()
         val run = ledgerRunRepository.begin(today, owner, clock.instant())
@@ -909,8 +910,8 @@ class AllocationIntegrationTest {
         ).block()!!
         Assertions.assertEquals(firstSkuResult, retriedSkuResult)
 
-        val firstRun = allocationService.allocation(request).block()!!
-        val retryRun = allocationService.allocation(request).block()!!
+        val firstRun = runBlocking { allocationService.allocation(request) }
+        val retryRun = runBlocking { allocationService.allocation(request) }
 
         Assertions.assertEquals(firstRun.runId, retryRun.runId)
         Assertions.assertEquals(listOf("ORDER-SKU-A", "ORDER-SKU-B"), firstRun.allocations.map { it.orderId })
@@ -992,27 +993,27 @@ class AllocationIntegrationTest {
             ),
             runType = AllocationRunType.NEW_DEMAND
         )
-        val initialRun = allocationService.allocation(allocationRequest).block()!!
-        val retryRun = allocationService.allocation(allocationRequest).block()!!
+        val initialRun = runBlocking { allocationService.allocation(allocationRequest) }
+        val retryRun = runBlocking { allocationService.allocation(allocationRequest) }
 
         Assertions.assertEquals(initialRun.runId, retryRun.runId)
         Assertions.assertEquals(2, retryRun.openBackorderCount)
         Assertions.assertThrows(IllegalArgumentException::class.java) {
-            allocationService.allocation(
+            runBlocking { allocationService.allocation(
                 allocationRequest.copy(
                     demandOrders = allocationRequest.demandOrders.map {
                         if (it.orderId == "ORDER-HIGH") it.copy(customer = "Changed Customer") else it
                     }
                 )
-            ).block()!!
+            ) }
         }
         Assertions.assertThrows(IllegalArgumentException::class.java) {
-            allocationService.allocation(
+            runBlocking { allocationService.allocation(
                 allocationRequest.copy(
                     requestId = UUID.fromString("33333333-3333-3333-3333-333333333333"),
                     demandOrders = listOf(allocationRequest.demandOrders.first())
                 )
-            ).block()!!
+            ) }
         }
         Assertions.assertEquals(AllocationRunType.NEW_DEMAND, initialRun.runType)
         Assertions.assertEquals(
@@ -1059,8 +1060,8 @@ class AllocationIntegrationTest {
             ),
             runType = AllocationRunType.BACKORDER_FULFILLMENT
         )
-        val fulfillmentRun = allocationService.allocateOpenBackorders(fulfillmentRequest).block()!!
-        val fulfillmentRetry = allocationService.allocateOpenBackorders(fulfillmentRequest).block()!!
+        val fulfillmentRun = runBlocking { allocationService.allocateOpenBackorders(fulfillmentRequest) }
+        val fulfillmentRetry = runBlocking { allocationService.allocateOpenBackorders(fulfillmentRequest) }
 
         Assertions.assertEquals(fulfillmentRun.runId, fulfillmentRetry.runId)
         Assertions.assertEquals(AllocationRunType.BACKORDER_FULFILLMENT, fulfillmentRun.runType)
@@ -1108,7 +1109,7 @@ class AllocationIntegrationTest {
                 quantityOnHand = 10
             )
         )
-        val result = allocationService.allocation(
+        val result = runBlocking { allocationService.allocation(
             AllocationRequest(
                 requestId = UUID.fromString("44444444-4444-4444-4444-444444444444"),
                 asOfDate = today,
@@ -1134,7 +1135,7 @@ class AllocationIntegrationTest {
                 ),
                 runType = AllocationRunType.NEW_DEMAND
             )
-        ).block()!!
+        ) }
         markConfirmed("PROJECTION-ORDER-1", "PROJECTION-ORDER-2")
         stockProjectionProcessor.process(today)
 
@@ -1261,7 +1262,7 @@ class AllocationIntegrationTest {
                 quantityOnHand = 6
             )
         )
-        allocationService.allocation(
+        runBlocking { allocationService.allocation(
             AllocationRequest(
                 requestId = UUID.fromString("55555555-5555-5555-5555-555555555555"),
                 asOfDate = today,
@@ -1287,7 +1288,7 @@ class AllocationIntegrationTest {
                 ),
                 runType = AllocationRunType.NEW_DEMAND
             )
-        ).block()!!
+        ) }
 
         markConfirmed("DUE-ORDER", "FUTURE-ORDER")
         stockProjectionProcessor.process(today)
@@ -1328,7 +1329,7 @@ class AllocationIntegrationTest {
             ),
             runType = AllocationRunType.NEW_DEMAND
         )
-        allocationService.allocation(orderRequest).block()!!
+        runBlocking { allocationService.allocation(orderRequest) }
 
         stockProjectionProcessor.process(today)
         stockLedgerProcessor.process(ProcessDailyStockRequest(today))
@@ -1356,7 +1357,7 @@ class AllocationIntegrationTest {
             expectedQuantity = 5,
             expectedArrivalDate = today.plusDays(1)
         )
-        allocationService.allocation(
+        runBlocking { allocationService.allocation(
             AllocationRequest(
                 requestId = UUID.fromString("77777777-7777-7777-7777-777777777777"),
                 asOfDate = today,
@@ -1374,9 +1375,9 @@ class AllocationIntegrationTest {
                 inboundShipments = listOf(shipment),
                 runType = AllocationRunType.NEW_DEMAND
             )
-        ).block()!!
+        ) }
 
-        val allocation = allocationService.allocation(
+        val allocation = runBlocking { allocationService.allocation(
             AllocationRequest(
                 requestId = UUID.fromString("88888888-8888-8888-8888-888888888888"),
                 asOfDate = today,
@@ -1393,7 +1394,7 @@ class AllocationIntegrationTest {
                 ),
                 runType = AllocationRunType.NEW_DEMAND
             )
-        ).block()!!.allocations.single()
+        ) }.allocations.single()
 
         Assertions.assertEquals(4, allocation.allocatedFromInbound)
         Assertions.assertEquals(0, allocation.backorderedQuantity)
@@ -1449,9 +1450,9 @@ class AllocationIntegrationTest {
 
         Assertions.assertEquals(
             4,
-            allocationService.allocation(firstRequest).block()!!.allocations.single().allocatedFromInventory
+            runBlocking { allocationService.allocation(firstRequest) }.allocations.single().allocatedFromInventory
         )
-        val secondAllocation = allocationService.allocation(secondRequest).block()!!.allocations.single()
+        val secondAllocation = runBlocking { allocationService.allocation(secondRequest) }.allocations.single()
 
         Assertions.assertEquals(1, secondAllocation.allocatedFromInventory)
         Assertions.assertEquals(1, secondAllocation.backorderedQuantity)
@@ -1461,11 +1462,11 @@ class AllocationIntegrationTest {
     @Test
     fun `expiry releases the whole order at its deadline without changing supply or history`() {
         val today = LocalDate.now()
-        allocationService.allocation(
+        runBlocking { allocationService.allocation(
             reservationRequest("KEEP-INBOUND", 2).copy(
                 inboundShipments = listOf(singleLineShipment("EXPIRY-SHIPMENT", "MAKI-ZALM", 6, today))
             )
-        ).block()!!
+        ) }
         stockRepository.save(
             StockEntity(
                 sku = "MAKI-ZALM",
@@ -1474,10 +1475,10 @@ class AllocationIntegrationTest {
                 quantityOnHand = 6
             )
         )
-        allocationService.allocation(reservationRequest("KEEP-STOCK", 2)).block()!!
+        runBlocking { allocationService.allocation(reservationRequest("KEEP-STOCK", 2)) }
         markConfirmed("KEEP-INBOUND", "KEEP-STOCK")
         val request = reservationRequest("EXPIRE-MIXED", 10)
-        val run = allocationService.allocation(request).block()!!
+        val run = runBlocking { allocationService.allocation(request) }
         val claim = claimRepository.findById("EXPIRE-MIXED").orElseThrow()
         val deadline = requireNotNull(claim.reservationExpiresAt)
         Assertions.assertEquals(Duration.ofMinutes(30), Duration.between(claim.reservationCreatedAt, deadline))
@@ -1508,7 +1509,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(listOf("KEEP-STOCK"), stockReservationRepository.findAll().map { it.orderId })
         Assertions.assertEquals(OrderReservationStatus.EXPIRED,
             claimRepository.findById("EXPIRE-MIXED").orElseThrow().orderReservationStatus)
-        Assertions.assertEquals(run, allocationService.allocation(request).block()!!)
+        Assertions.assertEquals(run, runBlocking { allocationService.allocation(request) })
         Assertions.assertEquals(deadline,
             claimRepository.findById("EXPIRE-MIXED").orElseThrow().reservationExpiresAt)
         Assertions.assertEquals(2, stockRepository.findAll().single().quantityReserved)
@@ -1528,7 +1529,7 @@ class AllocationIntegrationTest {
         stockRepository.save(
             StockEntity(sku = "MAKI-ZALM", lotId = "PENDING-LOT", quantityOnHand = 3, receivedDate = today)
         )
-        allocationService.allocation(reservationRequest("PENDING-DELIVERY", 5)).block()!!
+        runBlocking { allocationService.allocation(reservationRequest("PENDING-DELIVERY", 5)) }
         stockProjectionProcessor.process(today)
         val snapshot = snapshotRepository.findDailyByDate(today).single()
         Assertions.assertEquals(3, snapshot.closingStock)
@@ -1551,7 +1552,7 @@ class AllocationIntegrationTest {
         val request = reservationRequest("PENDING-RECEIPT", 3).copy(
             inboundShipments = listOf(singleLineShipment("PENDING-SHIPMENT", "MAKI-ZALM", 5, today))
         )
-        allocationService.allocation(request).block()!!
+        runBlocking { allocationService.allocation(request) }
         val deadline = requireNotNull(claimRepository.findById("PENDING-RECEIPT").orElseThrow().reservationExpiresAt)
         stockProjectionProcessor.process(today)
         stockLedgerProcessor.process(ProcessDailyStockRequest(today))
@@ -1576,31 +1577,31 @@ class AllocationIntegrationTest {
     @Test
     fun `backorder fulfillment keeps the original deadline and skips overdue orders`() {
         val today = LocalDate.now()
-        allocationService.allocation(reservationRequest("PENDING-BACKORDER", 5)).block()!!
+        runBlocking { allocationService.allocation(reservationRequest("PENDING-BACKORDER", 5)) }
         val deadline = requireNotNull(
             claimRepository.findById("PENDING-BACKORDER").orElseThrow().reservationExpiresAt
         )
         stockRepository.save(StockEntity(sku = "MAKI-ZALM", lotId = "RESTOCK-1", quantityOnHand = 2))
         setNow(deadline.minusSeconds(1))
-        val fulfillment = allocationService.allocateOpenBackorders(
+        val fulfillment = runBlocking { allocationService.allocateOpenBackorders(
             AllocationRequest(
                 requestId = UUID.randomUUID(),
                 asOfDate = today,
                 runType = AllocationRunType.BACKORDER_FULFILLMENT
             )
-        ).block()!!
+        ) }
         Assertions.assertEquals(2, fulfillment.allocations.single().allocatedFromInventory)
         Assertions.assertEquals(deadline,
             claimRepository.findById("PENDING-BACKORDER").orElseThrow().reservationExpiresAt)
         stockRepository.save(StockEntity(sku = "MAKI-ZALM", lotId = "RESTOCK-2", quantityOnHand = 3))
         setNow(deadline)
-        val overdueFulfillment = allocationService.allocateOpenBackorders(
+        val overdueFulfillment = runBlocking { allocationService.allocateOpenBackorders(
             AllocationRequest(
                 requestId = UUID.randomUUID(),
                 asOfDate = today,
                 runType = AllocationRunType.BACKORDER_FULFILLMENT
             )
-        ).block()!!
+        ) }
         Assertions.assertTrue(overdueFulfillment.allocations.isEmpty())
         Assertions.assertEquals(2, stockRepository.findAll().sumOf { it.quantityReserved })
         Assertions.assertEquals(1, expiryService.expireBatch())
@@ -1611,7 +1612,7 @@ class AllocationIntegrationTest {
     @Test
     fun `expiry batches cover fully backordered orders and ledger refresh accepts the empty result`() {
         val today = LocalDate.now()
-        (1..3).forEach { allocationService.allocation(reservationRequest("EMPTY-$it", 1)).block()!! }
+        (1..3).forEach { runBlocking { allocationService.allocation(reservationRequest("EMPTY-$it", 1)) } }
         val deadline = requireNotNull(claimRepository.findById("EMPTY-1").orElseThrow().reservationExpiresAt)
         setNow(deadline)
         Assertions.assertEquals(2, expiryService.expireBatch())
@@ -1626,7 +1627,7 @@ class AllocationIntegrationTest {
 
     @Test
     fun `background expiry job drains overdue batches through transactional services`() {
-        (1..3).forEach { allocationService.allocation(reservationRequest("JOB-EXPIRY-$it", 1)).block()!! }
+        (1..3).forEach { runBlocking { allocationService.allocation(reservationRequest("JOB-EXPIRY-$it", 1)) } }
         setNow(requireNotNull(claimRepository.findById("JOB-EXPIRY-1").orElseThrow().reservationExpiresAt))
         val jobId = jobScheduler.enqueue { expiryJob.execute() }
 
@@ -1642,7 +1643,7 @@ class AllocationIntegrationTest {
     fun `expiry rolls back source changes and lifecycle when projection rebuild fails`() {
         val today = LocalDate.now()
         stockRepository.save(StockEntity(sku = "MAKI-ZALM", lotId = "CONFLICT-LOT", quantityOnHand = 4))
-        allocationService.allocation(reservationRequest("ROLLBACK-ORDER", 5)).block()!!
+        runBlocking { allocationService.allocation(reservationRequest("ROLLBACK-ORDER", 5)) }
         jdbcTemplate.update("INSERT INTO inbound_shipment (shipment_id) VALUES ('CONFLICT-SHIPMENT')")
         inboundSupplyRepository.save(
             InboundSupplyEntity(
@@ -1677,7 +1678,7 @@ class AllocationIntegrationTest {
     fun `ledger expires overdue holds instead of applying a stale reserved snapshot`() {
         val today = LocalDate.now()
         stockRepository.save(StockEntity(sku = "MAKI-ZALM", lotId = "STALE-LOT", quantityOnHand = 5))
-        allocationService.allocation(reservationRequest("STALE-ORDER", 3)).block()!!
+        runBlocking { allocationService.allocation(reservationRequest("STALE-ORDER", 3)) }
         stockProjectionProcessor.process(today)
         Assertions.assertEquals(3, snapshotRepository.findLotsByDate(today).single().quantityReserved)
         setNow(requireNotNull(claimRepository.findById("STALE-ORDER").orElseThrow().reservationExpiresAt))
@@ -1720,7 +1721,7 @@ class AllocationIntegrationTest {
         setNow(deadline)
         Assertions.assertEquals(1, expiryService.expireBatch())
 
-        val result = allocationService.allocation(request).block()!!
+        val result = runBlocking { allocationService.allocation(request) }
         Assertions.assertEquals(2, result.allocations.first().allocatedFromInventory)
         Assertions.assertEquals(0, stockRepository.findAll().single().quantityReserved)
         Assertions.assertEquals(OrderReservationStatus.EXPIRED,
@@ -1847,7 +1848,7 @@ class AllocationIntegrationTest {
                 InboundShipmentLine("SUPPLY-FUTURE", "MAKI-ZALM", 7, today.plusDays(1), "SECONDARY")
             )))
         )
-        val run = allocationService.allocation(request).block()!!
+        val run = runBlocking { allocationService.allocation(request) }
         Assertions.assertEquals(listOf("MULTI-Z1", "MULTI-Z2", "MULTI-T1", "MULTI-T2"),
             run.allocations.map { it.orderLineId })
         Assertions.assertEquals(1, claimRepository.count())
@@ -1878,7 +1879,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals(0, backorderRepository.count())
         Assertions.assertEquals(0, stockRepository.findAll().sumOf { it.quantityReserved })
         Assertions.assertEquals(14, stockRepository.findAll().sumOf { it.quantityOnHand })
-        Assertions.assertEquals(run, allocationService.allocation(request).block()!!)
+        Assertions.assertEquals(run, runBlocking { allocationService.allocation(request) })
     }
 
     @Test
@@ -1892,34 +1893,34 @@ class AllocationIntegrationTest {
         ))
         val request = AllocationRequest(UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
             listOf(order), listOf(shipment))
-        allocationService.allocation(request).block()!!
+        runBlocking { allocationService.allocation(request) }
         Assertions.assertThrows(IllegalArgumentException::class.java) {
-            allocationService.allocation(request.copy(
+            runBlocking { allocationService.allocation(request.copy(
                 requestId = UUID.randomUUID(), demandOrders = listOf(order.copy(orderId = "OTHER"))
-            )).block()!!
+            )) }
         }
         Assertions.assertFalse(claimRepository.existsById("OTHER"))
         Assertions.assertThrows(IllegalArgumentException::class.java) {
-            allocationService.allocation(request.copy(
+            runBlocking { allocationService.allocation(request.copy(
                 requestId = UUID.randomUUID(), demandOrders = emptyList(),
                 inboundShipments = listOf(shipment.copy(lines = shipment.lines + InboundShipmentLine(
                     "EXTRA-SUPPLY", "MAKI-TONIJN", 1, today
                 )))
-            )).block()!!
+            )) }
         }
         Assertions.assertThrows(IllegalArgumentException::class.java) {
-            allocationService.allocation(request.copy(
+            runBlocking { allocationService.allocation(request.copy(
                 requestId = UUID.randomUUID(), demandOrders = listOf(order.copy(
                     orderId = "DUPLICATE", lines = order.lines + order.lines
                 ))
-            )).block()!!
+            )) }
         }
         stockLedgerProcessor.process(ProcessDailyStockRequest(today))
         Assertions.assertThrows(IllegalArgumentException::class.java) {
-            allocationService.allocation(request.copy(
+            runBlocking { allocationService.allocation(request.copy(
                 requestId = UUID.randomUUID(), demandOrders = emptyList(),
                 inboundShipments = listOf(shipment.copy(lines = listOf(shipment.lines.single().copy(expectedQuantity = 6))))
-            )).block()!!
+            )) }
         }
         val received = inboundSupplyRepository.findById("OWNED-SUPPLY").orElseThrow()
         Assertions.assertTrue(received.received)
@@ -1937,14 +1938,14 @@ class AllocationIntegrationTest {
                 DemandOrderLine("BACKORDER-A", "MAKI-ZALM", 2, today)
             )))
         )
-        val run = allocationService.allocation(request).block()!!
+        val run = runBlocking { allocationService.allocation(request) }
         val deadline = claimRepository.findById("BACKORDER-HEADER").orElseThrow().reservationExpiresAt
         Assertions.assertEquals(1, run.openBackorderCount)
         Assertions.assertEquals(2, backorderRepository.count())
         jdbcTemplate.update("UPDATE open_backorder SET created_at = CURRENT_TIMESTAMP")
         stockRepository.save(StockEntity(sku = "MAKI-ZALM", lotId = "BACKORDER-STOCK", quantityOnHand = 3))
         val fulfillmentRequest = AllocationRequest(UUID.randomUUID(), today, AllocationRunType.BACKORDER_FULFILLMENT)
-        val fulfillment = allocationService.allocateOpenBackorders(fulfillmentRequest).block()!!
+        val fulfillment = runBlocking { allocationService.allocateOpenBackorders(fulfillmentRequest) }
         Assertions.assertEquals(listOf("BACKORDER-Z", "BACKORDER-A"), fulfillment.allocations.map { it.orderLineId })
         Assertions.assertEquals(listOf(2, 1), fulfillment.allocations.map { it.allocatedFromInventory })
         Assertions.assertEquals(2, stockReservationRepository.count())
@@ -1952,7 +1953,7 @@ class AllocationIntegrationTest {
         Assertions.assertEquals("BACKORDER-A", backorderRepository.findAll().single().orderLineId)
         Assertions.assertEquals(deadline,
             claimRepository.findById("BACKORDER-HEADER").orElseThrow().reservationExpiresAt)
-        Assertions.assertEquals(fulfillment, allocationService.allocateOpenBackorders(fulfillmentRequest).block()!!)
+        Assertions.assertEquals(fulfillment, runBlocking { allocationService.allocateOpenBackorders(fulfillmentRequest) })
     }
 
     @Test
@@ -1964,7 +1965,7 @@ class AllocationIntegrationTest {
             val attempts = listOf(request, request.copy(requestId = UUID.randomUUID())).map { candidate ->
                 executor.submit<Boolean> {
                     try {
-                        allocationService.allocation(candidate).block()!!
+                        runBlocking { allocationService.allocation(candidate) }
                         true
                     } catch (exception: IllegalArgumentException) {
                         Assertions.assertTrue(requireNotNull(exception.message).contains("already been submitted"))
@@ -2103,9 +2104,9 @@ class AllocationIntegrationTest {
     fun `inbound amendments wait for allocation and validate the committed reserved quantity`() {
         val today = LocalDate.now()
         val shipment = singleLineShipment("AMENDMENT-SHIP", "MAKI-ZALM", 100, today)
-        allocationService.allocation(AllocationRequest(
+        runBlocking { allocationService.allocation(AllocationRequest(
             UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND, inboundShipments = listOf(shipment)
-        )).block()!!
+        )) }
         val request = reservationRequest("AMENDMENT-ORDER", 50)
         val run = allocationRunLifecycleService.beginOrResume(request, requestHash(request))
         documentService.initialize(run.id, request)
@@ -2253,11 +2254,11 @@ class AllocationIntegrationTest {
         val run = allocationRunLifecycleService.beginOrResume(request, requestHash(request))
         documentService.initialize(run.id, request)
         val deadline = claimRepository.findById("INITIALIZED-ORDER").orElseThrow().reservationExpiresAt
-        allocationService.allocation(AllocationRequest(
+        runBlocking { allocationService.allocation(AllocationRequest(
             UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
             inboundShipments = listOf(shipment.copy(lines = listOf(shipment.lines.single().copy(expectedQuantity = 7))))
-        )).block()!!
-        allocationService.allocation(request).block()!!
+        )) }
+        runBlocking { allocationService.allocation(request) }
         Assertions.assertEquals(7, inboundSupplyRepository.findById("INITIALIZED-SUPPLY").orElseThrow().expectedQuantity)
         Assertions.assertEquals(deadline,
             claimRepository.findById("INITIALIZED-ORDER").orElseThrow().reservationExpiresAt)
@@ -2379,13 +2380,13 @@ class AllocationIntegrationTest {
     @Test
     fun `scoped horizons and empty replacement never alter another SKU forecast`() {
         val today = LocalDate.now(clock)
-        allocationService.allocation(AllocationRequest(
+        runBlocking { allocationService.allocation(AllocationRequest(
             UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
             inboundShipments = listOf(
                 singleLineShipment("HORIZON-T", "MAKI-TONIJN", 5, today.plusDays(3)),
                 singleLineShipment("HORIZON-Z", "MAKI-ZALM", 4, today)
             )
-        )).block()!!
+        )) }
         stockProjectionProcessor.process(today)
         val other = snapshotRepository.findDailyBySkuAndWarehouse("MAKI-TONIJN", "MAIN")
         Assertions.assertEquals(4, other.size)
@@ -2405,13 +2406,13 @@ class AllocationIntegrationTest {
         Mockito.`when`(clock.zone).thenReturn(ZoneId.of("UTC"))
         setNow(Instant.parse("2026-10-20T10:00:00Z"))
         val today = LocalDate.now(clock)
-        allocationService.allocation(AllocationRequest(
+        runBlocking { allocationService.allocation(AllocationRequest(
             UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
             inboundShipments = listOf(
                 singleLineShipment("PARTIAL-T", "MAKI-TONIJN", 5, today),
                 singleLineShipment("PARTIAL-Z", "MAKI-ZALM", 4, today)
             )
-        )).block()!!
+        )) }
         val conflict = inboundSupplyRepository.findById("PARTIAL-Z").orElseThrow()
         stockRepository.save(
             StockEntity(sku = "MAKI-ZALM", lotId = conflict.lotId, receivedDate = today, quantityOnHand = 1)
@@ -2454,10 +2455,10 @@ class AllocationIntegrationTest {
     @Test
     fun `expired coordinator is fenced before applying work and committed work survives lost aggregation`() {
         val today = LocalDate.now(clock)
-        allocationService.allocation(AllocationRequest(
+        runBlocking { allocationService.allocation(AllocationRequest(
             UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
             inboundShipments = listOf(singleLineShipment("FENCED-RECEIPT", "MAKI-ZALM", 5, today))
-        )).block()!!
+        )) }
         val previousOwner = UUID.randomUUID()
         val first = ledgerRunRepository.begin(today, previousOwner, clock.instant())
         jdbcTemplate.update("UPDATE stock_ledger_coordinator SET lease_until = ?", java.sql.Timestamp.from(clock.instant().minusSeconds(1)))
@@ -2487,13 +2488,13 @@ class AllocationIntegrationTest {
             StockEntity(sku = "MAKI-ZALM", lotId = "EXPIRY-Z", receivedDate = today, quantityOnHand = 5),
             StockEntity(sku = "MAKI-TONIJN", lotId = "EXPIRY-T", receivedDate = today, quantityOnHand = 5)
         ))
-        allocationService.allocation(AllocationRequest(
+        runBlocking { allocationService.allocation(AllocationRequest(
             UUID.randomUUID(), today, AllocationRunType.NEW_DEMAND,
             demandOrders = listOf(DemandOrder("EXPIRY-SORTED", "Expiry", 1, today, listOf(
                 DemandOrderLine("EXPIRY-Z", "MAKI-ZALM", 2, today),
                 DemandOrderLine("EXPIRY-T", "MAKI-TONIJN", 3, today)
             )))
-        )).block()!!
+        )) }
         setNow(claimRepository.findById("EXPIRY-SORTED").orElseThrow().reservationExpiresAt!!)
         val executor = Executors.newSingleThreadExecutor()
         val backend = ArrayBlockingQueue<Int>(1)
