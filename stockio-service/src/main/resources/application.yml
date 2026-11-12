@@ -166,6 +166,7 @@ stockio:
       capacity-backoff-max: ${ALLOCATION_KAFKA_CAPACITY_BACKOFF_MAX:10s}
       retry-backoff: ${ALLOCATION_KAFKA_RETRY_BACKOFF:1s}
       retry-attempts: ${ALLOCATION_KAFKA_RETRY_ATTEMPTS:3}
+      schema-registry-url: ${SCHEMA_REGISTRY_URL:http://localhost:8081}
     redis:
       enabled: ${STOCKIO_REDIS_PATH_ENABLED:false}
       hold-ttl: ${STOCKIO_REDIS_PATH_HOLD_TTL:10m}

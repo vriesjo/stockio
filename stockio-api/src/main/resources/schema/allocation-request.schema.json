@@ -1,0 +1,151 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AllocationRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requestId", "asOfDate", "runType"],
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "asOfDate": {
+      "type": "string",
+      "format": "date"
+    },
+    "runType": {
+      "type": "string",
+      "enum": ["NEW_DEMAND", "BACKORDER_FULFILLMENT"]
+    },
+    "demandOrders": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/DemandOrder"
+      }
+    },
+    "inboundShipments": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/InboundShipment"
+      }
+    }
+  },
+  "definitions": {
+    "DemandOrder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orderId", "customer", "priority", "placedDate", "lines"],
+      "properties": {
+        "orderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "\\S"
+        },
+        "customer": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "placedDate": {
+          "type": "string",
+          "format": "date"
+        },
+        "lines": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/DemandOrderLine"
+          }
+        }
+      }
+    },
+    "DemandOrderLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orderLineId", "sku", "requestedQuantity", "requiredDeliveryDate"],
+      "properties": {
+        "orderLineId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "\\S"
+        },
+        "sku": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "\\S"
+        },
+        "requestedQuantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requiredDeliveryDate": {
+          "type": "string",
+          "format": "date"
+        }
+      }
+    },
+    "InboundShipment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shipmentId", "lines"],
+      "properties": {
+        "shipmentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "\\S"
+        },
+        "lines": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/InboundShipmentLine"
+          }
+        }
+      }
+    },
+    "InboundShipmentLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shipmentLineId", "sku", "expectedQuantity", "expectedArrivalDate"],
+      "properties": {
+        "shipmentLineId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "\\S"
+        },
+        "sku": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "\\S"
+        },
+        "expectedQuantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "expectedArrivalDate": {
+          "type": "string",
+          "format": "date"
+        },
+        "warehouseCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50,
+          "pattern": "\\S",
+          "default": "MAIN"
+        }
+      }
+    }
+  }
+}

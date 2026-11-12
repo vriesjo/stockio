@@ -10,7 +10,7 @@ A shared database-work budget, a caller rate limit, and a cap on the durable bac
 
 `POST /api/allocation/jobs` accepts work in two modes.
 
-`async=true` validates the payload, publishes it to Kafka topic `stockio.allocation.requests`, and returns `202` after the broker acknowledges. Each call gets a new job id. Repeating the same `requestId` publishes another record. The consumer is on unless `ALLOCATION_KAFKA_ENABLED=false`. The job is not tracked until the listener takes the record.
+`async=true` validates the payload, publishes the `AllocationRequest` to Kafka topic `stockio.allocation.requests` as a Schema Registry record, and returns `202` after the broker acknowledges. Each call gets a new job id. Repeating the same `requestId` publishes another record. The consumer is on unless `ALLOCATION_KAFKA_ENABLED=false`. The job is not tracked until the listener takes the record.
 
 `async=false` runs the allocation on the request thread and returns `202` only after that work finishes. The `Location` uses the allocation run id. No JobRunr job is created, so that location is not a JobRunr status. With the Redis fast path enabled, this mode is rejected with `409` `REDIS_SYNC_DISABLED`; only `async=true` is accepted, and the Redis hold is taken before the Kafka publish.
 

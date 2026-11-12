@@ -37,7 +37,7 @@ class AllocationJobExecutorTest {
     private val service = mockk<AllocationService>()
     private val projection = mockk<StockProjectionProcessor>(relaxed = true)
     private val repository = mockk<AllocationJobResultRepository>()
-    private val kafkaTemplate = mockk<KafkaTemplate<String, String>>()
+    private val kafkaTemplate = mockk<KafkaTemplate<String, AllocationRequest>>()
     private val jobTracking = mockk<AllocationJobTrackingService>(relaxed = true)
     private val processor = AllocationProcessor(service, projection, mockk(), admission, limits)
     private val executor =
@@ -112,15 +112,16 @@ class AllocationJobExecutorTest {
 
     @Test
     fun `async execution publishes the request keyed by its accepted job ID`() {
-        val payload = mapper.writeValueAsString(request)
         val key = slot<String>()
+        val sent = slot<AllocationRequest>()
         every {
-            kafkaTemplate.send("stockio.allocation.requests", capture(key), payload)
+            kafkaTemplate.send("stockio.allocation.requests", capture(key), capture(sent))
         } returns CompletableFuture.completedFuture(mockk(relaxed = true))
 
         val accepted = executor.executeAsync(request)
 
         assertEquals(request.requestId, accepted.requestId)
+        assertEquals(request, sent.captured)
         assertEquals(accepted.jobId, UUID.fromString(key.captured))
         verify(exactly = 0) { jobTracking.beginProcessing(any(), any()) }
         verify(exactly = 0) { repository.save(any()) }
@@ -128,9 +129,9 @@ class AllocationJobExecutorTest {
 
     @Test
     fun `async execution propagates Kafka publish failures`() {
-        val publish = CompletableFuture<org.springframework.kafka.support.SendResult<String, String>>()
+        val publish = CompletableFuture<org.springframework.kafka.support.SendResult<String, AllocationRequest>>()
         publish.completeExceptionally(IllegalStateException("Kafka unavailable"))
-        every { kafkaTemplate.send(any<String>(), any<String>(), any<String>()) } returns publish
+        every { kafkaTemplate.send(any<String>(), any<String>(), any<AllocationRequest>()) } returns publish
 
         assertThrows(IllegalStateException::class.java) { executor.executeAsync(request) }
     }
@@ -142,16 +143,16 @@ class AllocationJobExecutorTest {
         assertThrows(IllegalArgumentException::class.java) {
             executor.executeAsync(request.copy(demandOrders = listOf(order, order.copy(orderId = "O2"))))
         }
-        verify(exactly = 0) { kafkaTemplate.send(any<String>(), any<String>(), any<String>()) }
+        verify(exactly = 0) { kafkaTemplate.send(any<String>(), any<String>(), any<AllocationRequest>()) }
         verify(exactly = 0) { jobTracking.beginProcessing(any(), any()) }
         verify { repository wasNot Called }
     }
 
     @Test
     fun `failed Kafka acknowledgement does not write job tracking`() {
-        val publish = CompletableFuture<org.springframework.kafka.support.SendResult<String, String>>()
+        val publish = CompletableFuture<org.springframework.kafka.support.SendResult<String, AllocationRequest>>()
         publish.completeExceptionally(IllegalStateException("Kafka acknowledgement timed out"))
-        every { kafkaTemplate.send(any<String>(), any<String>(), any<String>()) } returns publish
+        every { kafkaTemplate.send(any<String>(), any<String>(), any<AllocationRequest>()) } returns publish
 
         assertThrows(IllegalStateException::class.java) { executor.executeAsync(request) }
 

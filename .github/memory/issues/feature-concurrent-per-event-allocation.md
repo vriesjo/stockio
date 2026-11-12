@@ -28,9 +28,10 @@ semaphore remains the authoritative execution bulkhead.
   the UUID Kafka record key as the `jobId` for
   `allocationJobExecutor.executeSync`, falling back to `request.requestId` when
   an external producer sends no key.
-- Publish raw `AllocationRequest` JSON from asynchronous REST submission and
-  use a unique execution job ID as its Kafka key. Return the existing acceptance
-  response only after Kafka acknowledges the send.
+- Publish the `AllocationRequest` with Confluent JSON Schema framing from
+  asynchronous REST submission and use a unique execution job ID as its Kafka
+  key. Return the existing acceptance response only after Kafka acknowledges
+  the send. Plain JSON is dead-lettered without a retry.
 - Persist Kafka job state separately from JobRunr so the existing status endpoint
   can report queued and processing jobs, completed results, and ambiguous
   submission outcomes.
@@ -168,7 +169,7 @@ before rollout.
 | NFR-02 | Bounded resource use | Bound the local channel and active workers; preserve the existing allocation admission and stock-coordination guarantees, and never treat in-memory channel enqueueing as durable acceptance. |
 | NFR-03 | Default consumer | The Kafka listener starts unless `ALLOCATION_KAFKA_ENABLED` is false. RabbitMQ consumption remains available beside it. |
 | NFR-04 | Honest performance claims | Do not claim non-blocking processing, throughput improvement, or latency bounds without representative measurements. |
-| NFR-05 | Compatible message contract | Keep the Kafka value as raw `AllocationRequest` JSON and preserve request-ID fallback for producers that do not send an execution key. |
+| NFR-05 | Compatible message contract | The Kafka value is an `AllocationRequest` validated by the registered JSON Schema. Plain JSON is not a valid allocation record. Producers that omit an execution key still fall back to `requestId`. |
 | NFR-06 | Honest status and delivery outcomes | Preserve the REST status-polling contract and represent ambiguous broker acknowledgements explicitly rather than claiming the message was accepted or rejected without evidence. |
 
 ## Technical analysis and affected components
@@ -242,12 +243,11 @@ before rollout.
 
 ## Implementation plan
 
-1. Add opt-in Spring Kafka dependencies, typed service configuration, source
-   and DLT topic declarations, and a raw-string consumer compatible with the
-   existing `AllocationRequest` JSON contract.
-2. Publish asynchronous REST submissions as raw request JSON keyed by their
-   accepted execution job ID, and make the Kafka consumer use that key while
-   retaining compatibility with request-ID-keyed or unkeyed external messages.
+1. Add Spring Kafka dependencies, typed service configuration, source
+   and DLT topic declarations, and a JSON Schema consumer for `AllocationRequest`.
+2. Publish asynchronous REST submissions as schema-framed `AllocationRequest`
+   records keyed by their accepted execution job ID, and make the Kafka consumer
+   use that key while retaining compatibility with unkeyed external messages.
 3. Add durable job tracking for publish, enqueue, execution, ambiguous send,
    successful completion, and dead-letter failure states; use it alongside
    JobRunr state in the status service.

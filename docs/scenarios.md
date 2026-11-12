@@ -522,7 +522,7 @@ Planned feature: [Shared database-work budget](../.github/memory/issues/feature-
 ### High-level technical analysis
 - The current allocation listener is `AllocationRabbitListener`, a RabbitMQ adapter; Kafka requires a separate broker adapter and configuration
 - The Kafka adapter calls `allocationJobExecutor.executeSync(jobId, request)` using the UUID record key when provided, or `requestId` for unkeyed external producers; the shared executor advances a durable tracking row for REST-published jobs
-- The asynchronous REST publisher sends the raw `AllocationRequest` JSON accepted by external producers, using its generated execution `jobId` as the Kafka key
+- The asynchronous REST publisher sends an `AllocationRequest` framed by the registered JSON Schema, using its generated execution `jobId` as the Kafka key. A plain JSON value fails deserialization and is dead-lettered without a retry. CDC, RabbitMQ, and the REST body stay plain JSON.
 - A bounded Kotlin `Channel<AllocationRequest>` and fixed worker set provide a local burst buffer; they do not replace the existing `AllocationAdmission` semaphore or represent durable acceptance
 - `AllocationAdmission` uses non-waiting `Semaphore.tryAcquire()` and throws `AllocationCapacityExceededException` when saturated; Kafka retains that record and retries with bounded-delay backoff rather than dropping it or hot-looping
 - `executeSync` blocks once around the allocation publisher. SKU work inside that publisher uses R2DBC and does not take a thread per SKU. Kafka workers stay bounded so they do not multiply that concurrency

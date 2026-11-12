@@ -1,10 +1,9 @@
 package nl.stockio.allocation.domain.job.listener
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import java.time.Duration
 import java.time.LocalDate
+import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CompletableFuture
@@ -18,6 +17,9 @@ import nl.stockio.allocation.domain.job.AllocationJobExecutor
 import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
 import nl.stockio.allocation.domain.performance.AllocationLockContentionException
 import nl.stockio.allocation.domain.service.AllocationRequestLimits
+import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.common.header.internals.RecordHeaders
+import org.apache.kafka.common.record.TimestampType
 import org.jobrunr.jobs.lambdas.JobLambda
 import org.jobrunr.scheduling.JobScheduler
 import org.jobrunr.storage.JobNotFoundException
@@ -32,17 +34,18 @@ import org.mockito.Mockito
 class AllocationKafkaListenerTest {
 
     @Test
-    fun `rejects JSON null as an invalid allocation record`() {
+    fun `rejects a record with no value or a key that is not a UUID`() {
         val workQueue = Mockito.mock(AllocationKafkaWorkQueue::class.java)
         val listener = AllocationKafkaListener(
-            ObjectMapper(),
             Mockito.mock(AllocationRequestLimits::class.java),
             workQueue,
             Mockito.mock(nl.stockio.allocation.domain.job.AllocationJobTrackingService::class.java)
         )
 
-        assertThrows(IllegalArgumentException::class.java) { listener.receive("null") }
-        assertThrows(IllegalArgumentException::class.java) { listener.receive("{") }
+        assertThrows(IllegalArgumentException::class.java) { listener.receive(record(null)) }
+        assertThrows(IllegalArgumentException::class.java) {
+            listener.receive(record(request(), key = "not-a-uuid"))
+        }
         Mockito.verifyNoInteractions(workQueue)
     }
 
@@ -56,9 +59,7 @@ class AllocationKafkaListenerTest {
             submitted.countDown()
             completion
         }
-        val mapper = jacksonObjectMapper().findAndRegisterModules()
         val listener = AllocationKafkaListener(
-            mapper,
             Mockito.mock(AllocationRequestLimits::class.java),
             workQueue,
             Mockito.mock(nl.stockio.allocation.domain.job.AllocationJobTrackingService::class.java)
@@ -67,7 +68,7 @@ class AllocationKafkaListenerTest {
 
         try {
             val listenerCall = executor.submit {
-                listener.receive(mapper.writeValueAsString(request))
+                listener.receive(record(request))
             }
             if (!submitted.await(2, TimeUnit.SECONDS)) listenerCall.get(2, TimeUnit.SECONDS)
             assertTrue(submitted.count == 0L)
@@ -84,18 +85,16 @@ class AllocationKafkaListenerTest {
     fun `uses a UUID record key as the allocation execution ID`() {
         val request = request()
         val jobId = UUID.randomUUID()
-        val mapper = jacksonObjectMapper().findAndRegisterModules()
         val workQueue = Mockito.mock(AllocationKafkaWorkQueue::class.java)
         Mockito.`when`(workQueue.submit(request, jobId))
             .thenReturn(CompletableFuture.completedFuture(null))
         val listener = AllocationKafkaListener(
-            mapper,
             Mockito.mock(AllocationRequestLimits::class.java),
             workQueue,
             Mockito.mock(nl.stockio.allocation.domain.job.AllocationJobTrackingService::class.java)
         )
 
-        listener.receive(mapper.writeValueAsString(request), jobId.toString())
+        listener.receive(record(request, jobId.toString()))
 
         Mockito.verify(workQueue).submit(request, jobId)
     }
@@ -220,4 +219,19 @@ class AllocationKafkaListenerTest {
         LocalDate.now(),
         AllocationRunType.NEW_DEMAND
     )
+
+    private fun record(request: AllocationRequest?, key: String? = null): ConsumerRecord<String, AllocationRequest?> =
+        ConsumerRecord(
+            "stockio.allocation.requests",
+            0,
+            0L,
+            ConsumerRecord.NO_TIMESTAMP,
+            TimestampType.NO_TIMESTAMP_TYPE,
+            ConsumerRecord.NULL_SIZE,
+            ConsumerRecord.NULL_SIZE,
+            key,
+            request,
+            RecordHeaders(),
+            Optional.empty()
+        )
 }

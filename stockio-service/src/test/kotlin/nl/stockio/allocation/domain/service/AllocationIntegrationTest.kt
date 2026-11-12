@@ -184,7 +184,7 @@ class AllocationIntegrationTest {
     private lateinit var objectMapper: ObjectMapper
 
     @Autowired
-    private lateinit var kafkaTemplate: KafkaTemplate<String, String>
+    private lateinit var kafkaTemplate: KafkaTemplate<String, AllocationRequest>
 
     @Autowired
     private lateinit var reportGenerator: ExcelReportProcessor

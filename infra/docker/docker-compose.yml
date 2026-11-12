@@ -87,11 +87,13 @@ services:
     container_name: kafka-ui
     depends_on:
       - kafka
+      - schema-registry
     ports:
       - "8082:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
       DYNAMIC_CONFIG_ENABLED: "true"
     networks:
       - kafka-net
