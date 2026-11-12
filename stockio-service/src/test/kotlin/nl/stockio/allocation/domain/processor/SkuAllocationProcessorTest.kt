@@ -3,11 +3,8 @@ package nl.stockio.allocation.domain.processor
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
-import io.mockk.Called
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
-import io.mockk.Runs
 import io.mockk.verify
 import java.time.Clock
 import java.time.Instant
@@ -16,42 +13,25 @@ import java.time.ZoneOffset
 import java.util.UUID
 import nl.stockio.allocation.domain.model.AllocationOrder
 import nl.stockio.allocation.domain.performance.AllocationLockContentionPolicy
-import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
-import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
-import nl.stockio.allocation.domain.port.AllocationSkuOperationRepository
-import nl.stockio.allocation.domain.port.DemandOrderLineRepository
-import nl.stockio.allocation.domain.port.OpenBackorderRepository
-import nl.stockio.allocation.domain.service.AllocationRunLifecycleService
+import nl.stockio.allocation.domain.port.SkuAllocationDatabase
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
-import nl.stockio.allocation.infra.AllocationSkuLockEntity
 import nl.stockio.allocation.infra.AllocationSkuOperationEntity
 import nl.stockio.allocation.infra.DemandOrderLineEntity
 import nl.stockio.api.dto.AllocationProcessingOutcome
 import nl.stockio.api.dto.AllocationRecord
 import nl.stockio.api.dto.AllocationStatus
-import nl.stockio.reservation.domain.port.InboundReservationRepository
-import nl.stockio.reservation.domain.port.InboundSupplyRepository
-import nl.stockio.stock.domain.port.StockRepository
-import nl.stockio.stock.domain.port.StockReservationRepository
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.springframework.transaction.reactive.TransactionalOperator
+import reactor.core.publisher.Mono
 
 class SkuAllocationProcessorTest {
-    private val lifecycle = mockk<AllocationRunLifecycleService>()
-    private val skuLocks = mockk<AllocationSkuLockRepository>()
-    private val operations = mockk<AllocationSkuOperationRepository>()
-    private val claims = mockk<AllocationOrderClaimRepository>()
-    private val lines = mockk<DemandOrderLineRepository>()
-    private val inboundSupply = mockk<InboundSupplyRepository>()
-    private val stock = mockk<StockRepository>()
-    private val stockReservations = mockk<StockReservationRepository>()
-    private val inboundReservations = mockk<InboundReservationRepository>()
-    private val backorders = mockk<OpenBackorderRepository>()
+    private val database = mockk<SkuAllocationDatabase>()
+    private val transactions = mockk<TransactionalOperator>()
     private val lockContention = mockk<AllocationLockContentionPolicy>()
     private val mapper = jacksonObjectMapper().findAndRegisterModules()
     private val processor = SkuAllocationProcessor(
-        lifecycle, skuLocks, operations, claims, lines, inboundSupply, stock, stockReservations,
-        inboundReservations, backorders, lockContention,
+        database, transactions, lockContention,
         Clock.fixed(Instant.parse("2026-11-09T12:00:00Z"), ZoneOffset.UTC), mapper
     )
     private val runId = UUID.randomUUID()
@@ -62,54 +42,55 @@ class SkuAllocationProcessorTest {
     )
 
     @BeforeEach
-    fun lockTheSku() {
-        every { lockContention.apply() } just Runs
-        every { skuLocks.insertIfMissing("SKU") } returns 1
-        every { skuLocks.lockBySku("SKU") } returns AllocationSkuLockEntity("SKU")
+    fun openTheSkuTransaction() {
+        every { transactions.transactional(any<Mono<List<AllocationRecord>>>()) } answers { firstArg() }
+        every { lockContention.applyReactive() } returns Mono.empty()
+        every { database.lockSku("SKU") } returns Mono.empty()
     }
 
     @Test
     fun `returns a cached sku result without recalculating`() {
         val cached = listOf(record("line-1"))
-        every { operations.findByRunIdAndSku(runId, "SKU") } returns AllocationSkuOperationEntity(
-            runId = runId, sku = "SKU", requestHash = "hash", resultJson = mapper.writeValueAsString(cached)
+        every { database.findOperation(runId, "SKU") } returns Mono.just(
+            AllocationSkuOperationEntity(
+                runId = runId, sku = "SKU", requestHash = "hash", resultJson = mapper.writeValueAsString(cached)
+            )
         )
 
-        processor.process(runId, "hash", "SKU", today, listOf(order)) shouldBe cached
+        processor.process(runId, "hash", "SKU", today, listOf(order)).block() shouldBe cached
 
-        verify { lifecycle wasNot Called }
-        verify { claims wasNot Called }
-        verify { lines wasNot Called }
-        verify { stock wasNot Called }
-        verify { inboundSupply wasNot Called }
+        verify(exactly = 0) { database.findClaims(any()) }
+        verify(exactly = 0) { database.findLines(any()) }
+        verify(exactly = 0) { database.lockStock(any()) }
+        verify(exactly = 0) { database.lockUnreceivedSupply(any()) }
     }
 
     @Test
     fun `rejects an order owned by another run`() {
-        every { operations.findByRunIdAndSku(runId, "SKU") } returns null
-        every { lifecycle.getRunById(runId) } returns null
-        every { claims.findAllById(listOf("order-1")) } returns listOf(claim(runId = UUID.randomUUID()))
-        every { lines.findAllById(listOf("line-1")) } returns listOf(storedLine())
+        every { database.findOperation(runId, "SKU") } returns Mono.empty()
+        every { database.completedAllocations(runId, "SKU") } returns Mono.empty()
+        every { database.findClaims(listOf("order-1")) } returns Mono.just(listOf(claim(runId = UUID.randomUUID())))
+        every { database.findLines(listOf("line-1")) } returns Mono.just(listOf(storedLine()))
 
         shouldThrow<IllegalArgumentException> {
-            processor.process(runId, "hash", "SKU", today, listOf(order))
+            processor.process(runId, "hash", "SKU", today, listOf(order)).block()
         }.message shouldBe "Order 'order-1' belongs to another run."
 
-        verify { stock wasNot Called }
+        verify(exactly = 0) { database.lockStock(any()) }
     }
 
     @Test
     fun `rejects an order line that does not match its registered document`() {
-        every { operations.findByRunIdAndSku(runId, "SKU") } returns null
-        every { lifecycle.getRunById(runId) } returns null
-        every { claims.findAllById(listOf("order-1")) } returns listOf(claim(runId))
-        every { lines.findAllById(listOf("line-1")) } returns listOf(storedLine(quantity = 9))
+        every { database.findOperation(runId, "SKU") } returns Mono.empty()
+        every { database.completedAllocations(runId, "SKU") } returns Mono.empty()
+        every { database.findClaims(listOf("order-1")) } returns Mono.just(listOf(claim(runId)))
+        every { database.findLines(listOf("line-1")) } returns Mono.just(listOf(storedLine(quantity = 9)))
 
         shouldThrow<IllegalArgumentException> {
-            processor.process(runId, "hash", "SKU", today, listOf(order))
+            processor.process(runId, "hash", "SKU", today, listOf(order)).block()
         }.message shouldBe "Order line 'line-1' does not match its registered document."
 
-        verify { stock wasNot Called }
+        verify(exactly = 0) { database.lockStock(any()) }
     }
 
     private fun claim(runId: UUID) = AllocationOrderClaimEntity(

@@ -2,6 +2,8 @@ package nl.stockio.allocation.domain.job
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.Called
 import io.mockk.mockk
@@ -14,6 +16,8 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
+import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
+import nl.stockio.allocation.domain.port.AllocationGateway
 import nl.stockio.allocation.domain.processor.AllocationProcessor
 import nl.stockio.allocation.domain.service.*
 import nl.stockio.api.dto.*
@@ -46,7 +50,7 @@ class AllocationJobExecutorTest {
     @Test
     fun `completion persistence remains inside the permit and failed persistence releases it`() {
         every { repository.findById(any()) } returns Optional.empty()
-        every { service.allocation(request) } returns run
+        coEvery { service.allocation(request) } returns run
         every { repository.save(any()) } answers {
             assertEquals(1.0, registry.get("stockio.allocation.admission.active").gauge().value())
             error("completion storage unavailable")
@@ -67,8 +71,43 @@ class AllocationJobExecutorTest {
         admission.execute(request.runType) {
             assertEquals(result, executor.executeSync(request.requestId, request))
         }
-        verify(exactly = 0) { service.allocation(any()) }
+        coVerify(exactly = 0) { service.allocation(any()) }
         verify(exactly = 0) { repository.save(any()) }
+    }
+
+    @Test
+    fun `successful execution settles the redis hold and a processing failure rolls it back`() {
+        val gateway = RecordingAllocationGateway()
+        val subject = AllocationJobExecutor(
+            processor, repository, mapper, limits, kafkaTemplate, jobTracking,
+            "stockio.allocation.requests", gateway
+        )
+        every { repository.findById(any()) } returns Optional.empty()
+        every { repository.save(any()) } answers { firstArg() }
+        coEvery { service.allocation(request) } returns run
+
+        assertEquals(run, subject.executeSync(request.requestId, request).allocationRun)
+        assertEquals(listOf("settle"), gateway.calls)
+
+        coEvery { service.allocation(request) } throws IllegalStateException("allocation failed")
+        assertThrows(IllegalStateException::class.java) { subject.executeSync(request.requestId, request) }
+        assertEquals(listOf("settle", "rollback"), gateway.calls)
+    }
+
+    @Test
+    fun `capacity rejection leaves the redis hold in place`() {
+        val gateway = RecordingAllocationGateway()
+        val subject = AllocationJobExecutor(
+            processor, repository, mapper, limits, kafkaTemplate, jobTracking,
+            "stockio.allocation.requests", gateway
+        )
+        every { repository.findById(any()) } returns Optional.empty()
+        admission.execute(request.runType) {
+            assertThrows(AllocationCapacityExceededException::class.java) {
+                subject.executeSync(request.requestId, request)
+            }
+        }
+        assertEquals(emptyList<String>(), gateway.calls)
     }
 
     @Test
@@ -118,4 +157,23 @@ class AllocationJobExecutorTest {
 
         verify(exactly = 0) { jobTracking.beginProcessing(any(), any()) }
     }
+}
+
+private class RecordingAllocationGateway : AllocationGateway {
+    override val enabled = true
+    val calls = mutableListOf<String>()
+
+    override fun accept(request: AllocationRequest) {
+        calls += "accept"
+    }
+
+    override fun rollback(request: AllocationRequest) {
+        calls += "rollback"
+    }
+
+    override fun settle(request: AllocationRequest) {
+        calls += "settle"
+    }
+
+    override fun getByKey(key: String): RedisKeyResponse? = null
 }

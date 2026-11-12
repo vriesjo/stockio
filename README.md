@@ -44,7 +44,7 @@ flowchart LR
     Client["REST client"] -->|"POST /api/allocation/jobs"| Service["stockio-service :9090"]
     Browser["Browser"] -->|"POST /api/allocate"| UI["Next.js UI"]
     UI -->|"POST /api/products/allocate"| Service
-    Agent["MCP client"] --> Service
+    Agent["MCP client"] -->|"streamable HTTP /mcp"| Service
     Service -->|"async job JSON"| Kafka["Kafka"]
     Kafka -->|"consumer on by default"| Service
     Publisher["Harness publisher, opt-in"] --> Rabbit["Kafka or RabbitMQ"]

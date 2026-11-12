@@ -18,6 +18,8 @@ import nl.stockio.api.dto.ResolvedProduct
 import nl.stockio.product.domain.port.ProductRepository
 import nl.stockio.product.infra.ProductEntity
 import nl.stockio.product.infra.ProductKnowledgeChunk
+import kotlinx.coroutines.withContext
+import nl.stockio.util.blockingElastic
 import nl.stockio.product.infra.ProductVectorJdbcTemplateRepository
 import org.springframework.stereotype.Service
 
@@ -38,15 +40,27 @@ class ProductAllocationService(
     private val properties: ProductResolutionProperties
 ) {
 
-    fun allocate(request: ProductAllocationRequest): ProductAllocationResponse {
+    private class PreparedProductAllocation(
+        val response: ProductAllocationResponse,
+        val allocationRequest: AllocationRequest? = null
+    )
+
+    suspend fun allocate(request: ProductAllocationRequest): ProductAllocationResponse {
+        val prepared = withContext(blockingElastic) { resolve(request) }
+        val allocationRequest = prepared.allocationRequest ?: return prepared.response
+        val run = processingService.process(allocationRequest)
+        return prepared.response.copy(allocationRun = run)
+    }
+
+    private fun resolve(request: ProductAllocationRequest): PreparedProductAllocation {
         validate(request)
 
         val products = productRepository.findAllByStatus("ACTIVE")
         if (products.isEmpty()) {
-            return ProductAllocationResponse(
+            return PreparedProductAllocation(ProductAllocationResponse(
                 status = ProductAllocationStatus.NO_PRODUCT_MATCH,
                 message = "The product catalog contains no active products; no allocation was made."
-            )
+            ))
         }
         val exactProduct = products.firstOrNull {
             normalize(it.title) == normalize(request.productQuery)
@@ -56,10 +70,10 @@ class ProductAllocationService(
             return allocateResolvedProduct(request, selected, false, listOf(selected), emptyList())
         }
         if (!request.allowEquivalent) {
-            return ProductAllocationResponse(
+            return PreparedProductAllocation(ProductAllocationResponse(
                 status = ProductAllocationStatus.NO_PRODUCT_MATCH,
                 message = "No exact catalog product matched '${request.productQuery}'; no allocation was made."
-            )
+            ))
         }
 
         val queryEmbedding: List<Double>
@@ -78,10 +92,10 @@ class ProductAllocationService(
             }.sortedByDescending { it.similarity }
         } catch (exception: EmbeddingClientException) {
             logger.error(exception) { "Local product embedding failed for request ${request.requestId}." }
-            return ProductAllocationResponse(
+            return PreparedProductAllocation(ProductAllocationResponse(
                 status = ProductAllocationStatus.EMBEDDING_FAILED,
                 message = exception.message ?: "Local product embedding failed; no allocation was made."
-            )
+            ))
         }
         val localBest = localCandidates.firstOrNull()
         val localSecond = localCandidates.getOrNull(1)
@@ -98,19 +112,19 @@ class ProductAllocationService(
             tavilySearchClient.search(tavilyQuery(request))
         } catch (exception: TavilyLookupException) {
             logger.error(exception) { "Fallback Tavily product lookup failed for request ${request.requestId}." }
-            return ProductAllocationResponse(
+            return PreparedProductAllocation(ProductAllocationResponse(
                 status = ProductAllocationStatus.TAVILY_LOOKUP_FAILED,
                 message = exception.message ?: "Fallback Tavily product lookup failed.",
                 candidates = localCandidates.take(properties.maxCandidates)
-            )
+            ))
         }
         val sources = tavilyResults.map { ProductSource(it.title, it.url) }
         if (tavilyResults.isEmpty()) {
-            return ProductAllocationResponse(
+            return PreparedProductAllocation(ProductAllocationResponse(
                 status = ProductAllocationStatus.TAVILY_LOOKUP_FAILED,
                 message = "Tavily returned no usable product-search results; no allocation was made.",
                 candidates = localCandidates.take(properties.maxCandidates)
-            )
+            ))
         }
 
         val evidenceEmbedding: List<Double>
@@ -125,11 +139,11 @@ class ProductAllocationService(
             evidenceEmbedding = embeddings.single()
             validateEmbedding(evidenceEmbedding)
             if (cosineSimilarity(queryEmbedding, evidenceEmbedding) < properties.minimumTavilyEvidenceSimilarity) {
-                return ProductAllocationResponse(
+                return PreparedProductAllocation(ProductAllocationResponse(
                     status = ProductAllocationStatus.NO_PRODUCT_MATCH,
                     message = "Tavily returned no relevant evidence for '${request.productQuery}'; no allocation was made.",
                     sources = sources
-                )
+                ))
             }
             candidates = findCandidates(
                 query = request.productQuery,
@@ -140,42 +154,42 @@ class ProductAllocationService(
             )
         } catch (exception: EmbeddingClientException) {
             logger.error(exception) { "Product embedding failed for request ${request.requestId}." }
-            return ProductAllocationResponse(
+            return PreparedProductAllocation(ProductAllocationResponse(
                 status = ProductAllocationStatus.EMBEDDING_FAILED,
                 message = exception.message ?: "Product embedding failed; no allocation was made.",
                 sources = sources
-            )
+            ))
         }
 
         val selected = candidates.firstOrNull()
         val second = candidates.getOrNull(1)
         if (selected == null || selected.similarity < properties.minimumSimilarity) {
-            return ProductAllocationResponse(
+            return PreparedProductAllocation(ProductAllocationResponse(
                 status = ProductAllocationStatus.NO_PRODUCT_MATCH,
                 message = "No catalog product met the minimum similarity for '${request.productQuery}'; no allocation was made.",
                 candidates = candidates.take(properties.maxCandidates),
                 sources = sources
-            )
+            ))
         }
         if (second != null && selected.similarity - second.similarity < properties.minimumSimilarityGap) {
-            return ProductAllocationResponse(
+            return PreparedProductAllocation(ProductAllocationResponse(
                 status = ProductAllocationStatus.AMBIGUOUS_PRODUCT_MATCH,
                 message = "More than one catalog product is a plausible match for '${request.productQuery}'; no allocation was made.",
                 candidates = candidates.take(properties.maxCandidates),
                 sources = sources
-            )
+            ))
         }
 
         try {
             persistKnowledge(selected.sku, tavilyResults)
         } catch (exception: EmbeddingClientException) {
             logger.error(exception) { "Could not embed Tavily product knowledge for request ${request.requestId}." }
-            return ProductAllocationResponse(
+            return PreparedProductAllocation(ProductAllocationResponse(
                 status = ProductAllocationStatus.EMBEDDING_FAILED,
                 message = exception.message ?: "Product knowledge ingestion failed; no allocation was made.",
                 selectedProduct = selected.toResolvedProduct(true),
                 sources = sources
-            )
+            ))
         }
 
         return allocateResolvedProduct(request, selected, true, candidates.take(properties.maxCandidates), sources)
@@ -187,7 +201,7 @@ class ProductAllocationService(
         equivalent: Boolean,
         candidates: List<ProductCandidate>,
         sources: List<ProductSource>
-    ): ProductAllocationResponse {
+    ): PreparedProductAllocation {
         val allocationRequest = AllocationRequest(
             requestId = request.requestId,
             asOfDate = request.asOfDate,
@@ -211,15 +225,15 @@ class ProductAllocationService(
                 )
             )
         )
-        val allocationRun = processingService.process(allocationRequest)
-
-        return ProductAllocationResponse(
-            status = ProductAllocationStatus.ALLOCATION_PROCESSED,
-            message = "Allocation processed. The result reports allocated quantities and any backorder.",
-            selectedProduct = selected.toResolvedProduct(equivalent),
-            candidates = candidates,
-            sources = sources,
-            allocationRun = allocationRun
+        return PreparedProductAllocation(
+            response = ProductAllocationResponse(
+                status = ProductAllocationStatus.ALLOCATION_PROCESSED,
+                message = "Allocation processed. The result reports allocated quantities and any backorder.",
+                selectedProduct = selected.toResolvedProduct(equivalent),
+                candidates = candidates,
+                sources = sources
+            ),
+            allocationRequest = allocationRequest
         )
     }
 

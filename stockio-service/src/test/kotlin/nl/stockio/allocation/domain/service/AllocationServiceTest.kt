@@ -12,6 +12,7 @@ import io.mockk.verify
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
 import nl.stockio.allocation.domain.api.validator.AllocationRequestValidator
 import nl.stockio.allocation.domain.processor.SkuAllocationProcessor
 import nl.stockio.allocation.infra.AllocationRunEntity
@@ -23,6 +24,7 @@ import nl.stockio.api.dto.AllocationStatus
 import nl.stockio.api.dto.DemandOrder
 import nl.stockio.api.dto.DemandOrderLine
 import org.junit.jupiter.api.Test
+import reactor.core.publisher.Mono
 
 class AllocationServiceTest {
     private val validator = mockk<AllocationRequestValidator>()
@@ -39,7 +41,7 @@ class AllocationServiceTest {
         val completed = result(request)
         every { lifecycle.getRun(request, any()) } returns completed
 
-        service.allocation(request) shouldBe completed
+        runBlocking { service.allocation(request) } shouldBe completed
 
         verify { validator wasNot Called }
         verify { documents wasNot Called }
@@ -54,10 +56,13 @@ class AllocationServiceTest {
         every { validator.validate(request) } just Runs
         every { lifecycle.beginOrResume(request, any()) } returns run
         every { documents.initialize(run.id, request) } just Runs
-        every { processor.process(run.id, any(), "SKU-A", today, any()) } throws IllegalStateException("SKU failure")
-        every { processor.process(run.id, any(), "SKU-B", today, any()) } returns emptyList()
+        every { processor.process(run.id, any(), "SKU-A", today, any()) } returns
+            Mono.error(IllegalStateException("SKU failure"))
+        every { processor.process(run.id, any(), "SKU-B", today, any()) } returns Mono.just(emptyList())
 
-        shouldThrow<IllegalStateException> { service.allocation(request) }.message shouldBe "SKU failure"
+        shouldThrow<IllegalStateException> {
+            runBlocking { service.allocation(request) }
+        }.message shouldBe "SKU failure"
 
         verify(exactly = 0) { lifecycle.completeRun(any(), any(), any()) }
     }
@@ -84,10 +89,10 @@ class AllocationServiceTest {
         every { validator.validate(request) } just Runs
         every { lifecycle.beginOrResume(request, any()) } returns run
         every { documents.initialize(run.id, request) } just Runs
-        every { processor.process(run.id, any(), "SKU", today, any()) } returns records
+        every { processor.process(run.id, any(), "SKU", today, any()) } returns Mono.just(records)
         every { lifecycle.completeRun(run.id, setOf("SKU"), capture(saved)) } answers { result(request) }
 
-        service.allocation(request)
+        runBlocking { service.allocation(request) }
 
         saved.captured.map { it.orderLineId } shouldBe listOf("L-high", "L-late", "L-early", "L-newer")
     }

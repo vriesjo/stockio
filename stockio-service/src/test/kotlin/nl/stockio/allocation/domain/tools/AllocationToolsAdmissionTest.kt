@@ -28,7 +28,7 @@ class AllocationToolsAdmissionTest {
     @Test
     fun `MCP retains the typed capacity error and unchanged retry guidance`() {
         val request = AllocationRequest(UUID.randomUUID(), LocalDate.now(), AllocationRunType.NEW_DEMAND)
-        every { processor.process(request) } throws AllocationCapacityExceededException()
+        every { processor.processSync(request) } throws AllocationCapacityExceededException()
         val exception = assertThrows(AllocationCapacityExceededException::class.java) {
             tools.allocateAndStockProject(request)
         }
@@ -45,6 +45,6 @@ class AllocationToolsAdmissionTest {
         assertThrows(IllegalArgumentException::class.java) {
             tools.allocateOpenBackordersByInventoryAndInboundSupply(request)
         }
-        verify(exactly = 0) { processor.process(any<BackorderAllocationRequest>()) }
+        verify(exactly = 0) { processor.processSync(any<BackorderAllocationRequest>()) }
     }
 }

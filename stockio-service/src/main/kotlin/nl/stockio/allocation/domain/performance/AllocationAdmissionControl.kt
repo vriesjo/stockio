@@ -79,7 +79,35 @@ class AllocationAdmission(
         }
     }
 
-    fun <T> phase(phase: String, work: () -> T): T {
+    /**
+     * Holds one admission permit until [work] finishes, including cancellation.
+     * The permit covers allocation, projection, and completion when those stages are inside [work].
+     */
+    suspend fun <T> hold(runType: AllocationRunType, work: suspend () -> T): T {
+        if (properties.enabled && !permits.tryAcquire()) {
+            registry.counter("stockio.allocation.admission.attempts",
+                "run.type", runType.name, "outcome", "saturated").increment()
+            throw AllocationCapacityExceededException()
+        }
+        active.incrementAndGet()
+        val sample = Timer.start(registry)
+        var outcome = "failure"
+        try {
+            registry.counter("stockio.allocation.admission.attempts",
+                "run.type", runType.name, "outcome", "admitted").increment()
+            return work().also { outcome = "success" }
+        } finally {
+            try {
+                sample.stop(registry.timer("stockio.allocation.execution.duration",
+                    "run.type", runType.name, "outcome", outcome))
+            } finally {
+                active.decrementAndGet()
+                if (properties.enabled) permits.release()
+            }
+        }
+    }
+
+    suspend fun <T> phase(phase: String, work: suspend () -> T): T {
         val sample = Timer.start(registry)
         var outcome = "failure"
         try {

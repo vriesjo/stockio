@@ -11,11 +11,11 @@ import nl.stockio.product.domain.service.ProductAllocationService
 import nl.stockio.allocation.domain.api.exception.CustomerExceptionHandler
 import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
 import nl.stockio.allocation.domain.service.AllocationRequestTooLargeException
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.mockk
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
-import org.mockito.Mockito.mock
-import org.mockito.Mockito.verify
-import org.mockito.Mockito.`when`
 import org.springframework.http.MediaType
 import org.springframework.test.web.reactive.server.WebTestClient
 
@@ -28,8 +28,8 @@ class ProductAllocationControllerTest {
             status = ProductAllocationStatus.NO_PRODUCT_MATCH,
             message = "No catalog product matched."
         )
-        val service = mock(ProductAllocationService::class.java)
-        `when`(service.allocate(request)).thenReturn(expectedResponse)
+        val service = mockk<ProductAllocationService>()
+        coEvery { service.allocate(request) } returns expectedResponse
         val client = WebTestClient.bindToController(ProductAllocationController(service)).build()
         val objectMapper = jacksonObjectMapper().registerModule(JavaTimeModule())
 
@@ -47,14 +47,14 @@ class ProductAllocationControllerTest {
             expectedResponse,
             objectMapper.readValue(result.responseBody, ProductAllocationResponse::class.java)
         )
-        verify(service).allocate(request)
+        coVerify { service.allocate(request) }
     }
 
     @Test
     fun `post allocate returns bad request when service rejects request`() {
         val request = request()
-        val service = mock(ProductAllocationService::class.java)
-        `when`(service.allocate(request)).thenThrow(IllegalArgumentException("Invalid request"))
+        val service = mockk<ProductAllocationService>()
+        coEvery { service.allocate(request) } throws IllegalArgumentException("Invalid request")
         val client = WebTestClient.bindToController(ProductAllocationController(service)).build()
         val objectMapper = jacksonObjectMapper().registerModule(JavaTimeModule())
 
@@ -86,8 +86,8 @@ class ProductAllocationControllerTest {
             Triple(AllocationCapacityExceededException(), 503, "ALLOCATION_CAPACITY_EXHAUSTED"),
             Triple(AllocationRequestTooLargeException(), 413, "ALLOCATION_REQUEST_TOO_LARGE")
         )) {
-            val service = mock(ProductAllocationService::class.java)
-            `when`(service.allocate(request())).thenThrow(exception)
+            val service = mockk<ProductAllocationService>()
+            coEvery { service.allocate(request()) } throws exception
             val client = WebTestClient.bindToController(ProductAllocationController(service))
                 .controllerAdvice(CustomerExceptionHandler()).build()
             client.post().uri("/api/products/allocate")

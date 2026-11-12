@@ -11,6 +11,7 @@ import io.mockk.verify
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.model.BackorderAllocationTrigger
 import nl.stockio.allocation.domain.port.OpenBackorderRepository
@@ -19,6 +20,7 @@ import nl.stockio.allocation.infra.AllocationRunEntity
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.api.dto.AllocationRunType
 import org.junit.jupiter.api.Test
+import reactor.core.publisher.Mono
 
 class AllocationBackorderServiceTest {
     private val lifecycle = mockk<AllocationRunLifecycleService>()
@@ -33,7 +35,7 @@ class AllocationBackorderServiceTest {
     fun `rejects a blank sku before reading backorders or runs`() {
         val command = command(skuScope = setOf("SKU", " "))
 
-        shouldThrow<IllegalArgumentException> { service.allocate(command) }
+        shouldThrow<IllegalArgumentException> { runBlocking { service.allocate(command) } }
             .message shouldBe "SKU scope must contain only non-blank SKUs."
 
         verify { lifecycle wasNot Called }
@@ -47,7 +49,7 @@ class AllocationBackorderServiceTest {
         val completed = result()
         every { lifecycle.getRun(any(), any()) } returns completed
 
-        service.allocate(command()) shouldBe completed
+        runBlocking { service.allocate(command()) } shouldBe completed
 
         verify(exactly = 0) { lifecycle.beginOrResume(any(), any()) }
         verify { processor wasNot Called }
@@ -68,10 +70,10 @@ class AllocationBackorderServiceTest {
         every { lifecycle.beginOrResume(any(), any()) } returns run
         every { documents.initialize(run.id, any()) } just Runs
         every { lifecycle.getOperationSkus(run.id) } returns listOf("C", "B")
-        every { processor.allocateBackorders(run.id, any(), any(), today) } returns emptyList()
+        every { processor.allocateBackorders(run.id, any(), any(), today) } returns Mono.just(emptyList())
         every { lifecycle.completeRun(run.id, setOf("A", "B", "C"), emptyList()) } returns completed
 
-        service.allocate(command(skuScope = setOf("B", "A"))) shouldBe completed
+        runBlocking { service.allocate(command(skuScope = setOf("B", "A"))) } shouldBe completed
 
         verify { processor.allocateBackorders(run.id, any(), "A", today) }
         verify { processor.allocateBackorders(run.id, any(), "B", today) }

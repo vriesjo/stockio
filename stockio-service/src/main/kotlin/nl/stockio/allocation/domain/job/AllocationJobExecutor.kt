@@ -4,6 +4,11 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.util.UUID
 import java.util.concurrent.ExecutionException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import nl.stockio.util.blockingElastic
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationCompletionResult
 import nl.stockio.api.dto.AllocationJobAccepted
@@ -76,42 +81,52 @@ class AllocationJobExecutor(
     }
 
     /**
-     * Executes [request] under [jobId] and returns the allocation result.
+     * Runs [request] under [jobId] and returns the allocation result.
      *
-     * This method is intended for synchronous execution of allocation jobs, typically invoked
-     * by a message consumer or for testing purposes. It checks if a result already
-     * exists for the given job ID and returns it if found; otherwise, it processes the request
-     * and completes the job.
+     * Inline HTTP calls this suspending function. A stored completion is reused when one exists;
+     * otherwise [AllocationProcessor.process] runs and [complete] stores the result.
+     * Cache lookup, Redis settle, and Redis rollback hop to Reactor's bounded elastic dispatcher.
+     * Allocation itself is a suspending call and does not hold that worker.
      *
-     * @param jobId unique identifier for this execution instance.
-     * @param request allocation request to be processed.
-     * @return the allocation completion result, either retrieved from storage or newly computed.
+     * [AllocationCapacityExceededException] and [AllocationLockContentionException] propagate with the
+     * provisional Redis hold left in place. Any other failure rolls that hold back and is rethrown.
      */
-    @Job(name = "Execute Allocation Request", retries = 3, jobFilters = [AllocationCapacityRetryFilter::class])
-    fun executeSync(jobId: UUID, request: AllocationRequest): AllocationCompletionResult {
-        val result = try {
-            runSync(jobId, request)
+    suspend fun execute(jobId: UUID, request: AllocationRequest): AllocationCompletionResult =
+        try {
+            val cached = withContext(blockingElastic) {
+                jobTracking.markProcessing(jobId)
+                jobResultRepository.findById(jobId).orElse(null)?.let { stored ->
+                    jobTracking.markSucceeded(jobId)
+                    objectMapper.readValue(stored.resultJson, AllocationCompletionResult::class.java)
+                }
+            }
+            val result = cached ?: allocationProcessor
+                .process(request) { allocationRun -> complete(jobId, allocationRun) }
+            withContext(blockingElastic) {
+                allocationRedisGateway.settle(request)
+                result
+            }
         } catch (exception: AllocationCapacityExceededException) {
             throw exception
         } catch (exception: AllocationLockContentionException) {
             throw exception
+        } catch (exception: CancellationException) {
+            rollback(request)
+            throw exception
         } catch (exception: Exception) {
-            allocationRedisGateway.rollback(request)
+            rollback(request)
             throw exception
         }
 
-        // If the allocation was successful, we can settle the request in Redis to release any locks or reservations.
-        allocationRedisGateway.settle(request)
-        return result
-    }
+    /**
+     * One blocking wait for Kafka, RabbitMQ, and JobRunr. Those callers already run off the Netty event loop.
+     */
+    @Job(name = "Execute Allocation Request", retries = 3, jobFilters = [AllocationCapacityRetryFilter::class])
+    fun executeSync(jobId: UUID, request: AllocationRequest): AllocationCompletionResult =
+        runBlocking { execute(jobId, request) }
 
-    private fun runSync(jobId: UUID, request: AllocationRequest): AllocationCompletionResult {
-        jobTracking.markProcessing(jobId)
-        jobResultRepository.findById(jobId).orElse(null)?.let {
-            jobTracking.markSucceeded(jobId)
-            return objectMapper.readValue(it.resultJson, AllocationCompletionResult::class.java)
-        }
-        return allocationProcessor.process(request) { allocationRun -> complete(jobId, allocationRun) }
+    private suspend fun rollback(request: AllocationRequest) {
+        withContext(blockingElastic + NonCancellable) { allocationRedisGateway.rollback(request) }
     }
 
     fun complete(

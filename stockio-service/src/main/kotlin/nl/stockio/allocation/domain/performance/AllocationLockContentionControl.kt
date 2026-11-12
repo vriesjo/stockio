@@ -1,5 +1,6 @@
 package nl.stockio.allocation.domain.performance
 
+import io.r2dbc.spi.R2dbcException
 import jakarta.persistence.LockTimeoutException
 import java.sql.SQLException
 import java.sql.SQLTimeoutException
@@ -11,8 +12,12 @@ import org.springframework.dao.CannotAcquireLockException
 import org.springframework.dao.PessimisticLockingFailureException
 import org.springframework.dao.QueryTimeoutException
 import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.r2dbc.core.DatabaseClient
 import org.springframework.stereotype.Service
+import org.springframework.transaction.NoTransactionException
+import org.springframework.transaction.reactive.TransactionContextManager
 import org.springframework.transaction.support.TransactionSynchronizationManager
+import reactor.core.publisher.Mono
 
 @ConfigurationProperties("stockio.allocation.lock-contention")
 data class AllocationLockContentionProperties(
@@ -56,6 +61,7 @@ object AllocationLockContentionDetector {
                 is CannotAcquireLockException, is PessimisticLockingFailureException -> return true
                 is LockTimeoutException, is QueryTimeoutException, is SQLTimeoutException -> return true
                 is SQLException -> if (current.sqlState in retryableSqlStates) return true
+                is R2dbcException -> if (current.sqlState?.let { it in retryableSqlStates } == true) return true
             }
             current = current.cause
         }
@@ -66,7 +72,8 @@ object AllocationLockContentionDetector {
 @Service
 class AllocationLockContentionPolicy(
     private val properties: AllocationLockContentionProperties,
-    private val jdbcTemplate: JdbcTemplate
+    private val jdbcTemplate: JdbcTemplate,
+    private val databaseClient: DatabaseClient
 ) {
     fun apply() {
         if (!properties.enabled) return
@@ -76,7 +83,28 @@ class AllocationLockContentionPolicy(
         // Set PostgreSQL session-level lock and statement timeouts to mitigate lock contention.
         // The lock_timeout controls how long a transaction will wait to acquire a lock before failing.
         // The statement_timeout controls the maximum allowed duration of any statement.
-        jdbcTemplate.execute("SET LOCAL lock_timeout = '${properties.lockTimeout.toMillis()}ms'")
-        jdbcTemplate.execute("SET LOCAL statement_timeout = '${properties.statementTimeout.toMillis()}ms'")
+        applyLocalTimeouts { statement -> jdbcTemplate.execute(statement) }
     }
+
+    /**
+     * Runs the same `SET LOCAL` statements on the R2DBC connection bound to the current reactive transaction.
+     * The caller must invoke this before the statement that takes the SKU lock.
+     */
+    fun applyReactive(): Mono<Void> {
+        if (!properties.enabled) return Mono.empty()
+        return TransactionContextManager.currentContext()
+            .onErrorMap(NoTransactionException::class.java) {
+                IllegalStateException("Lock contention policy can only be applied inside an active transaction.")
+            }
+            .then(Mono.defer { applyLocalTimeoutsReactive() })
+    }
+
+    private fun applyLocalTimeouts(execute: (String) -> Unit) {
+        execute("SET LOCAL lock_timeout = '${properties.lockTimeout.toMillis()}ms'")
+        execute("SET LOCAL statement_timeout = '${properties.statementTimeout.toMillis()}ms'")
+    }
+
+    private fun applyLocalTimeoutsReactive(): Mono<Void> =
+        databaseClient.sql("SET LOCAL lock_timeout = '${properties.lockTimeout.toMillis()}ms'").then()
+            .then(databaseClient.sql("SET LOCAL statement_timeout = '${properties.statementTimeout.toMillis()}ms'").then())
 }

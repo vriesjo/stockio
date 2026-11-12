@@ -9,6 +9,7 @@ spring:
   ai:
     mcp:
       server:
+        protocol: STREAMABLE
         type: sync
         name: mcp-server
         version: 0.0.1
@@ -24,6 +25,17 @@ spring:
       connection-timeout: ${DB_POOL_CONNECTION_TIMEOUT_MS:30000}
       idle-timeout: ${DB_POOL_IDLE_TIMEOUT_MS:600000}
       max-lifetime: ${DB_POOL_MAX_LIFETIME_MS:1800000}
+  r2dbc:
+    url: ${R2DBC_URL:r2dbc:postgresql://localhost:5437/logistics}
+    username: ${DB_USERNAME:logistics}
+    password: ${DB_PASSWORD:logistics}
+    pool:
+      enabled: true
+      max-size: ${R2DBC_POOL_MAX_SIZE:10}
+      initial-size: ${R2DBC_POOL_INITIAL_SIZE:2}
+      max-acquire-time: ${R2DBC_POOL_MAX_ACQUIRE_TIME:30s}
+      max-idle-time: ${R2DBC_POOL_MAX_IDLE_TIME:10m}
+      max-life-time: ${R2DBC_POOL_MAX_LIFE_TIME:30m}
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
@@ -55,6 +67,13 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+  data:
+    jpa:
+      repositories:
+        enabled: true
+    r2dbc:
+      repositories:
+        enabled: false
   flyway:
     enabled: true
 

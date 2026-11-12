@@ -252,13 +252,15 @@ project(":stockio-service") {
 
     dependencies {
         implementation project(":stockio-api")
-        implementation 'org.springframework.ai:spring-ai-starter-mcp-server'
+        implementation 'org.springframework.ai:spring-ai-starter-mcp-server-webflux'
         implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core'
         implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-reactor'
         implementation 'org.springframework.boot:spring-boot-starter-actuator'
         implementation 'org.springframework.boot:spring-boot-starter-webflux'
         implementation 'org.springdoc:springdoc-openapi-starter-webflux-ui:2.8.13'
         implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+        implementation 'org.springframework.boot:spring-boot-starter-data-r2dbc'
+        implementation 'org.postgresql:r2dbc-postgresql'
         implementation 'org.springframework.boot:spring-boot-starter-amqp'
         implementation 'org.springframework.kafka:spring-kafka'
         implementation 'org.springframework.boot:spring-boot-starter-data-redis'
