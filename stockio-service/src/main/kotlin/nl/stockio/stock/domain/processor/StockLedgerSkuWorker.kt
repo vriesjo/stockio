@@ -4,7 +4,7 @@ import java.time.Clock
 import java.time.LocalDate
 import java.util.UUID
 import nl.stockio.api.dto.OrderReservationStatus
-import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
+import nl.stockio.allocation.domain.port.outbound.AllocationOrderClaimRepository
 import nl.stockio.reservation.domain.port.InboundReservationRepository
 import nl.stockio.reservation.domain.port.InboundSupplyRepository
 import nl.stockio.stock.infra.StockEntity
@@ -12,8 +12,8 @@ import nl.stockio.stock.infra.StockReservationEntity
 import nl.stockio.stock.domain.port.StockLedgerRun
 import nl.stockio.stock.domain.port.StockLedgerRunRepository
 import nl.stockio.stock.domain.port.StockReceiptFollowup
-import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
-import nl.stockio.allocation.domain.port.DemandOrderLineRepository
+import nl.stockio.allocation.domain.port.outbound.AllocationSkuLockRepository
+import nl.stockio.allocation.domain.port.outbound.DemandOrderLineRepository
 import nl.stockio.stock.domain.port.StockRepository
 import nl.stockio.stock.domain.port.StockReservationRepository
 import nl.stockio.stock.domain.port.StockSnapshotRepository

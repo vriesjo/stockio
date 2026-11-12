@@ -7,9 +7,9 @@ import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.api.dto.DemandOrder
 import nl.stockio.api.dto.DemandOrderLine
-import nl.stockio.allocation.domain.job.listener.StockCdcEventParser
-import nl.stockio.allocation.domain.job.listener.StockChange
 import nl.stockio.allocation.infra.AllocationRedisGateway
+import nl.stockio.allocation.infra.inbound.listener.StockCdcEventParser
+import nl.stockio.allocation.infra.inbound.listener.StockChange
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test

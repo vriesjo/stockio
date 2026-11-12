@@ -13,6 +13,9 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import nl.stockio.allocation.application.service.AllocationBackorderService
+import nl.stockio.allocation.application.service.AllocationRequestLimits
+import nl.stockio.allocation.application.service.AllocationService
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationAdmissionConfiguration
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
@@ -57,7 +60,8 @@ class AllocationAdmissionTest {
             val backorders = mockk<AllocationBackorderService>()
             val projection = mockk<StockProjectionProcessor>()
             val processor = AllocationProcessor(service, projection, backorders, admission,
-                AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry))
+                AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry)
+            )
             val run = AllocationRunResult(UUID.randomUUID(), request.requestId, request.runType,
                 request.asOfDate, Instant.now(), 0, emptyList())
             coEvery { service.allocation(request) } returns run
@@ -144,7 +148,12 @@ class AllocationAdmissionTest {
                                 val backorders = mockk<AllocationBackorderService>()
                                 val projection = mockk<StockProjectionProcessor>()
                                 val processor = AllocationProcessor(service, projection, backorders, admission,
-                                    AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry))
+                                    AllocationRequestLimits(
+                                        properties,
+                                        jacksonObjectMapper().findAndRegisterModules(),
+                                        registry
+                                    )
+                                )
                                 coEvery { service.allocation(request) } throws CannotAcquireLockException("lock wait timeout")
 
                                 assertThrows(_root_ide_package_.nl.stockio.allocation.domain.performance.AllocationLockContentionException::class.java) {

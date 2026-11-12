@@ -1,21 +1,21 @@
 package nl.stockio.allocation.domain.processor
 
-import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import nl.stockio.util.blockingElastic
+import nl.stockio.allocation.application.service.AllocationBackorderService
+import nl.stockio.allocation.application.service.AllocationRequestLimits
+import nl.stockio.allocation.application.service.AllocationService
 import nl.stockio.allocation.domain.model.BackorderAllocationRequest
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationLockContentionDetector
 import nl.stockio.allocation.domain.performance.AllocationLockContentionException
-import nl.stockio.allocation.domain.service.AllocationBackorderService
-import nl.stockio.allocation.domain.service.AllocationRequestLimits
-import nl.stockio.allocation.domain.service.AllocationService
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.api.dto.AllocationRunType
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
+import nl.stockio.util.blockingElastic
 import org.springframework.stereotype.Service
+import java.util.UUID
 
 /**
  * Refreshes forecasts after the allocation workers commit, without synchronizing physical stock.
@@ -30,7 +30,7 @@ class AllocationProcessor(
     private val projectionProcessor: StockProjectionProcessor,
     private val allocationBackorderService: AllocationBackorderService,
     private val admission: AllocationAdmission,
-    private val limits: AllocationRequestLimits
+    private val limits: AllocationRequestLimits,
 ) {
     suspend fun process(command: BackorderAllocationRequest): AllocationRunResult {
         limits.validate(command)
@@ -40,7 +40,7 @@ class AllocationProcessor(
                 projectionProcessor.process(
                     command.asOfDate,
                     run.allocations.map { it.sku } + command.skuScope.orEmpty() +
-                        command.inboundShipments.flatMap { it.lines }.map { it.sku }
+                        command.inboundShipments.flatMap { it.lines }.map { it.sku },
                 )
             }
             run
@@ -49,21 +49,25 @@ class AllocationProcessor(
 
     suspend fun process(request: AllocationRequest): AllocationRunResult = process(request) { it }
 
-    suspend fun <T> process(request: AllocationRequest, complete: (AllocationRunResult) -> T): T {
+    suspend fun <T> process(
+        request: AllocationRequest,
+        complete: (AllocationRunResult) -> T,
+    ): T {
         limits.validate(request)
         return execute(request.runType) {
-            val run = admission.phase("allocation") {
-                when (request.runType) {
-                    AllocationRunType.NEW_DEMAND -> allocationService.allocation(request)
-                    AllocationRunType.BACKORDER_FULFILLMENT -> allocationService.allocateOpenBackorders(request)
+            val run =
+                admission.phase("allocation") {
+                    when (request.runType) {
+                        AllocationRunType.NEW_DEMAND -> allocationService.allocation(request)
+                        AllocationRunType.BACKORDER_FULFILLMENT -> allocationService.allocateOpenBackorders(request)
+                    }
                 }
-            }
             project(run) {
                 projectionProcessor.process(
                     request.asOfDate,
                     run.allocations.map { it.sku } +
                         request.demandOrders.flatMap { it.lines }.map { it.sku } +
-                        request.inboundShipments.flatMap { it.lines }.map { it.sku }
+                        request.inboundShipments.flatMap { it.lines }.map { it.sku },
                 )
             }
             admission.phase("completion") {
@@ -72,16 +76,19 @@ class AllocationProcessor(
         }
     }
 
-    fun processSync(command: BackorderAllocationRequest): AllocationRunResult =
-        runBlocking { process(command) }
+    fun processSync(command: BackorderAllocationRequest): AllocationRunResult = runBlocking { process(command) }
 
-    fun processSync(request: AllocationRequest): AllocationRunResult =
-        runBlocking { process(request) }
+    fun processSync(request: AllocationRequest): AllocationRunResult = runBlocking { process(request) }
 
-    fun <T> processSync(request: AllocationRequest, complete: (AllocationRunResult) -> T): T =
-        runBlocking { process(request, complete) }
+    fun <T> processSync(
+        request: AllocationRequest,
+        complete: (AllocationRunResult) -> T,
+    ): T = runBlocking { process(request, complete) }
 
-    private suspend fun <T> execute(runType: AllocationRunType, work: suspend () -> T): T =
+    private suspend fun <T> execute(
+        runType: AllocationRunType,
+        work: suspend () -> T,
+    ): T =
         try {
             admission.hold(runType, work)
         } catch (error: Exception) {
@@ -93,7 +100,10 @@ class AllocationProcessor(
             throw error
         }
 
-    private suspend fun project(run: AllocationRunResult, work: () -> Unit) {
+    private suspend fun project(
+        run: AllocationRunResult,
+        work: () -> Unit,
+    ) {
         try {
             admission.phase("projection") {
                 withContext(blockingElastic) { work() }
@@ -105,5 +115,7 @@ class AllocationProcessor(
 }
 
 /** Prevents a post-allocation projection invariant failure from being classified as invalid input by RabbitMQ. */
-class AllocationProjectionException(runId: UUID, cause: IllegalArgumentException) :
-    IllegalStateException("Allocation run '$runId' completed, but projection refresh failed; retry processing.", cause)
+class AllocationProjectionException(
+    runId: UUID,
+    cause: IllegalArgumentException,
+) : IllegalStateException("Allocation run '$runId' completed, but projection refresh failed; retry processing.", cause)

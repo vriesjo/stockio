@@ -14,7 +14,7 @@ import java.util.UUID
 import nl.stockio.api.dto.ProcessDailyStockRequest
 import nl.stockio.api.dto.StockSyncResult
 import nl.stockio.reservation.domain.service.ReservationCleanupService
-import nl.stockio.stock.domain.job.StockReceiptFollowupDispatcher
+import nl.stockio.stock.domain.job.StockBackorderFollowupJob
 import nl.stockio.stock.domain.port.StockLedgerRun
 import nl.stockio.stock.domain.port.StockLedgerRunRepository
 import org.junit.jupiter.api.Test
@@ -26,7 +26,7 @@ class StockLedgerProcessorTest {
     private val repository = mockk<StockLedgerRunRepository>(relaxed = true)
     private val worker = mockk<StockLedgerSkuWorker>(relaxed = true)
     private val cleanup = mockk<ReservationCleanupService>(relaxed = true)
-    private val followups = mockk<StockReceiptFollowupDispatcher>(relaxed = true)
+    private val followups = mockk<StockBackorderFollowupJob>(relaxed = true)
     private val processor = StockLedgerProcessor(repository, worker, cleanup, followups, clock)
     private val run = StockLedgerRun(UUID.randomUUID(), today, listOf("A", "B"))
     private val result = StockSyncResult(today, 2, 3, now)
@@ -42,7 +42,7 @@ class StockLedgerProcessorTest {
             worker.process(run, any(), "A")
             worker.process(run, any(), "B")
             repository.complete(run.id, any(), now)
-            followups.dispatch()
+            followups.execute()
         }
     }
 
@@ -55,7 +55,7 @@ class StockLedgerProcessorTest {
 
         verify { repository.fail(run.id, any(), "SKU failure", now) }
         verify(exactly = 0) { repository.complete(any(), any(), any()) }
-        verify(exactly = 0) { followups.dispatch() }
+        verify(exactly = 0) { followups.execute() }
     }
 
     @Test

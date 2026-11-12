@@ -24,7 +24,7 @@ class StockReceiptFollowupDispatcherTest {
     private val job = mockk<BackorderAllocationJob>(relaxed = true)
     private val now = Instant.parse("2026-10-26T10:00:00Z")
     private val receipt = StockReceiptFollowup(UUID.randomUUID(), "SKU", LocalDate.of(2026, 10, 26))
-    private val dispatcher = StockReceiptFollowupDispatcher(
+    private val dispatcher = StockBackorderFollowupJob(
         repository, scheduler, job, Clock.fixed(now, ZoneOffset.UTC)
     )
 
@@ -33,7 +33,7 @@ class StockReceiptFollowupDispatcherTest {
         every { repository.pendingReceipts(100) } returns listOf(receipt)
         every { scheduler.enqueue(any<UUID>(), any<JobLambda>()) } throws IllegalStateException("Unavailable")
 
-        dispatcher.dispatch()
+        dispatcher.execute()
 
         verify { repository.receiptFailed(receipt.id, "Unavailable") }
         verify(exactly = 0) { repository.receiptDispatched(any(), any()) }
@@ -48,7 +48,7 @@ class StockReceiptFollowupDispatcherTest {
         every { job.execute(capture(command)) } returns Unit
 
         repeat(2) {
-            dispatcher.dispatch()
+            dispatcher.execute()
             lambda.captured.run()
             command.captured.requestId shouldBe receipt.id
             command.captured.skuScope shouldBe setOf("SKU")

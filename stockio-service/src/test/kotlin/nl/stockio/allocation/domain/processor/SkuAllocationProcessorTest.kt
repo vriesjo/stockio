@@ -13,7 +13,7 @@ import java.time.ZoneOffset
 import java.util.UUID
 import nl.stockio.allocation.domain.model.AllocationOrder
 import nl.stockio.allocation.domain.performance.AllocationLockContentionPolicy
-import nl.stockio.allocation.domain.port.SkuAllocationDatabase
+import nl.stockio.allocation.domain.port.outbound.SkuAllocationDatabase
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.AllocationSkuOperationEntity
 import nl.stockio.allocation.infra.DemandOrderLineEntity

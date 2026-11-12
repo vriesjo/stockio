@@ -14,12 +14,13 @@ import java.time.LocalDate
 import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import nl.stockio.allocation.application.service.AllocationRequestLimits
+import nl.stockio.allocation.application.service.AllocationService
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
-import nl.stockio.allocation.domain.port.AllocationGateway
+import nl.stockio.allocation.domain.port.outbound.AllocationGateway
 import nl.stockio.allocation.domain.processor.AllocationProcessor
-import nl.stockio.allocation.domain.service.*
 import nl.stockio.api.dto.*
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
 import nl.stockio.stock.domain.processor.StockProjectionProcessor

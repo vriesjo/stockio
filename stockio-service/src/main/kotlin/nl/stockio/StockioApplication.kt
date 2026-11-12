@@ -1,6 +1,6 @@
 package nl.stockio
 
-import nl.stockio.allocation.domain.tools.AllocationMcpTools
+import nl.stockio.allocation.application.tool.AllocationMcpTools
 import org.springframework.ai.support.ToolCallbacks
 import org.springframework.ai.tool.ToolCallback
 import org.springframework.boot.SpringApplication

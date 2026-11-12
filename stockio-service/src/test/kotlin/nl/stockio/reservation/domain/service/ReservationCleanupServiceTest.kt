@@ -12,11 +12,11 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.UUID
-import nl.stockio.allocation.domain.port.AllocationDocumentLockRepository
-import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
-import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
-import nl.stockio.allocation.domain.port.DemandOrderLineRepository
-import nl.stockio.allocation.domain.port.OpenBackorderRepository
+import nl.stockio.allocation.domain.port.outbound.AllocationDocumentLockRepository
+import nl.stockio.allocation.domain.port.outbound.AllocationOrderClaimRepository
+import nl.stockio.allocation.domain.port.outbound.AllocationSkuLockRepository
+import nl.stockio.allocation.domain.port.outbound.DemandOrderLineRepository
+import nl.stockio.allocation.domain.port.outbound.OpenBackorderRepository
 import nl.stockio.allocation.infra.AllocationDocumentLockEntity
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.AllocationSkuLockEntity

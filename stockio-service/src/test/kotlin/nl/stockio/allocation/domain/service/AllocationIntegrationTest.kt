@@ -39,7 +39,6 @@ import nl.stockio.stock.domain.job.StockLedgerSyncJob
 import nl.stockio.stock.infra.AllocationJobResultEntity
 import nl.stockio.stock.infra.AllocationJobResultJpaRepository
 import nl.stockio.stock.infra.StockLedgerSyncStatusJdbcTemplateRepository
-import nl.stockio.reservation.domain.job.ReservationExpiryJob
 import nl.stockio.allocation.domain.processor.ExcelReportProcessor
 import nl.stockio.allocation.domain.processor.SkuAllocationProcessor
 import nl.stockio.stock.domain.processor.StockLedgerProcessor
@@ -51,6 +50,13 @@ import nl.stockio.allocation.infra.AllocationRunJpaRepository
 import nl.stockio.allocation.infra.AllocationSourceJpaRepository
 import nl.stockio.allocation.infra.AllocationOrderClaimJpaRepository
 import nl.stockio.StockioApplication
+import nl.stockio.allocation.application.service.AllocationBackorderService
+import nl.stockio.allocation.application.service.AllocationDocumentService
+import nl.stockio.allocation.application.service.AllocationExcelService
+import nl.stockio.allocation.application.service.AllocationRequestLimits
+import nl.stockio.allocation.application.service.AllocationRunLifecycleService
+import nl.stockio.allocation.application.service.AllocationService
+import nl.stockio.allocation.application.service.allocationLines
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
@@ -64,6 +70,7 @@ import nl.stockio.stock.infra.StockReservationJpaRepository
 import nl.stockio.util.requestHash
 import nl.stockio.product.infra.ProductKnowledgeChunk
 import nl.stockio.product.infra.ProductVectorJdbcTemplateRepository
+import nl.stockio.reservation.application.job.ReservationExpiryJob
 import nl.stockio.reservation.domain.service.ReservationExpiryService
 import nl.stockio.reservation.infra.InboundSupplyEntity
 import nl.stockio.stock.domain.service.StockLedgerSyncProperties
