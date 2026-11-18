@@ -2,6 +2,7 @@ package nl.stockio.allocation.infra
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
+import java.time.Duration
 import nl.stockio.allocation.domain.fastpath.AllocationGatewayRedisHoldLine
 import nl.stockio.allocation.domain.fastpath.RedisKeys
 import nl.stockio.allocation.domain.port.outbound.AllocationGateway
@@ -25,6 +26,7 @@ import org.springframework.stereotype.Service
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import org.springframework.boot.context.properties.ConfigurationProperties
 
 private val logger = KotlinLogging.logger {}
 
@@ -199,4 +201,20 @@ class AllocationRedisGateway(
             )
         }
     }
+}
+
+@ConfigurationProperties(prefix = "stockio.allocation.redis")
+data class AllocationGatewayProperties(
+    val enabled: Boolean = false,
+    val holdTtl: Duration = Duration.ofMinutes(10),
+    val defaultWarehouse: String = "MAIN",
+    val redisHost: String = "localhost",
+    val redisPort: Int = 6379,
+    val cdc: Cdc = Cdc()
+) {
+    data class Cdc(
+        val enabled: Boolean = false,
+        val topic: String = "stockio.cdc.public.stock",
+        val groupId: String = "stockio-stock-cdc"
+    )
 }

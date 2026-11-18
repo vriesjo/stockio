@@ -661,3 +661,29 @@ In-progress feature: [Fail-fast lock contention mitigation](../.github/memory/is
 - `GET /api/reservations/orders/{key}/redis` returns a `stock:sku`, `reservation`, or `expiry:res` value when fast path is enabled, and rejects any other key
 
 In-progress feature: [Redis Fast Path provisional allocation accept](../.github/memory/issues/feature-redis-fast-path.md).
+
+## Scenario 23: Review high-throughput event-driven changes with a reusable guideline baseline
+
+**Status:** In-progress.
+
+### Gherkin description
+**Given** a pull request changes Stockio in one or more high-risk areas (Spring runtime flow, Kafka/RabbitMQ ingestion, PostgreSQL locking/transactions, or allocation throughput controls) \
+**When** a reviewer applies the repository guideline baseline \
+**Then** the review validates architecture boundaries, reliability semantics, and contention behavior against explicit checks \
+**And** required evidence is requested before approving claims about correctness, throughput, and operational safety \
+**And** unsupported guarantees are rejected as part of the review outcome
+
+### High-level technical analysis
+- Stockio already captures critical architectural constraints (hexagonal boundaries, lock ordering, admission controls, Kafka tracking, and partial JPA/JDBC/R2DBC split), but review expectations are distributed across architecture/scenario/specification and issue files
+- A dedicated guideline feature should centralize review dimensions without changing runtime behavior
+- The baseline should be hybrid: reusable for similar Spring Boot + Kafka + PostgreSQL event-driven systems, while grounded in Stockio-specific invariants and failure policies
+- The first increment focuses on defining topics, acceptance criteria, and required review evidence; implementation of automation or templates can be a later feature
+
+### Acceptance Criteria
+- The guideline baseline explicitly covers architecture boundaries, Kafka reliability/replay safety, PostgreSQL locking/transaction correctness, and high-throughput backpressure/contention behavior
+- Each topic includes concrete review checks and anti-patterns, not only descriptive principles
+- The guideline text separates repository-specific invariants from reusable cross-project recommendations
+- The baseline includes required evidence expectations for claims about performance, reliability, and delivery guarantees
+- Documentation avoids success-shaped wording for ambiguous outcomes and avoids unsupported guarantees (for example, exactly-once or production throughput claims without representative evidence)
+
+Draft feature: [Technical code review guideline baseline](../.github/memory/issues/feature-technical-code-review-guidelines.md).
