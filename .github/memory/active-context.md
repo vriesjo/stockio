@@ -1,5 +1,26 @@
 # Active Context
 
+## Feature: Introduce ktlint static analysis
+
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-introduce-ktlint-static-analysis)
+- **Scenario:** [Scenario 24](../../docs/scenarios.md#scenario-24-check-kotlin-style-with-ktlint)
+- **Issue:** [Feature issue](./issues/feature-introduce-ktlint-static-analysis.md)
+- **Plan:** [Introduce ktlint](../../.cursor/plans/Introduce%20ktlint-47d28501.plan.md)
+- **Status:** Done
+- **Priority:** Not set
+- **Implementation started:** Yes. Complete locally.
+
+### Steps worked on
+- Confirmed ktlint is absent from the Groovy build, CI, and EditorConfig. Kotlin is 2.2.20 and Gradle is 8.14.3.
+- Agreed to format all hand-written Kotlin with no baseline, using plugin 14.2.0 and ktlint 1.8.0.
+- Agreed the root EditorConfig: 2-space indent, line length off, trailing commas disabled. `ktlint_code_style` stays unset.
+- Applied the plugin, excluded generated and build outputs, formatted hand-written Kotlin, and added `:stockio-test-harness:ktlintCheck` to CI.
+- Renamed `AllocationRequestPublisher.kt` and `AllocationJsonSchemaSerializer.kt` to satisfy the filename rule, and replaced wildcard test imports.
+- `ktlintCheck` passed. Service, API, and harness Kotlin sources compile, including tests and the performance source set. `trimIndent()` string values are unchanged.
+
+### Next possible steps (suggestions)
+- Review the style diff, then commit when ready. The full service test suite was not run.
+
 ## Current change: JSON Schema for allocation Kafka records
 
 - Allocation records on `stockio.allocation.requests` use Confluent JSON Schema. The value is an `AllocationRequest` with a schema id. Plain JSON fails deserialization and is dead-lettered without a retry. The key stays a UUID string.

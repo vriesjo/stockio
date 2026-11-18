@@ -1,9 +1,5 @@
 package nl.stockio.stock.domain.port
 
-import java.time.Instant
-import java.time.LocalDate
-import java.util.Optional
-import java.util.UUID
 import nl.stockio.allocation.domain.job.AllocationJobTrackingState
 import nl.stockio.api.dto.StockSyncResult
 import nl.stockio.stock.infra.AllocationJobResultEntity
@@ -13,64 +9,94 @@ import nl.stockio.stock.infra.StockDailySnapshot
 import nl.stockio.stock.infra.StockEntity
 import nl.stockio.stock.infra.StockLedgerSyncState
 import nl.stockio.stock.infra.StockReservationEntity
+import java.time.Instant
+import java.time.LocalDate
+import java.util.Optional
+import java.util.UUID
 
 interface StockRepository {
+  fun findAll(): List<StockEntity>
 
-    fun findAll(): List<StockEntity>
-    fun findAllBySku(sku: String): List<StockEntity>
-    fun <S : StockEntity> saveAll(entities: Iterable<S>): List<S>
-    fun lockAllBySkuIn(skus: Collection<String>): List<StockEntity>
+  fun findAllBySku(sku: String): List<StockEntity>
+
+  fun <S : StockEntity> saveAll(entities: Iterable<S>): List<S>
+
+  fun lockAllBySkuIn(skus: Collection<String>): List<StockEntity>
 }
 
 interface StockProjectionLockRepository {
-    fun acquireAllocationReadLock()
-    fun acquire()
+  fun acquireAllocationReadLock()
+
+  fun acquire()
 }
 
 interface StockLedgerSyncStatusRepository {
+  fun getSyncStatus(): StockLedgerSyncState
 
-    fun getSyncStatus(): StockLedgerSyncState
-    fun recordSuccess(result: StockSyncResult)
+  fun recordSuccess(result: StockSyncResult)
 }
 
 interface StockReservationRepository {
-    fun findAll(): List<StockReservationEntity>
-    fun findAllBySku(sku: String): List<StockReservationEntity>
-    fun deleteAll(entities: Iterable<StockReservationEntity>)
-    fun <S : StockReservationEntity> saveAll(entities: Iterable<S>): List<S>
-    fun lockAllByOrderLineIdIn(lineIds: Collection<String>): List<StockReservationEntity>
-    fun lockAllByOrderIdIn(orderIds: Collection<String>): List<StockReservationEntity>
-    fun findAllByOrderIdIn(orderIds: Collection<String>): List<StockReservationEntity>
-    fun findAllByRequiredDeliveryDateLessThanEqual(requiredDeliveryDate: LocalDate): List<StockReservationEntity>
+  fun findAll(): List<StockReservationEntity>
+
+  fun findAllBySku(sku: String): List<StockReservationEntity>
+
+  fun deleteAll(entities: Iterable<StockReservationEntity>)
+
+  fun <S : StockReservationEntity> saveAll(entities: Iterable<S>): List<S>
+
+  fun lockAllByOrderLineIdIn(lineIds: Collection<String>): List<StockReservationEntity>
+
+  fun lockAllByOrderIdIn(orderIds: Collection<String>): List<StockReservationEntity>
+
+  fun findAllByOrderIdIn(orderIds: Collection<String>): List<StockReservationEntity>
+
+  fun findAllByRequiredDeliveryDateLessThanEqual(requiredDeliveryDate: LocalDate): List<StockReservationEntity>
 }
 
 interface StockSnapshotRepository {
+  fun replaceSkuFrom(
+    sku: String,
+    startDate: LocalDate,
+    dailySnapshots: List<StockDailySnapshot>,
+    lotSnapshots: List<StockDailyLotSnapshot>
+  )
 
-    fun replaceSkuFrom(
-        sku: String,
-        startDate: LocalDate,
-        dailySnapshots: List<StockDailySnapshot>,
-        lotSnapshots: List<StockDailyLotSnapshot>
-    )
-    fun findDailyBySkuAndDate(sku: String, snapshotDate: LocalDate): List<StockDailySnapshot>
-    fun findLotsBySkuAndDate(sku: String, snapshotDate: LocalDate): List<StockDailyLotSnapshot>
-    fun findDailyByDate(snapshotDate: LocalDate): List<StockDailySnapshot>
-    fun findLotsByDate(snapshotDate: LocalDate): List<StockDailyLotSnapshot>
-    fun findDailyBySkuAndWarehouse(sku: String, warehouseCode: String): List<StockDailySnapshot>
+  fun findDailyBySkuAndDate(
+    sku: String,
+    snapshotDate: LocalDate
+  ): List<StockDailySnapshot>
+
+  fun findLotsBySkuAndDate(
+    sku: String,
+    snapshotDate: LocalDate
+  ): List<StockDailyLotSnapshot>
+
+  fun findDailyByDate(snapshotDate: LocalDate): List<StockDailySnapshot>
+
+  fun findLotsByDate(snapshotDate: LocalDate): List<StockDailyLotSnapshot>
+
+  fun findDailyBySkuAndWarehouse(
+    sku: String,
+    warehouseCode: String
+  ): List<StockDailySnapshot>
 }
 
 interface AllocationJobResultRepository {
-    fun findById(jobId: UUID): Optional<AllocationJobResultEntity>
-    fun <S : AllocationJobResultEntity> save(entity: S): S
+  fun findById(jobId: UUID): Optional<AllocationJobResultEntity>
+
+  fun <S : AllocationJobResultEntity> save(entity: S): S
 }
 
 interface AllocationJobTrackingRepository {
-    fun findById(jobId: UUID): Optional<AllocationJobTrackingEntity>
-    fun <S : AllocationJobTrackingEntity> save(entity: S): S
-    fun transition(
-        jobId: UUID,
-        fromStatuses: Collection<AllocationJobTrackingState>,
-        toStatus: AllocationJobTrackingState,
-        updatedAt: Instant
-    ): Int
+  fun findById(jobId: UUID): Optional<AllocationJobTrackingEntity>
+
+  fun <S : AllocationJobTrackingEntity> save(entity: S): S
+
+  fun transition(
+    jobId: UUID,
+    fromStatuses: Collection<AllocationJobTrackingState>,
+    toStatus: AllocationJobTrackingState,
+    updatedAt: Instant
+  ): Int
 }

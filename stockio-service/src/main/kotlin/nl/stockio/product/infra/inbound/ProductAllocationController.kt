@@ -12,14 +12,12 @@ import org.springframework.web.bind.annotation.RestController
 
 @RestController
 class ProductAllocationController(
-    private val productAllocationService: ProductAllocationService,
+  private val productAllocationService: ProductAllocationService,
 ) : ProductAllocationApi {
-    @Suppress("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
-    override suspend fun allocate(request: ProductAllocationRequest): ResponseEntity<ProductAllocationResponse> =
-        ResponseEntity.ok(productAllocationService.allocate(request))
+  @Suppress("PARAMETER_NAME_CHANGED_ON_OVERRIDE")
+  override suspend fun allocate(request: ProductAllocationRequest): ResponseEntity<ProductAllocationResponse> = ResponseEntity.ok(productAllocationService.allocate(request))
 
-    @ExceptionHandler(IllegalArgumentException::class)
-    @ResponseStatus(HttpStatus.BAD_REQUEST)
-    fun handleInvalidRequest(exception: IllegalArgumentException): Map<String, String> =
-        mapOf("error" to (exception.message ?: "Invalid product allocation request."))
+  @ExceptionHandler(IllegalArgumentException::class)
+  @ResponseStatus(HttpStatus.BAD_REQUEST)
+  fun handleInvalidRequest(exception: IllegalArgumentException): Map<String, String> = mapOf("error" to (exception.message ?: "Invalid product allocation request."))
 }

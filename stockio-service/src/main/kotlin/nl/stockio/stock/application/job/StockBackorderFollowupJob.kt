@@ -15,38 +15,38 @@ import java.util.UUID
 
 @Component
 class StockBackorderFollowupJob(
-    private val repository: StockLedgerRunRepository,
-    private val scheduler: JobScheduler,
-    private val backorderJob: BackorderAllocationJob,
-    private val clock: Clock,
+  private val repository: StockLedgerRunRepository,
+  private val scheduler: JobScheduler,
+  private val backorderJob: BackorderAllocationJob,
+  private val clock: Clock,
 ) {
-    @EventListener(ApplicationReadyEvent::class)
-    fun register() {
-        scheduler.scheduleRecurrently("dispatch-stock-backorder-followups", "* * * * *") { execute() }
-    }
+  @EventListener(ApplicationReadyEvent::class)
+  fun register() {
+    scheduler.scheduleRecurrently("dispatch-stock-backorder-followups", "* * * * *") { execute() }
+  }
 
-    @Job(name = "Dispatch durable stock backorder follow-up", retries = 3)
-    fun execute() {
-        repository.pendingReceipts(100).forEach { receipt ->
-            try {
-                val command =
-                    BackorderAllocationRequest(
-                        requestId = receipt.id,
-                        asOfDate = receipt.asOfDate,
-                        trigger = BackorderAllocationTrigger.STOCK_LEDGER_RECEIPT,
-                        skuScope = setOf(receipt.sku),
-                    )
-                val jobId = UUID.nameUUIDFromBytes("stock-ledger-backorder-job:${receipt.id}".toByteArray())
-                scheduler.enqueue(jobId) { backorderJob.execute(command) }
-                repository.receiptDispatched(receipt.id, clock.instant())
-            } catch (exception: Exception) {
-                repository.receiptFailed(receipt.id, exception.message ?: exception.javaClass.simpleName)
-                logger.warn(exception) { "Receipt follow-up '${receipt.id}' remains pending." }
-            }
-        }
+  @Job(name = "Dispatch durable stock backorder follow-up", retries = 3)
+  fun execute() {
+    repository.pendingReceipts(100).forEach { receipt ->
+      try {
+        val command =
+          BackorderAllocationRequest(
+            requestId = receipt.id,
+            asOfDate = receipt.asOfDate,
+            trigger = BackorderAllocationTrigger.STOCK_LEDGER_RECEIPT,
+            skuScope = setOf(receipt.sku),
+          )
+        val jobId = UUID.nameUUIDFromBytes("stock-ledger-backorder-job:${receipt.id}".toByteArray())
+        scheduler.enqueue(jobId) { backorderJob.execute(command) }
+        repository.receiptDispatched(receipt.id, clock.instant())
+      } catch (exception: Exception) {
+        repository.receiptFailed(receipt.id, exception.message ?: exception.javaClass.simpleName)
+        logger.warn(exception) { "Receipt follow-up '${receipt.id}' remains pending." }
+      }
     }
+  }
 
-    companion object {
-        private val logger = KotlinLogging.logger {}
-    }
+  companion object {
+    private val logger = KotlinLogging.logger {}
+  }
 }

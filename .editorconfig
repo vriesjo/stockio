@@ -1,0 +1,8 @@
+root = true
+
+[{*.kt,*.kts,*.kt.ftl}]
+max_line_length = off
+indent_style = space
+indent_size = 2
+ktlint_standard_trailing-comma-on-call-site = disabled
+ktlint_standard_trailing-comma-on-declaration-site = disabled

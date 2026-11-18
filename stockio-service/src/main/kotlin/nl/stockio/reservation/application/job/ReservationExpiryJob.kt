@@ -20,21 +20,21 @@ import org.springframework.stereotype.Component
  */
 @Component
 class ReservationExpiryJob(
-    private val expiryService: ReservationExpiryService,
-    private val properties: ReservationProperties,
-    private val jobScheduler: JobScheduler
+  private val expiryService: ReservationExpiryService,
+  private val properties: ReservationProperties,
+  private val jobScheduler: JobScheduler
 ) {
-    @EventListener(ApplicationReadyEvent::class)
-    fun register() {
-        jobScheduler.scheduleRecurrently("expire-allocation-reservations", properties.expiryInterval) {
-            execute()
-        }
+  @EventListener(ApplicationReadyEvent::class)
+  fun register() {
+    jobScheduler.scheduleRecurrently("expire-allocation-reservations", properties.expiryInterval) {
+      execute()
     }
+  }
 
-    @Job(name = "Expire unconfirmed allocation reservations", retries = 3)
-    fun execute() {
-        do {
-            val expiredCount = expiryService.expireBatch()
-        } while (expiredCount == properties.expiryBatchSize)
-    }
+  @Job(name = "Expire unconfirmed allocation reservations", retries = 3)
+  fun execute() {
+    do {
+      val expiredCount = expiryService.expireBatch()
+    } while (expiredCount == properties.expiryBatchSize)
+  }
 }

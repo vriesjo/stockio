@@ -5,7 +5,7 @@
 - **Frontend:** React, NextJs
 - **Database:** PostgreSQL (Spring Data JPA, R2DBC for SKU allocation, Flyway, pgvector)
 - **Testing:** JUnit Jupiter, Testcontainers, Mockk, Kotest, Playwright
-- **Build:** Gradle
+- **Build:** Gradle (`ktlintCheck`, `ktlintFormat`)
 
 ## Overview
 
