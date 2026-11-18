@@ -102,6 +102,8 @@ Service and harness tests are JUnit Jupiter. Kotest supplies assertions. Mockk i
 
 | Check | Command |
 | --- | --- |
+| Kotlin style | `./gradlew ktlintCheck` |
+| Kotlin format | `./gradlew ktlintFormat` |
 | All modules | `make test` or `./gradlew test` |
 | Service unit and integration tests | `./gradlew :stockio-service:test` |
 | OpenAPI documents | `./gradlew :stockio-api:openApiValidate :stockio-api:openApiValidateReservation` |

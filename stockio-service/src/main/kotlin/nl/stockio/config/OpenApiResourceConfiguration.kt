@@ -6,8 +6,9 @@ import org.springframework.web.reactive.config.WebFluxConfigurer
 
 @Configuration
 class OpenApiResourceConfiguration : WebFluxConfigurer {
-    override fun addResourceHandlers(registry: ResourceHandlerRegistry) {
-        registry.addResourceHandler("/openapi/**")
-            .addResourceLocations("classpath:/openapi/")
-    }
+  override fun addResourceHandlers(registry: ResourceHandlerRegistry) {
+    registry
+      .addResourceHandler("/openapi/**")
+      .addResourceLocations("classpath:/openapi/")
+  }
 }

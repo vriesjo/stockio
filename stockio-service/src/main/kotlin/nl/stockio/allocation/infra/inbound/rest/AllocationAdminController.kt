@@ -20,31 +20,31 @@ import java.nio.file.Path
 @RestController
 @RequestMapping("/api/admin")
 class AllocationAdminController(
-    private val allocationExcelService: AllocationExcelService,
-    private val allocationTools: AllocationMcpTools,
-    private val allocationJobRunrService: AllocationJobRunrService,
-    @Value("\${stockio.allocation.csv-path}")
-    private val csvPath: String,
-    private val blockingHttp: BlockingHttp,
+  private val allocationExcelService: AllocationExcelService,
+  private val allocationTools: AllocationMcpTools,
+  private val allocationJobRunrService: AllocationJobRunrService,
+  @Value("\${stockio.allocation.csv-path}")
+  private val csvPath: String,
+  private val blockingHttp: BlockingHttp,
 ) {
-    @GetMapping("/allocations/generate-request-by-csv")
-    fun loadCsv(): Mono<AllocationRequest> =
-        blockingHttp.call {
-            allocationExcelService.loadCsvAndCreateAllocationRequest(Path.of(csvPath))
-        }
+  @GetMapping("/allocations/generate-request-by-csv")
+  fun loadCsv(): Mono<AllocationRequest> =
+    blockingHttp.call {
+      allocationExcelService.loadCsvAndCreateAllocationRequest(Path.of(csvPath))
+    }
 
-    @PostMapping("/allocations/generate-excel")
-    fun generateExcelReport(
-        @Valid @RequestBody request: ExcelReportRequest,
-    ): Mono<String> =
-        blockingHttp.call {
-            allocationTools.generateExcelReport(request)
-        }
+  @PostMapping("/allocations/generate-excel")
+  fun generateExcelReport(
+    @Valid @RequestBody request: ExcelReportRequest,
+  ): Mono<String> =
+    blockingHttp.call {
+      allocationTools.generateExcelReport(request)
+    }
 
-    @DeleteMapping("/allocations/flush-all-jobs")
-    fun flushAllJobs(): Mono<String> =
-        blockingHttp.call {
-            allocationJobRunrService.flushAllJobs()
-            "Jobs with excessive retries deleted."
-        }
+  @DeleteMapping("/allocations/flush-all-jobs")
+  fun flushAllJobs(): Mono<String> =
+    blockingHttp.call {
+      allocationJobRunrService.flushAllJobs()
+      "Jobs with excessive retries deleted."
+    }
 }

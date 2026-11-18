@@ -687,3 +687,33 @@ In-progress feature: [Redis Fast Path provisional allocation accept](../.github/
 - Documentation avoids success-shaped wording for ambiguous outcomes and avoids unsupported guarantees (for example, exactly-once or production throughput claims without representative evidence)
 
 Draft feature: [Technical code review guideline baseline](../.github/memory/issues/feature-technical-code-review-guidelines.md).
+
+## Scenario 24: Check Kotlin style with ktlint
+
+**Status:** Done.
+
+### Gherkin description
+**Given** hand-written Kotlin in `:stockio-service`, `:stockio-api`, and `:stockio-test-harness` \
+**And** generated OpenAPI Kotlin under the API build directory \
+**When** CI or a developer runs the Gradle ktlint check \
+**Then** style violations in hand-written Kotlin fail the check \
+**And** generated OpenAPI sources are not part of the check \
+**And** `ktlintFormat` rewrites hand-written Kotlin to the repository EditorConfig
+
+### High-level technical analysis
+- The root build is Groovy. Kotlin is 2.2.20 and Gradle is 8.14.3. There is no ktlint, Spotless, detekt, or EditorConfig today
+- `org.jlleitschuh.gradle.ktlint` 14.2.0 applies to every subproject and pins the ktlint engine to 1.8.0. ktlint 2.0 alphas stay out
+- `ktlintCheck` becomes part of `check`, which already covers the service and API in CI. The harness is not in that job, so CI runs `:stockio-test-harness:ktlintCheck` without the harness test suite
+- Filters exclude `**/generated/**` and `**/build/**`. Generated controller interfaces live in `stockio-api/build/generated/openapi/` and are compiled by the service. The Next.js tree has no Kotlin sources
+- The root EditorConfig sets 2-space indentation, turns line length off, and disables trailing commas on call sites and declaration sites. Other rules stay on ktlint's default `ktlint_official` style
+- Existing sources use 4-space indentation. The first change formats them so the check passes without a baseline file. The format diff is style only
+
+### Acceptance Criteria
+- All three modules fail `ktlintCheck` when hand-written Kotlin breaks the EditorConfig or the enabled ktlint rules
+- Generated OpenAPI Kotlin is excluded from both format and check
+- Hand-written Kotlin is formatted to 2-space indentation with trailing commas removed, and no baseline file is required
+- CI runs the service and API checks, which include `ktlintCheck`, and runs `:stockio-test-harness:ktlintCheck` without the harness Testcontainers suite
+- The service, API, and harness Kotlin sources still compile after formatting
+- The architecture stack line and the README check table name `ktlintCheck` and `ktlintFormat` only after those tasks exist
+
+Implemented feature: [Introduce ktlint static analysis](../.github/memory/issues/feature-introduce-ktlint-static-analysis.md).

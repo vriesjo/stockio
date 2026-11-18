@@ -11,30 +11,29 @@ import org.springframework.context.annotation.Configuration
 @Configuration
 @EnableConfigurationProperties(AllocationGatewayProperties::class)
 class AllocationGatewayDisabledConfiguration {
-    @Bean
-    @ConditionalOnProperty(prefix = "stockio.allocation.redis", name = ["enabled"], havingValue = "false", matchIfMissing = true)
-    fun disabledAllocationGateway(): AllocationGateway = DisabledAllocationRedisGateway()
+  @Bean
+  @ConditionalOnProperty(prefix = "stockio.allocation.redis", name = ["enabled"], havingValue = "false", matchIfMissing = true)
+  fun disabledAllocationGateway(): AllocationGateway = DisabledAllocationRedisGateway()
 }
 
 class DisabledAllocationRedisGateway : AllocationGateway {
-    override val enabled: Boolean = false
+  override val enabled: Boolean = false
 
-    override fun accept(request: AllocationRequest) = Unit
+  override fun accept(request: AllocationRequest) = Unit
 
-    override fun rollback(request: AllocationRequest) = Unit
+  override fun rollback(request: AllocationRequest) = Unit
 
-    override fun settle(request: AllocationRequest) = Unit
+  override fun settle(request: AllocationRequest) = Unit
 
-    override fun getByKey(key: String): RedisKeyResponse? = null
+  override fun getByKey(key: String): RedisKeyResponse? = null
 }
 
-class AllocationRedisSyncDisabledException :
-    IllegalStateException("Redis accepts only async allocation jobs.")
+class AllocationRedisSyncDisabledException : IllegalStateException("Redis accepts only async allocation jobs.")
 
-class AllocationRedisNotReadyException :
-    IllegalStateException("Redis is rebuilding availability.")
+class AllocationRedisNotReadyException : IllegalStateException("Redis is rebuilding availability.")
 
-class AllocationRedisInsufficientStockException :
-    IllegalStateException("Redis availability cannot cover this allocation request.")
+class AllocationRedisInsufficientStockException : IllegalStateException("Redis availability cannot cover this allocation request.")
 
-class AllocationRedisHoldConflictException(message: String) : IllegalStateException(message)
+class AllocationRedisHoldConflictException(
+  message: String
+) : IllegalStateException(message)

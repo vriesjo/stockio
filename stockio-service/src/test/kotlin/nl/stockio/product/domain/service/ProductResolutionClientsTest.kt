@@ -16,73 +16,75 @@ import org.springframework.test.web.client.response.MockRestResponseCreators.wit
 import org.springframework.web.client.RestClient
 
 class ProductResolutionClientsTest {
-
-    @Test
-    fun `Tavily client sends its API contract and maps source results`() {
-        val builder = RestClient.builder().baseUrl("https://api.tavily.com")
-        val server = MockRestServiceServer.bindTo(builder).build()
-        server.expect(requestTo("https://api.tavily.com/search"))
-            .andExpect(method(HttpMethod.POST))
-            .andExpect(
-                content().json(
-                    """
-                        {
-                          "api_key": "test-key",
-                          "query": "Maki Komkommer product",
-                          "search_depth": "basic",
-                          "max_results": 5,
-                          "include_answer": false
-                        }
-                    """.trimIndent()
-                )
-            )
-            .andRespond(
-                withSuccess(
-                    """{"results":[{"title":"Maki Komkommer","url":"https://example.test/maki","content":"Cucumber maki"}]}""",
-                    MediaType.APPLICATION_JSON
-                )
-            )
-        val client = TavilyHttpSearchClient(
-            builder.build(),
-            ProductResolutionProperties(tavilyApiKey = "test-key")
+  @Test
+  fun `Tavily client sends its API contract and maps source results`() {
+    val builder = RestClient.builder().baseUrl("https://api.tavily.com")
+    val server = MockRestServiceServer.bindTo(builder).build()
+    server
+      .expect(requestTo("https://api.tavily.com/search"))
+      .andExpect(method(HttpMethod.POST))
+      .andExpect(
+        content().json(
+          """
+          {
+            "api_key": "test-key",
+            "query": "Maki Komkommer product",
+            "search_depth": "basic",
+            "max_results": 5,
+            "include_answer": false
+          }
+          """.trimIndent()
         )
-
-        val result = client.search("Maki Komkommer product")
-
-        assertEquals(
-            listOf(TavilySearchResult("Maki Komkommer", "https://example.test/maki", "Cucumber maki")),
-            result
+      ).andRespond(
+        withSuccess(
+          """{"results":[{"title":"Maki Komkommer","url":"https://example.test/maki","content":"Cucumber maki"}]}""",
+          MediaType.APPLICATION_JSON
         )
-        server.verify()
-    }
+      )
+    val client =
+      TavilyHttpSearchClient(
+        builder.build(),
+        ProductResolutionProperties(tavilyApiKey = "test-key")
+      )
 
-    @Test
-    fun `Ollama client sends batch inputs and parses embedding vectors`() {
-        val builder = RestClient.builder().baseUrl("http://localhost:11434")
-        val server = MockRestServiceServer.bindTo(builder).build()
-        val embedding = List(PRODUCT_VECTOR_DIMENSIONS) { 0.0 }.joinToString(",")
-        server.expect(requestTo("http://localhost:11434/api/embed"))
-            .andExpect(method(HttpMethod.POST))
-            .andExpect(content().json("""{"model":"nomic-embed-text","input":["Maki Komkommer"]}"""))
-            .andRespond(
-                withSuccess(
-                    """{"embeddings":[[$embedding]]}""",
-                    MediaType.APPLICATION_JSON
-                )
-            )
-        val client = OllamaHttpEmbeddingClient(
-            builder.build(),
-            ProductResolutionProperties()
+    val result = client.search("Maki Komkommer product")
+
+    assertEquals(
+      listOf(TavilySearchResult("Maki Komkommer", "https://example.test/maki", "Cucumber maki")),
+      result
+    )
+    server.verify()
+  }
+
+  @Test
+  fun `Ollama client sends batch inputs and parses embedding vectors`() {
+    val builder = RestClient.builder().baseUrl("http://localhost:11434")
+    val server = MockRestServiceServer.bindTo(builder).build()
+    val embedding = List(PRODUCT_VECTOR_DIMENSIONS) { 0.0 }.joinToString(",")
+    server
+      .expect(requestTo("http://localhost:11434/api/embed"))
+      .andExpect(method(HttpMethod.POST))
+      .andExpect(content().json("""{"model":"nomic-embed-text","input":["Maki Komkommer"]}"""))
+      .andRespond(
+        withSuccess(
+          """{"embeddings":[[$embedding]]}""",
+          MediaType.APPLICATION_JSON
         )
+      )
+    val client =
+      OllamaHttpEmbeddingClient(
+        builder.build(),
+        ProductResolutionProperties()
+      )
 
-        val result = client.embed(listOf("Maki Komkommer"))
+    val result = client.embed(listOf("Maki Komkommer"))
 
-        assertEquals(1, result.size)
-        assertEquals(PRODUCT_VECTOR_DIMENSIONS, result.single().size)
-        server.verify()
-    }
+    assertEquals(1, result.size)
+    assertEquals(PRODUCT_VECTOR_DIMENSIONS, result.single().size)
+    server.verify()
+  }
 
-    companion object {
-        private const val PRODUCT_VECTOR_DIMENSIONS = 768
-    }
+  companion object {
+    private const val PRODUCT_VECTOR_DIMENSIONS = 768
+  }
 }

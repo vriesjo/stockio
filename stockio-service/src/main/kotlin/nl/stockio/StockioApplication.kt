@@ -9,14 +9,12 @@ import org.springframework.context.annotation.Bean
 
 @SpringBootApplication
 class StockioApplication {
-
-    @Bean
-    fun toolCallbacks(
-        allocationTools: AllocationMcpTools
-    ): List<ToolCallback> =
-        ToolCallbacks.from(allocationTools).toList()
+  @Bean
+  fun toolCallbacks(
+    allocationTools: AllocationMcpTools
+  ): List<ToolCallback> = ToolCallbacks.from(allocationTools).toList()
 }
 
 fun main(args: Array<String>) {
-    SpringApplication.run(StockioApplication::class.java, *args)
+  SpringApplication.run(StockioApplication::class.java, *args)
 }
