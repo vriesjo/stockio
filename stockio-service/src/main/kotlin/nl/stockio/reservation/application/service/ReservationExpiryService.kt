@@ -9,7 +9,7 @@ import org.springframework.stereotype.Service
  */
 @Service
 class ReservationExpiryService(
-    private val cleanupService: ReservationCleanupService
+  private val cleanupService: ReservationCleanupService
 ) {
-    fun expireBatch(): Int = cleanupService.expireDueBatch()
+  fun expireBatch(): Int = cleanupService.expireDueBatch()
 }

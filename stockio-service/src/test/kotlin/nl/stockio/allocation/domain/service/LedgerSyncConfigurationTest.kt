@@ -1,8 +1,5 @@
 package nl.stockio.allocation.domain.service
 
-import java.time.Clock
-import java.time.Instant
-import java.time.ZoneId
 import nl.stockio.stock.domain.service.StockLedgerSyncConfiguration
 import nl.stockio.stock.domain.service.StockLedgerSyncProperties
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -12,34 +9,39 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
+import java.time.Clock
+import java.time.Instant
+import java.time.ZoneId
 
 class LedgerSyncConfigurationTest {
-    @ParameterizedTest
-    @ValueSource(strings = [
-        "cron=invalid", "cron=0 0 30 2 *", "cron=0 0 0 * * *",
-        "zone=Invalid/Zone", "freshness-tolerance=-1m"
-    ])
-    fun `invalid ledger settings fail application startup`(setting: String) {
-        ApplicationContextRunner()
-            .withUserConfiguration(StockLedgerSyncConfiguration::class.java)
-            .withPropertyValues("stockio.stock.ledger-sync.$setting")
-            .run { context -> assertNotNull(context.startupFailure) }
-    }
+  @ParameterizedTest
+  @ValueSource(
+    strings = [
+      "cron=invalid", "cron=0 0 30 2 *", "cron=0 0 0 * * *",
+      "zone=Invalid/Zone", "freshness-tolerance=-1m"
+    ]
+  )
+  fun `invalid ledger settings fail application startup`(setting: String) {
+    ApplicationContextRunner()
+      .withUserConfiguration(StockLedgerSyncConfiguration::class.java)
+      .withPropertyValues("stockio.stock.ledger-sync.$setting")
+      .run { context -> assertNotNull(context.startupFailure) }
+  }
 
-    @Test
-    fun `business clock and twice daily schedule use the same configured zone`() {
-        ApplicationContextRunner()
-            .withUserConfiguration(StockLedgerSyncConfiguration::class.java)
-            .withPropertyValues("stockio.stock.ledger-sync.zone=Europe/Amsterdam")
-            .run { context ->
-                assertNull(context.startupFailure)
-                val properties = context.getBean(StockLedgerSyncProperties::class.java)
-                assertEquals(ZoneId.of("Europe/Amsterdam"), context.getBean(Clock::class.java).zone)
-                val beforeNoon = Instant.parse("2026-10-20T08:00:00Z")
-                assertEquals(
-                    Instant.parse("2026-10-20T10:00:00Z"),
-                    properties.schedule.next(beforeNoon, beforeNoon, properties.zoneId)
-                )
-            }
-    }
+  @Test
+  fun `business clock and twice daily schedule use the same configured zone`() {
+    ApplicationContextRunner()
+      .withUserConfiguration(StockLedgerSyncConfiguration::class.java)
+      .withPropertyValues("stockio.stock.ledger-sync.zone=Europe/Amsterdam")
+      .run { context ->
+        assertNull(context.startupFailure)
+        val properties = context.getBean(StockLedgerSyncProperties::class.java)
+        assertEquals(ZoneId.of("Europe/Amsterdam"), context.getBean(Clock::class.java).zone)
+        val beforeNoon = Instant.parse("2026-10-20T08:00:00Z")
+        assertEquals(
+          Instant.parse("2026-10-20T10:00:00Z"),
+          properties.schedule.next(beforeNoon, beforeNoon, properties.zoneId)
+        )
+      }
+  }
 }

@@ -18,17 +18,18 @@ import javax.sql.DataSource
 @Configuration
 @EnableConfigurationProperties(DataSourceProperties::class)
 class JdbcDataSourceConfiguration {
-
-    @Bean
-    @ConditionalOnMissingBean(DataSource::class)
-    @ConfigurationProperties(prefix = "spring.datasource.hikari")
-    fun dataSource(properties: DataSourceProperties): HikariDataSource {
-        val dataSource = properties.initializeDataSourceBuilder()
-            .type(HikariDataSource::class.java)
-            .build()
-        if (StringUtils.hasText(properties.name)) {
-            dataSource.poolName = properties.name
-        }
-        return dataSource
+  @Bean
+  @ConditionalOnMissingBean(DataSource::class)
+  @ConfigurationProperties(prefix = "spring.datasource.hikari")
+  fun dataSource(properties: DataSourceProperties): HikariDataSource {
+    val dataSource =
+      properties
+        .initializeDataSourceBuilder()
+        .type(HikariDataSource::class.java)
+        .build()
+    if (StringUtils.hasText(properties.name)) {
+      dataSource.poolName = properties.name
     }
+    return dataSource
+  }
 }

@@ -835,3 +835,50 @@ claims.
 - [Scenario 23: Review high-throughput event-driven changes with a reusable guideline baseline](./scenarios.md#scenario-23-review-high-throughput-event-driven-changes-with-a-reusable-guideline-baseline)
 - [Feature issue: technical code review guideline baseline](../.github/memory/issues/feature-technical-code-review-guidelines.md)
 - [Technical code review guidelines](./technical-code-review-guidelines.md)
+
+## Feature: Introduce ktlint static analysis
+
+- **Status:** Done
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md)
+- **Bounded Context:** Build and static analysis
+
+### Overview
+
+Add ktlint to the Gradle build so hand-written Kotlin in the service, API, and
+test harness is checked in CI. The first change formats existing sources to the
+repository EditorConfig. Generated OpenAPI Kotlin stays out of the check. There
+is no baseline file.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Gradle ktlint plugin | Apply `org.jlleitschuh.gradle.ktlint` 14.2.0 to every subproject and pin the ktlint engine to 1.8.0. |
+| FR-02 | Exclude generated sources | Exclude `**/generated/**` and `**/build/**` from format and check, including OpenAPI interfaces compiled into the service. |
+| FR-03 | EditorConfig | Add the agreed root `.editorconfig`: 2-space indent, `max_line_length` off, and trailing-comma rules disabled on call sites and declaration sites. |
+| FR-04 | Format existing Kotlin | Format hand-written main, test, and harness performance sources so `ktlintCheck` passes without a baseline. |
+| FR-05 | CI gate | Keep `ktlintCheck` on the service and API `check` tasks, and run `:stockio-test-harness:ktlintCheck` in CI without the harness test suite. |
+| FR-06 | Document the tasks | After the tasks exist, name `ktlintCheck` and `ktlintFormat` in the architecture stack line and the README check table. |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Style-only diff | Formatting changes indentation, imports, spacing, wrapping, and trailing commas. It does not change program behavior. |
+| NFR-02 | Stable ktlint release | Use ktlint 1.8.0. Do not adopt a 2.0 alpha. |
+| NFR-03 | Unset code style | Leave `ktlint_code_style` unset so ktlint 1.8 keeps `ktlint_official` for every rule that EditorConfig does not disable. |
+
+### Plan
+
+1. Apply the plugin in `build.gradle` and exclude generated and build outputs.
+2. Add the root `.editorconfig`.
+3. Run `ktlintFormat` and fix violations the formatter cannot correct.
+4. Add the harness `ktlintCheck` to CI and update architecture, README, and active context.
+5. Run `ktlintCheck` and compile the three modules, then review the format diff.
+
+### Resources
+
+- [Scenario 24: Check Kotlin style with ktlint](./scenarios.md#scenario-24-check-kotlin-style-with-ktlint)
+- [Feature issue: introduce ktlint static analysis](../.github/memory/issues/feature-introduce-ktlint-static-analysis.md)
+- [Implementation plan](../.cursor/plans/Introduce%20ktlint-47d28501.plan.md)

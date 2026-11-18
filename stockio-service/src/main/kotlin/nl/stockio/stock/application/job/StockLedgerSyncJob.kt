@@ -14,25 +14,25 @@ import org.springframework.stereotype.Component
  */
 @Component
 class StockLedgerSyncJob(
-    private val processor: StockLedgerProcessor,
-    private val properties: StockLedgerSyncProperties,
-    private val scheduler: JobScheduler
+  private val processor: StockLedgerProcessor,
+  private val properties: StockLedgerSyncProperties,
+  private val scheduler: JobScheduler
 ) {
-    @EventListener(ApplicationReadyEvent::class)
-    fun register() {
-        if (properties.enabled) {
-            scheduler.scheduleRecurrently(RECURRING_ID, properties.cron, properties.zoneId) { execute() }
-        } else {
-            scheduler.deleteRecurringJob(RECURRING_ID)
-        }
+  @EventListener(ApplicationReadyEvent::class)
+  fun register() {
+    if (properties.enabled) {
+      scheduler.scheduleRecurrently(RECURRING_ID, properties.cron, properties.zoneId) { execute() }
+    } else {
+      scheduler.deleteRecurringJob(RECURRING_ID)
     }
+  }
 
-    @Job(name = "Synchronize live stock ledger", retries = 3)
-    fun execute() {
-        processor.processToday()
-    }
+  @Job(name = "Synchronize live stock ledger", retries = 3)
+  fun execute() {
+    processor.processToday()
+  }
 
-    companion object {
-        const val RECURRING_ID = "sync-stock-ledger"
-    }
+  companion object {
+    const val RECURRING_ID = "sync-stock-ledger"
+  }
 }

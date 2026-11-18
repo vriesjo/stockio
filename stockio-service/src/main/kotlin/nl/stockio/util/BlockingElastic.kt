@@ -1,9 +1,9 @@
 package nl.stockio.util
 
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.reactor.asCoroutineDispatcher
 import java.util.concurrent.Executors
-import kotlinx.coroutines.asCoroutineDispatcher
 
 /**
  * Runs blocking Elastic work off the Netty event loop.

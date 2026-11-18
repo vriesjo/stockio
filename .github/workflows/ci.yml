@@ -39,8 +39,8 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      - name: Run service and API checks
-        run: ./gradlew :stockio-service:check :stockio-api:check --no-daemon --stacktrace
+      - name: Run service, API, and ktlint checks
+        run: ./gradlew :stockio-service:check :stockio-api:check :stockio-test-harness:ktlintCheck --no-daemon --stacktrace
 
       - name: Upload Gradle test reports
         if: always()
