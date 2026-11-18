@@ -7,8 +7,8 @@ import nl.stockio.api.dto.OrderReservationLine
 import nl.stockio.api.dto.OrderReservationResponse
 import nl.stockio.api.dto.OrderReservationStatus
 import nl.stockio.api.dto.RedisKeyResponse
-import nl.stockio.allocation.domain.api.exception.CustomerExceptionHandler
-import nl.stockio.allocation.domain.port.AllocationGateway
+import nl.stockio.allocation.infra.inbound.exception.CustomerExceptionHandler
+import nl.stockio.allocation.domain.port.outbound.AllocationGateway
 import nl.stockio.reservation.domain.service.OrderReservationService
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock

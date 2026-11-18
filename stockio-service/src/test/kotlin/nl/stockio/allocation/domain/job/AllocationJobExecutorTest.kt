@@ -9,17 +9,19 @@ import io.mockk.Called
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
+import kotlinx.coroutines.runBlocking
 import java.time.Instant
 import java.time.LocalDate
 import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import nl.stockio.allocation.application.service.AllocationRequestLimits
+import nl.stockio.allocation.application.service.AllocationService
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.performance.AllocationCapacityExceededException
-import nl.stockio.allocation.domain.port.AllocationGateway
+import nl.stockio.allocation.domain.port.outbound.AllocationGateway
 import nl.stockio.allocation.domain.processor.AllocationProcessor
-import nl.stockio.allocation.domain.service.*
 import nl.stockio.api.dto.*
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
 import nl.stockio.stock.domain.processor.StockProjectionProcessor
@@ -68,8 +70,10 @@ class AllocationJobExecutorTest {
         val result = AllocationCompletionResult(request.requestId, run)
         every { repository.findById(request.requestId) } returns Optional.of(
             AllocationJobResultEntity(request.requestId, mapper.writeValueAsString(result)))
-        admission.execute(request.runType) {
-            assertEquals(result, executor.executeSync(request.requestId, request))
+        runBlocking {
+            admission.execute(request.runType) {
+                assertEquals(result, executor.executeSync(request.requestId, request))
+            }
         }
         coVerify(exactly = 0) { service.allocation(any()) }
         verify(exactly = 0) { repository.save(any()) }
@@ -102,9 +106,11 @@ class AllocationJobExecutorTest {
             "stockio.allocation.requests", gateway
         )
         every { repository.findById(any()) } returns Optional.empty()
-        admission.execute(request.runType) {
-            assertThrows(AllocationCapacityExceededException::class.java) {
-                subject.executeSync(request.requestId, request)
+        runBlocking {
+            admission.execute(request.runType) {
+                assertThrows(AllocationCapacityExceededException::class.java) {
+                    subject.executeSync(request.requestId, request)
+                }
             }
         }
         assertEquals(emptyList<String>(), gateway.calls)

@@ -13,9 +13,9 @@ import java.time.Clock
 import java.time.LocalDate
 import java.time.ZoneOffset
 import nl.stockio.api.dto.OrderReservationStatus
-import nl.stockio.allocation.domain.port.AllocationOrderClaimRepository
-import nl.stockio.allocation.domain.port.AllocationSkuLockRepository
-import nl.stockio.allocation.domain.port.OpenBackorderRepository
+import nl.stockio.allocation.domain.port.outbound.AllocationOrderClaimRepository
+import nl.stockio.allocation.domain.port.outbound.AllocationSkuLockRepository
+import nl.stockio.allocation.domain.port.outbound.OpenBackorderRepository
 import nl.stockio.allocation.domain.performance.AllocationLockContentionPolicy
 import nl.stockio.allocation.infra.AllocationOrderClaimEntity
 import nl.stockio.allocation.infra.OpenBackorderEntity

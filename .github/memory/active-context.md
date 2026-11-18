@@ -19,6 +19,26 @@
 - Spring Boot skips JDBC `DataSource` auto-configuration when an R2DBC `ConnectionFactory` exists, so `JdbcDataSourceConfiguration` builds the Hikari pool from `spring.datasource`. The JPA transaction manager is marked primary so `@Transactional` does not see two `TransactionManager` beans. Spring Data R2DBC repositories stay off.
 - `AllocationIntegrationTest` passes, including independent JDBC and R2DBC commit and rollback.
 
+## Feature: Establish a technical code review guideline baseline for high-throughput event-driven systems
+
+- **Specification:** [Feature specification](../../docs/specifications.md#feature-establish-a-technical-code-review-guideline-baseline-for-high-throughput-event-driven-systems)
+- **Scenario:** [Scenario 23](../../docs/scenarios.md#scenario-23-review-high-throughput-event-driven-changes-with-a-reusable-guideline-baseline)
+- **Issue:** [Feature issue](./issues/feature-technical-code-review-guidelines.md)
+- **Status:** In-progress
+- **Priority:** Not set
+- **Implementation started:** Yes. First repository guideline baseline is drafted.
+
+### Steps worked on
+- Consolidated current architectural and runtime constraints from repository docs and key allocation/concurrency paths.
+- Proposed a hybrid guideline direction: reusable for similar Spring/Kafka/PostgreSQL systems while grounded in Stockio invariants.
+- Added linked scenario/specification/issue entries with initial FR/NFR and a sequenced plan for guideline deliverable creation.
+- Published the first baseline guideline document at `docs/technical-code-review-guidelines.md` with topic checks, red flags, evidence expectations, and reviewer template.
+
+### Next possible steps (suggestions)
+- Validate the checklist against one recent high-throughput change to calibrate practical review depth.
+- Add concrete PR examples per topic to reduce reviewer interpretation drift.
+- Decide whether to keep the baseline as repository docs only or later add automation/templates for recurring checks.
+
 ## Feature: Redis Fast Path provisional allocation accept
 
 - **Specification:** [Feature specification](../../docs/specifications.md#feature-redis-fast-path-provisional-allocation-accept)

@@ -17,9 +17,9 @@ import java.util.UUID
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
 import nl.stockio.allocation.domain.performance.AllocationLockContentionException
-import nl.stockio.allocation.domain.service.AllocationBackorderService
-import nl.stockio.allocation.domain.service.AllocationRequestLimits
-import nl.stockio.allocation.domain.service.AllocationService
+import nl.stockio.allocation.application.service.AllocationBackorderService
+import nl.stockio.allocation.application.service.AllocationRequestLimits
+import nl.stockio.allocation.application.service.AllocationService
 import nl.stockio.api.dto.AllocationRequest
 import nl.stockio.api.dto.AllocationRunResult
 import nl.stockio.api.dto.AllocationRunType

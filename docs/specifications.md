@@ -786,3 +786,52 @@ Debezium and Kafka.
 
 - [Scenario 22: Accept allocation jobs on the Redis fast path](./scenarios.md#scenario-22-accept-allocation-jobs-on-the-redis-fast-path)
 - [Feature issue: Redis Fast Path](../.github/memory/issues/feature-redis-fast-path.md)
+
+## Feature: Establish a technical code review guideline baseline for high-throughput event-driven systems
+
+- **Status:** In-progress
+- **Priority:** Not set
+- **Parent Specs:** [Architecture](./architecture.md), [Backpressure and admission control](./arch_backpressure_admission_control.md)
+- **Bounded Context:** Engineering quality governance
+
+### Overview
+
+Define a repository-owned, reusable review-guideline baseline for technical code
+reviews in systems like Stockio (Spring Boot, Kafka/RabbitMQ, PostgreSQL,
+event-driven processing, and high-throughput contention controls). The baseline
+must be practical for both PR authors and reviewers: topic-oriented checklists,
+required evidence expectations, and explicit anti-patterns for unsupported
+claims.
+
+### Functional Requirements (FR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| FR-01 | Guideline topic taxonomy | Define stable review topics covering architecture boundaries, event-ingress reliability, idempotency/replay safety, PostgreSQL locking/transaction semantics, backpressure/admission, contention handling, and operability. |
+| FR-02 | Actionable checks per topic | Provide concrete review checks and red-flag conditions for each topic, not only principles. |
+| FR-03 | Evidence expectations | For each high-risk area, define the minimum evidence expected in a PR (tests, metrics artifacts, failure-mode validation, rollout notes). |
+| FR-04 | Hybrid portability | Keep guidance reusable for similar systems while preserving Stockio-specific invariants (for example lock ordering and status semantics). |
+| FR-05 | Claim hygiene | Require reviewers to reject unsupported guarantees and success-shaped language for ambiguous delivery or processing outcomes. |
+| FR-06 | Audience coverage | Keep the baseline usable by both reviewers and authors (self-check before review). |
+
+### Non-Functional Requirements (NFR)
+
+| ID | Title | Description |
+| --- | --- | --- |
+| NFR-01 | Technical correctness | Guidance must align with current documented architecture and implemented behavior; it must not invent unsupported contracts. |
+| NFR-02 | Brevity with depth | The baseline should remain concise enough for PR use while preserving enough rationale for high-risk decisions. |
+| NFR-03 | Maintainability | The guideline structure should support incremental updates as architecture/features evolve. |
+
+### Plan
+
+1. Consolidate current repository constraints and reliability semantics from architecture/scenario/specification and active-context sources.
+2. Distill review-risk hotspots and group them into a stable topic taxonomy.
+3. Draft per-topic checks, anti-patterns, and required evidence expectations.
+4. Separate repository-specific invariants from portable guidance for similar Spring/Kafka/PostgreSQL systems.
+5. Link the baseline to the supporting scenario and issue handoff for future updates.
+
+### Resources
+
+- [Scenario 23: Review high-throughput event-driven changes with a reusable guideline baseline](./scenarios.md#scenario-23-review-high-throughput-event-driven-changes-with-a-reusable-guideline-baseline)
+- [Feature issue: technical code review guideline baseline](../.github/memory/issues/feature-technical-code-review-guidelines.md)
+- [Technical code review guidelines](./technical-code-review-guidelines.md)

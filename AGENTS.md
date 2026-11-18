@@ -37,9 +37,13 @@ documentation and links.
 6. Use subagents only when separate context is genuinely useful. Give each
    delegated task a bounded objective and do not duplicate the same investigation.
 
-## Feature and issue management lifecycle
+## Feature management lifecycle
 
-The lifecycle below applies when the user invokes `/create issue`, or asks to `write a feature based on the analysis`, 
+- Plan a feature, together with the user, before writing the target feature.
+- Write the feature specification update, insert the scenario and specification.
+- Start the implementation only after the scenario, specification are confirmed by the user.
+
+The lifecycle below applies when the user invokes `/create feature`, or asks to `write a feature based on the in context analysis`, 
 or requests a change that requires a durable feature specification.
 The feature is not implementation-ready until its scenario, specification, and
 issue document are linked.
@@ -48,12 +52,10 @@ issue document are linked.
 
 Base the initial feature definition on:
 
-- the user's `/create issue` command or feature request;
-- the current repository code, tests, configuration, and README;
-- `architecture.md`;
-- `active-context.md`;
-- relevant existing entries in `scenarios.md` and `specifications.md`;
-- applicable lessons in `lessons-learned.md`.
+- The user's `/create feature` command or feature request.
+- The current repository code, `Repository memory` see above.
+- Take a spec driven look at relevant existing entries in `scenarios.md` and `specifications.md`.
+- Peek into `lessons-learned.md` before making assumptions.
 
 Identify the problem, bounded context, current behavior, desired behavior,
 affected components, risks, dependencies, and open decisions. Ask focused
@@ -173,3 +175,11 @@ references, unsupported behavior, missing acceptance criteria, and broken
 documentation links. Record a concise reusable lesson in
 `lessons-learned.md` only when the work reveals a genuinely new process pitfall;
 do not add entries for routine changes.
+
+# Code Review Guidelines
+
+When reviewing pull requests, strictly follow all architectural, coding, and testing guidelines defined here:
+1. [generic-code-review-checklist-and-antipatterns-guideline.md](docs/reviews/generic-code-review-checklist-and-antipatterns-guideline.md)
+2. [kotlin+eda+outbox_code_review_guidelines.md](docs/reviews/kotlin%2Beda%2Boutbox_code_review_guidelines.md)
+3. [spring-boot-code-review-guideline.md](docs/reviews/spring-boot-code-review-guideline.md)
+4. [security-code-review-guideline.md](docs/reviews/security-code-review-guideline.md)

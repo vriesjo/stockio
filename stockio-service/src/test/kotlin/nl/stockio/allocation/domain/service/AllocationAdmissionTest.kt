@@ -13,6 +13,9 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import nl.stockio.allocation.application.service.AllocationBackorderService
+import nl.stockio.allocation.application.service.AllocationRequestLimits
+import nl.stockio.allocation.application.service.AllocationService
 import nl.stockio.allocation.domain.performance.AllocationAdmission
 import nl.stockio.allocation.domain.performance.AllocationAdmissionConfiguration
 import nl.stockio.allocation.domain.performance.AllocationAdmissionProperties
@@ -57,7 +60,8 @@ class AllocationAdmissionTest {
             val backorders = mockk<AllocationBackorderService>()
             val projection = mockk<StockProjectionProcessor>()
             val processor = AllocationProcessor(service, projection, backorders, admission,
-                AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry))
+                AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry)
+            )
             val run = AllocationRunResult(UUID.randomUUID(), request.requestId, request.runType,
                 request.asOfDate, Instant.now(), 0, emptyList())
             coEvery { service.allocation(request) } returns run
@@ -108,9 +112,11 @@ class AllocationAdmissionTest {
         val registry = SimpleMeterRegistry()
         val admission = AllocationAdmission(properties, registry)
         assertThrows(IllegalStateException::class.java) {
-            admission.execute(request.runType) { error("Projection failed after allocation committed") }
+            runBlocking {
+                admission.execute(request.runType) { error("Projection failed after allocation committed") }
+            }
         }
-        assertEquals(42, admission.execute(request.runType) { 42 })
+        assertEquals(42, runBlocking { admission.execute(request.runType) { 42 } })
         assertEquals(0.0, registry.get("stockio.allocation.admission.active").gauge().value())
         assertEquals(1L, registry.get("stockio.allocation.execution.duration").tag("outcome", "failure").timer().count())
         assertEquals(1L, registry.get("stockio.allocation.execution.duration").tag("outcome", "success").timer().count())
@@ -127,28 +133,35 @@ class AllocationAdmissionTest {
         try {
             val future = executor.submit {
                 try {
-                    admission.execute(request.runType) {
-                        entered.countDown()
-                        while (release.count > 0) {
-                            try {
-                                release.await()
-                            } catch (_: InterruptedException) {
-                                // Model blocking downstream work that has not stopped on cancellation.
-                            }
+                    runBlocking {
+                        admission.execute(request.runType) {
+                            entered.countDown()
+                            while (release.count > 0) {
+                                try {
+                                    release.await()
+                                } catch (_: InterruptedException) {
+                                    // Model blocking downstream work that has not stopped on cancellation.
+                                }
 
-                            @Test
-                            fun `database lock contention is surfaced as retryable allocation lock contention`() {
-                                val registry = SimpleMeterRegistry()
-                                val admission = AllocationAdmission(properties, registry)
-                                val service = mockk<AllocationService>()
-                                val backorders = mockk<AllocationBackorderService>()
-                                val projection = mockk<StockProjectionProcessor>()
-                                val processor = AllocationProcessor(service, projection, backorders, admission,
-                                    AllocationRequestLimits(properties, jacksonObjectMapper().findAndRegisterModules(), registry))
-                                coEvery { service.allocation(request) } throws CannotAcquireLockException("lock wait timeout")
+                                @Test
+                                fun `database lock contention is surfaced as retryable allocation lock contention`() {
+                                    val registry = SimpleMeterRegistry()
+                                    val admission = AllocationAdmission(properties, registry)
+                                    val service = mockk<AllocationService>()
+                                    val backorders = mockk<AllocationBackorderService>()
+                                    val projection = mockk<StockProjectionProcessor>()
+                                    val processor = AllocationProcessor(service, projection, backorders, admission,
+                                        AllocationRequestLimits(
+                                            properties,
+                                            jacksonObjectMapper().findAndRegisterModules(),
+                                            registry
+                                        )
+                                    )
+                                    coEvery { service.allocation(request) } throws CannotAcquireLockException("lock wait timeout")
 
-                                assertThrows(_root_ide_package_.nl.stockio.allocation.domain.performance.AllocationLockContentionException::class.java) {
-                                    runBlocking { processor.process(request) }
+                                    assertThrows(_root_ide_package_.nl.stockio.allocation.domain.performance.AllocationLockContentionException::class.java) {
+                                        runBlocking { processor.process(request) }
+                                    }
                                 }
                             }
                         }
@@ -160,11 +173,13 @@ class AllocationAdmissionTest {
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             future.cancel(true)
             assertThrows(AllocationCapacityExceededException::class.java) {
-                admission.execute(request.runType) { fail("Must not enter") }
+                runBlocking {
+                    admission.execute(request.runType) { fail("Must not enter") }
+                }
             }
             release.countDown()
             assertTrue(finished.await(5, TimeUnit.SECONDS))
-            assertEquals(1, admission.execute(request.runType) { 1 })
+            assertEquals(1, runBlocking { admission.execute(request.runType) { 1 } })
         } finally {
             release.countDown()
             executor.shutdownNow()

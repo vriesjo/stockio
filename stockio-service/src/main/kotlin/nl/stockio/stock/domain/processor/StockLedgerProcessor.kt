@@ -7,7 +7,7 @@ import java.util.UUID
 import nl.stockio.api.dto.ProcessDailyStockRequest
 import nl.stockio.api.dto.StockSyncResult
 import nl.stockio.reservation.domain.service.ReservationCleanupService
-import nl.stockio.stock.domain.job.StockReceiptFollowupDispatcher
+import nl.stockio.stock.domain.job.StockBackorderFollowupJob
 import nl.stockio.stock.domain.port.StockLedgerRunRepository
 import nl.stockio.stock.domain.port.StockLedgerBusyException
 import nl.stockio.stock.domain.port.StockLedgerRun
@@ -28,7 +28,7 @@ class StockLedgerProcessor(
     private val runRepository: StockLedgerRunRepository,
     private val worker: StockLedgerSkuWorker,
     private val cleanup: ReservationCleanupService,
-    private val followups: StockReceiptFollowupDispatcher,
+    private val followups: StockBackorderFollowupJob,
     private val clock: Clock
 ) {
     /**
@@ -72,7 +72,7 @@ class StockLedgerProcessor(
                 "Ledger run ${run.id} completed: date=${run.snapshotDate} skus=${result.skuCount} " +
                     "lots=${result.lotCount} elapsedMs=${(System.nanoTime() - startedAt) / 1_000_000}"
             }
-            followups.dispatch()
+            followups.execute()
             return result
         } catch (exception: Exception) {
             runRepository.fail(run.id, owner, exception.message ?: exception.javaClass.simpleName, clock.instant())

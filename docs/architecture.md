@@ -65,6 +65,100 @@ flowchart LR
 
 The service runs as a WebFlux application on Netty and exposes MCP tools through Spring AI's streamable HTTP transport at `/mcp`. Domain I/O stays blocking and runs on a dedicated scheduler so it stays off the Netty event loop. The HTTP server binds to `127.0.0.1:9090` by default. No application-level authentication is configured; protect the API and Actuator endpoints if `SERVER_ADDRESS` is changed to expose them beyond the local host.
 
+## C4 - level 3 component diagram
+
+This level-3 view opens the Stockio service into core components for allocation
+ingress and execution:
+
+- **Inbound adapters** accept REST, Kafka, RabbitMQ, and MCP requests.
+- **Application services** coordinate acceptance, execution, completion, and
+  status tracking.
+- **Domain services** enforce admission, request validation, and allocation
+  business rules.
+- **Ports** define persistence and messaging boundaries.
+- **Infrastructure adapters** implement those ports with PostgreSQL, Kafka,
+  RabbitMQ, Redis, and JobRunr.
+
+```mermaid
+flowchart LR
+    Operator["Operator / REST client"] --> Inbound
+    KafkaTopic["Kafka topic<br/>stockio.allocation.requests"] --> Inbound
+    RabbitQueue["RabbitMQ queue<br/>stockio.allocation.requests"] --> Inbound
+    McpClient["MCP client"] --> Inbound
+
+    subgraph Service["Stockio service (:stockio-service)"]
+        subgraph Inbound["Inbound adapters"]
+            Rest["AllocationController<br/>POST /api/allocation/jobs<br/>GET /api/allocation/jobs/{jobId}"]
+            KafkaListener["AllocationKafkaListener<br/>Schema-framed AllocationRequest"]
+            RabbitListener["AllocationRabbitListener<br/>JSON AllocationRequest"]
+            McpTools["Product/Allocation MCP tools"]
+        end
+
+        subgraph App["Application services"]
+            Executor["AllocationJobExecutor<br/>executeAsync / executeSync / execute"]
+            Tracking["AllocationJobTrackingService<br/>submission + terminal states"]
+            WorkQueue["AllocationKafkaWorkQueue<br/>bounded channel + worker pool"]
+            Completion["Allocation completion cache<br/>(allocation_job_result)"]
+        end
+
+        subgraph Domain["Domain services and policies"]
+            Limits["AllocationRequestLimits<br/>counts + byte limits"]
+            Admission["AllocationAdmission<br/>fail-fast semaphore"]
+            Processor["AllocationProcessor<br/>orchestration"]
+            AllocationService["AllocationService / BackorderService<br/>SKU allocation rules"]
+        end
+
+        subgraph Ports["Ports"]
+            ResultPort["AllocationJobResultRepository"]
+            TrackingPort["AllocationJobTrackingRepository"]
+            StockPorts["Stock / Reservation / Product ports"]
+            GatewayPort["AllocationGateway (Redis fast path)"]
+        end
+
+        subgraph Infra["Infrastructure adapters"]
+            Postgres["PostgreSQL<br/>JPA + JDBC + R2DBC adapters"]
+            KafkaInfra["Spring Kafka + Schema Registry"]
+            RabbitInfra["Spring AMQP"]
+            RedisInfra["Redis gateway + CDC sync consumer"]
+            JobRunrInfra["JobRunr scheduler + retries/fallback"]
+        end
+    end
+
+    Inbound --> Rest
+    Inbound --> KafkaListener
+    Inbound --> RabbitListener
+    Inbound --> McpTools
+
+    Rest --> Executor
+    KafkaListener --> WorkQueue --> Executor
+    RabbitListener --> Executor
+    McpTools --> Executor
+
+    Rest --> Tracking
+    KafkaListener --> Tracking
+    Executor --> Tracking
+    Executor --> Completion
+
+    Executor --> Limits
+    Executor --> Admission
+    Executor --> Processor --> AllocationService
+
+    Processor --> ResultPort
+    Processor --> StockPorts
+    Executor --> GatewayPort
+    Tracking --> TrackingPort
+
+    ResultPort --> Postgres
+    TrackingPort --> Postgres
+    StockPorts --> Postgres
+    GatewayPort --> RedisInfra
+
+    Rest --> KafkaInfra
+    KafkaListener --> KafkaInfra
+    RabbitListener --> RabbitInfra
+    Executor --> JobRunrInfra
+```
+
 ### Frontend HTTP integration
 
 The Next.js allocation UI under `stockio-api/src/main/kotlin/nl/stockio/ui`
