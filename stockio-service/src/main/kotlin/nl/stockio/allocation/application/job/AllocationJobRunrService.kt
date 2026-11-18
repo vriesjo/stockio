@@ -1,11 +1,10 @@
 package nl.stockio.allocation.application.job
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import java.util.UUID
-import nl.stockio.api.dto.AllocationCompletionResult
-import nl.stockio.api.dto.AllocationJobStatus
 import nl.stockio.allocation.domain.job.AllocationJobTrackingService
 import nl.stockio.allocation.domain.job.AllocationJobTrackingState
+import nl.stockio.api.dto.AllocationCompletionResult
+import nl.stockio.api.dto.AllocationJobStatus
 import nl.stockio.stock.domain.port.AllocationJobResultRepository
 import org.jobrunr.jobs.states.StateName
 import org.jobrunr.server.BackgroundJobServer
@@ -13,6 +12,7 @@ import org.jobrunr.storage.JobNotFoundException
 import org.jobrunr.storage.StorageProvider
 import org.jobrunr.storage.navigation.AmountRequest
 import org.springframework.stereotype.Service
+import java.util.UUID
 
 /**
  * Reads allocation job status and completion results across JobRunr and tracking storage.
@@ -26,9 +26,8 @@ class AllocationJobRunrService(
     private val resultRepository: AllocationJobResultRepository,
     private val jobTracking: AllocationJobTrackingService,
     private val objectMapper: ObjectMapper,
-    private val backgroundJobServers: List<BackgroundJobServer>
+    private val backgroundJobServers: List<BackgroundJobServer>,
 ) {
-
     /**
      * Returns the current status and, when available, the saved result for [jobId].
      *
@@ -40,18 +39,20 @@ class AllocationJobRunrService(
      */
     fun getStatusById(jobId: UUID): AllocationJobStatus {
         val tracked = jobTracking.findById(jobId).orElse(null)
-        val job = try {
-            storageProvider.getJobById(jobId)
-        } catch (exception: JobNotFoundException) {
-            if (tracked == null) throw exception
-            null
-        }
-        if (job != null) {
-            val result = if (job.state == StateName.SUCCEEDED) {
-                readCompletion(jobId)
-            } else {
+        val job =
+            try {
+                storageProvider.getJobById(jobId)
+            } catch (exception: JobNotFoundException) {
+                if (tracked == null) throw exception
                 null
             }
+        if (job != null) {
+            val result =
+                if (job.state == StateName.SUCCEEDED) {
+                    readCompletion(jobId)
+                } else {
+                    null
+                }
             return AllocationJobStatus(jobId = jobId, status = job.state.name, result = result)
         }
 
@@ -60,7 +61,7 @@ class AllocationJobRunrService(
             return AllocationJobStatus(
                 jobId = jobId,
                 status = AllocationJobTrackingState.SUCCEEDED.name,
-                result = objectMapper.readValue(completion.resultJson, AllocationCompletionResult::class.java)
+                result = objectMapper.readValue(completion.resultJson, AllocationCompletionResult::class.java),
             )
         }
         val trackedJob = tracked ?: throw IllegalStateException("Job '$jobId' is missing from both status stores.")
@@ -71,9 +72,10 @@ class AllocationJobRunrService(
     }
 
     private fun readCompletion(jobId: UUID): AllocationCompletionResult {
-        val saved = resultRepository.findById(jobId).orElseThrow {
-            IllegalStateException("Succeeded allocation job '$jobId' has no saved completion result.")
-        }
+        val saved =
+            resultRepository.findById(jobId).orElseThrow {
+                IllegalStateException("Succeeded allocation job '$jobId' has no saved completion result.")
+            }
         return objectMapper.readValue(saved.resultJson, AllocationCompletionResult::class.java)
     }
 
@@ -85,21 +87,21 @@ class AllocationJobRunrService(
      * results are stored separately and are not cleared here.
      */
     fun flushAllJobs() {
-
         backgroundJobServers.forEach { server ->
             server.stop()
         }
 
         Thread.sleep(2000) // Wait for the server to stop and release locks
 
-        val statesToFlush = listOf(
-            StateName.PROCESSING,
-            StateName.FAILED,
-            StateName.ENQUEUED,
-            StateName.SCHEDULED,
-            StateName.SUCCEEDED,
-            StateName.AWAITING,
-        )
+        val statesToFlush =
+            listOf(
+                StateName.PROCESSING,
+                StateName.FAILED,
+                StateName.ENQUEUED,
+                StateName.SCHEDULED,
+                StateName.SUCCEEDED,
+                StateName.AWAITING,
+            )
 
         for (state in statesToFlush) {
             var deletedCount = 0

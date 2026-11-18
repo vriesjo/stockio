@@ -9,6 +9,7 @@ import io.mockk.Called
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
+import kotlinx.coroutines.runBlocking
 import java.time.Instant
 import java.time.LocalDate
 import java.util.Optional
@@ -69,8 +70,10 @@ class AllocationJobExecutorTest {
         val result = AllocationCompletionResult(request.requestId, run)
         every { repository.findById(request.requestId) } returns Optional.of(
             AllocationJobResultEntity(request.requestId, mapper.writeValueAsString(result)))
-        admission.execute(request.runType) {
-            assertEquals(result, executor.executeSync(request.requestId, request))
+        runBlocking {
+            admission.execute(request.runType) {
+                assertEquals(result, executor.executeSync(request.requestId, request))
+            }
         }
         coVerify(exactly = 0) { service.allocation(any()) }
         verify(exactly = 0) { repository.save(any()) }
@@ -103,9 +106,11 @@ class AllocationJobExecutorTest {
             "stockio.allocation.requests", gateway
         )
         every { repository.findById(any()) } returns Optional.empty()
-        admission.execute(request.runType) {
-            assertThrows(AllocationCapacityExceededException::class.java) {
-                subject.executeSync(request.requestId, request)
+        runBlocking {
+            admission.execute(request.runType) {
+                assertThrows(AllocationCapacityExceededException::class.java) {
+                    subject.executeSync(request.requestId, request)
+                }
             }
         }
         assertEquals(emptyList<String>(), gateway.calls)

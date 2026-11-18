@@ -55,7 +55,7 @@ class AllocationAdmission(
         Gauge.builder("stockio.allocation.admission.enabled", properties) { if (it.enabled) 1.0 else 0.0 }.register(registry)
     }
 
-    fun <T> execute(runType: AllocationRunType, work: () -> T): T {
+    suspend fun <T> execute(runType: AllocationRunType, work: suspend () -> T): T {
         if (properties.enabled && !permits.tryAcquire()) {
             registry.counter("stockio.allocation.admission.attempts",
                 "run.type", runType.name, "outcome", "saturated").increment()

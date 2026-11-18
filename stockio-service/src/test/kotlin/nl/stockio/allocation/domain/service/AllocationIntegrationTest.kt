@@ -709,13 +709,17 @@ class AllocationIntegrationTest {
         val guarded = AllocationProcessor(allocationService, stockProjectionProcessor, allocationBackorderService,
             admission, limits)
         val request = reservationRequest("ADMISSION-REFUSED", 1)
-        admission.execute(request.runType) {
-            Assertions.assertThrows(AllocationCapacityExceededException::class.java) { runBlocking { guarded.process(request) } }
-            Assertions.assertEquals(0L, jdbcTemplate.queryForObject(
-                "SELECT count(*) FROM allocation_run WHERE request_id = ?", Long::class.java, request.requestId) ?: -1L)
-            Assertions.assertFalse(claimRepository.existsById("ADMISSION-REFUSED"))
-            Assertions.assertEquals(0L, stockReservationRepository.count())
-            Assertions.assertEquals(0L, backorderRepository.count())
+        runBlocking {
+            admission.execute(request.runType) {
+                Assertions.assertThrows(AllocationCapacityExceededException::class.java) {
+                    runBlocking { guarded.process(request) }
+                }
+                Assertions.assertEquals(0L, jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM allocation_run WHERE request_id = ?", Long::class.java, request.requestId) ?: -1L)
+                Assertions.assertFalse(claimRepository.existsById("ADMISSION-REFUSED"))
+                Assertions.assertEquals(0L, stockReservationRepository.count())
+                Assertions.assertEquals(0L, backorderRepository.count())
+            }
         }
         runBlocking { guarded.process(request) }
         Assertions.assertTrue(claimRepository.existsById("ADMISSION-REFUSED"))
