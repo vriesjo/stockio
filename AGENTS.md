@@ -8,14 +8,15 @@ issues.
 
 Use the following files as the source of truth for feature work:
 
-| File | Purpose |
-| --- | --- |
-| [`docs/architecture.md`](docs/architecture.md) | Current system architecture, technologies, and design boundaries. |
-| [`docs/scenarios.md`](docs/scenarios.md) | Supported user and operational flows in Gherkin, with technical analysis and acceptance criteria. |
-| [`docs/specifications.md`](docs/specifications.md) | Feature specifications and links between features, scenarios, and architectural baselines. |
-| [`.github/memory/active-context.md`](.github/memory/active-context.md) | Current work-in-progress and handoff context. |
-| [`.github/memory/issues/`](.github/memory/issues/) | Feature implementation documents containing synchronized requirements and technical analysis. |
-| [`.github/memory/tasks/lessons-learned.md`](.github/memory/tasks/lessons-learned.md) | Reusable process lessons discovered during repository work. |
+| File                                                                                 | Purpose                                                                                           |
+|--------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
+| [`spec-driven-design.md`](.github/memory/spec-driven-design.md)                      | Spec-Driven-Development process.                                                                  |
+| [`docs/architecture.md`](docs/architecture.md)                                       | Current system architecture, technologies, and design boundaries.                                 |
+| [`docs/scenarios.md`](docs/scenarios.md)                                             | Supported user and operational flows in Gherkin, with technical analysis and acceptance criteria. |
+| [`docs/specifications.md`](docs/specifications.md)                                   | Feature specifications and links between features, scenarios, and architectural baselines.        |
+| [`.github/memory/active-context.md`](.github/memory/active-context.md)               | Current work-in-progress and handoff context.                                                     |
+| [`.github/memory/issues/`](.github/memory/issues/)                                   | Feature implementation documents containing synchronized requirements and technical analysis.     |
+| [`.github/memory/tasks/lessons-learned.md`](.github/memory/tasks/lessons-learned.md) | Reusable process lessons discovered during repository work.                                       |
 
 The active feature-specification file is
 `docs/specifications.md`; use that filename consistently in new
@@ -37,33 +38,47 @@ documentation and links.
 6. Use subagents only when separate context is genuinely useful. Give each
    delegated task a bounded objective and do not duplicate the same investigation.
 
-## Feature management lifecycle
+## Spec-Driven-Development lifecycle
+- The flow is defined here: [spec-driven-design.md](.github/memory/spec-driven-design.md)
+- In short:  
+  - Plan together with the user
+  - User reviews & approves.
+  - Deep Research by agent.
+  - Define feature agent.
+  - User approves only if the specification is nicely linked to the feature, scenario.
+  - Implement feature locally by agent.
+  - User reviews & approves.
+The lifecycle above is initiated when the user invokes `/plan ..` or `/create plan..`.
 
-- Plan a feature, together with the user, before writing the target feature.
-- Write the feature specification update, insert the scenario and specification.
-- Start the implementation only after the scenario, specification are confirmed by the user.
+### 1 Write the plan
 
-The lifecycle below applies when the user invokes `/create feature`, or asks to `write a feature based on the in context analysis`, 
-or requests a change that requires a durable feature specification.
-The feature is not implementation-ready until its scenario, specification, and
-issue document are linked.
+Based on the initial in context analysis:
 
-### 1. Analyze the feature request
-
-Base the initial feature definition on:
-
-- The user's `/create feature` command or feature request.
+- The user's `/plan ..` or `/create plan ..` command.
 - The current repository code, `Repository memory` see above.
-- Take a spec driven look at relevant existing entries in `scenarios.md` and `specifications.md`.
+- Take a spec-driven look at relevant existing entries in `scenarios.md` and `specifications.md`.
 - Peek into `lessons-learned.md` before making assumptions.
 
 Identify the problem, bounded context, current behavior, desired behavior,
 affected components, risks, dependencies, and open decisions. Ask focused
 questions when status, priority, scope, compatibility, or behavior is materially
-ambiguous. Do not invent a priority or mark a feature as in progress during
-planning unless the user has decided that.
+ambiguous. Layout the plan and store it here `.cursor/plans`. Bared minimal layout contains: 
+- current behavior, target behavior, bounded context, steps, verification, risks.
 
-### 2. Add or update the functional scenario
+### 2 Write the feature 
+
+Based on the plan, write the complete feature implementation. This feature implementation is the result of more deep research and analysis. 
+It is not a draft, but a complete feature implementation. The feature implementation is stored in `.github/memory/issues`. 
+The feature implementation contains at least the following sections:
+- Feature title, status, priority, context, and bounded context.
+- Functional requirements with stable `FR-01`, `FR-02`, ... IDs.
+- Non-functional requirements, or an explicit `Not yet` when none are defined.
+- Application contract (e.g. rest, broker) for the feature, if applicable.
+- A sequenced high-level implementation plan.
+- The Gherkin style scenarios.
+- Acceptance criteria.
+
+### 3. Add or update the functional scenario
 
 Read the scenario structure in
 [`scenarios.md`](docs/scenarios.md) before editing it.
@@ -81,7 +96,7 @@ relevant REST endpoints, MCP tools, jobs, events, or operational triggers only
 when they exist or are explicitly part of the approved feature scope. Use a
 stable heading such as `Scenario N: <name>` and keep scenario numbering unique.
 
-### 3. Add the feature specification and link the scenario
+### 4. Add or update the specification and link to the feature and scenario resources
 
 Read the established structure in
 [`specifications.md`](docs/specifications.md) before editing it.
@@ -110,23 +125,6 @@ relative link, for example:
 
 Keep feature terminology, FR IDs, status, priority, and plan synchronized with
 the corresponding issue document.
-
-### 4. Create the feature issue document
-
-Create `.github/memory/issues/feature-<short-kebab-case-title>.md` using an
-existing issue document as the structural reference. Include:
-
-- feature title, status, priority, context, and bounded context;
-- the same FR/NFR requirements and implementation plan as `specifications.md`;
-- a link to the scenario and the scenario's Gherkin, technical analysis, and
-  acceptance criteria when the feature changes that flow;
-- technical analysis of the current code and configuration;
-- affected components, ports, adapters, persistence, integrations, and tests;
-- risks, compatibility concerns, and implementation acceptance criteria.
-
-The issue document is an implementation handoff, not a duplicate source of
-truth. When the specification or scenario changes, update the linked issue
-sections in the same change.
 
 ### 5. Update active context
 
@@ -179,6 +177,7 @@ do not add entries for routine changes.
 # Code Review Guidelines
 
 When reviewing pull requests, strictly follow all architectural, coding, and testing guidelines defined here:
+
 1. [generic-code-review-checklist-and-antipatterns-guideline.md](docs/reviews/generic-code-review-checklist-and-antipatterns-guideline.md)
 2. [kotlin+eda+outbox_code_review_guidelines.md](docs/reviews/kotlin%2Beda%2Boutbox_code_review_guidelines.md)
 3. [spring-boot-code-review-guideline.md](docs/reviews/spring-boot-code-review-guideline.md)
